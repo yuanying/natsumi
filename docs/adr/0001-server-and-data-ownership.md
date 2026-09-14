@@ -1,53 +1,61 @@
-# 0001. 単一サーバーとデータの所有権
+# 0001. Pi を使う単一サーバーとデータの所有権
 
 - Date: 2026-09-14
 - Status: Accepted
 
 ## Context
 
-複数の Mac から、同じ個人アシスタントとの会話と記憶を利用する。
-公開コードの更新やコンテナの再作成で個人データを失わず、会話履歴の正本を一つに保つ必要がある。
+複数の Mac から同じ個人アシスタントの会話と記憶を利用する。
+コードの更新やコンテナの再作成で個人データを失わず、会話履歴の正本を一つに保つ必要がある。
 
 ## Decision
 
-TypeScript サーバーが一人分の状態と Codex App Server 子プロセスを所有する。
-Mac は Swift/SwiftUI と AppKit を用い、常駐キャラクターのクリックで会話欄を開く。
+初期バックエンドは Pi Coding Agent のみとする。TypeScript サーバーへ
+`@earendil-works/pi-coding-agent@0.85.1` の SDK を組み込む。
+公式 npm package と同梱型・文書を基準にし、更新時は保存・再開とツール制限を再検証する。
+Node 内で型付き API とツール登録を直接使えるため SDK を採用する。
+RPC は他言語・子プロセス統合向けの選択肢として確認したが、この設計では採用しない。
+
+Pi との接続箇所は session の作成/復元、prompt、中断、履歴、イベント購読を扱う小さな境界とする。
+backend registry、別 backend adapter、切り替え UI は用意しない。
+Pi 内の provider/model 設定はモデル接続先の選択であり、バックエンドの差し替えではない。
+Mac は Swift/SwiftUI と AppKit を使い、常駐キャラクターのクリックで会話欄を開く。
 キャラクター素材は未決定。サーバーは Linux コンテナを予定する。
 
-全端末に共通の永続 Codex thread を一つ割り当てる。会話履歴の正本は Codex とし、
-natsumi の SQLite には会話本文・応答履歴を複製しない。
-thread ID、操作 ID、承認待ち、スケジュール、通知配信状態は natsumi が管理する。
-初期の検証ハーネスは `historyMode: legacy` を明示する。
-本体では履歴の増大に備えて paginated モードと turns/items ページ API を別途検証する。
+全端末に共通の永続 Pi session を一つ割り当てる。会話の正本は Pi の session JSONL とし、
+SQLite へ会話本文や assistant 応答を複製しない。
+`SessionManager.create` / `open` で保存先を明示し、履歴は SDK の entry/branch API で取得する。
+アプリの会話 ID と Pi session ID・相対 session ファイル参照の対応だけを SQLite に保存する。
+任意のローカルパスを Mac から受け取る機能は設けない。
 
-起動時に指定する data directory はコードの checkout と分離する。
-本体の CLI は `--data-dir` 指定を優先し、省略時は起動時の cwd を採用する設計とする。
-パスは起動時に絶対パス・実体パスへ解決し、実行途中の cwd 変更に依存しない。
+起動時の `--data-dir` を優先し、省略時は起動 cwd を data directory とする設計にする。
+パスは起動時に絶対・実体パスに解決し、実行途中の cwd 変更に依存しない。
 本番初期化ではコード checkout 内への個人データ配置を拒否する。
 
 | 保存先 | 内容・所有者 | 復旧上の扱い |
 | --- | --- | --- |
-| data directory の `memory/` | 明示された記憶と、会話から重要と判断した情報を整理した Markdown。natsumi が所有 | 個人バックアップ対象。必要なら別の private Git |
-| data directory の `personality.md` | 性格・話し方の設定 | 個人バックアップ対象 |
-| data directory の `.natsumi/state.sqlite` | thread ID、操作、スケジュール、承認、通知。natsumi が所有 | SQLite の整合したバックアップ |
-| 専用 `CODEX_HOME` | Codex が所有する会話・索引・設定・認証 | 永続 volume。内部 DB を natsumi から編集しない |
+| data directory の `memory/` | 明示された記憶と重要情報を整理した Markdown。natsumi が所有 | 個人バックアップ。必要時だけ別 private Git |
+| data directory の `personality.md` | 性格・話し方の設定 | 個人バックアップ |
+| data directory の `.natsumi/state.sqlite` | session 参照、操作 ID、承認、スケジュール、通知。natsumi が所有 | 整合した SQLite バックアップ |
+| 専用 Pi 状態領域の `sessions/` | Pi が所有する会話 JSONL | 永続 volume。SDK を通して扱う |
+| 専用 Pi 認証領域の `auth.json` | Pi ModelRuntime が所有する OAuth 認証 | secret 管理。Markdown Git と分離 |
 | 別 mount の private Wiki | Wiki 自身の規約に従う | Wiki 側のバックアップ |
 
-サーバー起動時は data directory のプロセスロックを取得し、二つ目のインスタンスを拒否する。
-App Server の cwd と thread の cwd は data directory に固定する。
-既存の個人用 Codex home を本体と共有せず、専用の認証・状態領域を用意する。
-Mac は Codex 認証、Google 認証、サーバー上のファイルパスを保持しない。
+サーバーは data directory のプロセスロックで二重起動を拒否する。
+Pi の cwd は data directory、agentDir・session 保存先・authPath は専用領域に固定する。
+既存の個人用 Pi の設定・履歴・認証と共有せず、本人が専用領域で login する。
+Mac は Pi/Google credential とローカルパスを保持しない。
 
-停止時は新規操作を止め、進行中の操作状態を確定してから App Server を終了する。
-復旧時は SQLite の thread ID を `thread/read` と `thread/resume` で照合する。
-ID があるのに履歴が見つからない場合は復旧エラーとし、黙って別 thread を作らない。
-初期作成の応答後・ID 保存前に停止した場合も、既存候補の照合が必要であり自動再作成しない。
-バックアップはサーバー停止中に data directory と Codex home を一組として取得する。
-認証のバックアップは通常の Markdown Git と分離し、秘密管理の対象にする。
+停止時は新規操作を止め、進行中の処理を完了または abort し、session を dispose する。
+復旧時は保存したファイルが存在し JSONL 全非空行が解析できること、header と復元 session ID が一致することを検証する。
+Pi が malformed 行を読み飛ばす動作をそのまま履歴復旧の成功とは扱わない。
+保存参照があるのにファイルがない場合は復旧エラーとし、新規 session を作らない。
+JSONL と SQLite の更新は原子的ではないため、結果不明操作の照合を別途行う。
+バックアップはサーバー停止中に data directory と Pi session 領域を一組として取得する。
 
 ## Consequences
 
-Mac 間で履歴の競合を解決する必要がなくなる一方、サーバー停止中は新規会話を処理できない。
-Codex の保存形式には依存せず、履歴取得 API を境界とする。
-音声は実験的なため、利用可能性を別に判定する。
-本体・コンテナ・Mac の実装と復旧試験は後続 PR で行う。
+履歴の正本は一つになるが、サーバー停止中は新規会話を処理できない。
+Pi は分岐・compaction を持つため、履歴 entry ID と現在の branch を区別する。
+初期検証では compaction と自動 retry を無効にし、本体の有効化時に同期・復旧を試験する。
+コンテナ再作成、Mac、本体バックアップ復旧は後続 PR の検証とする。

@@ -8,7 +8,7 @@ config.local.json
 *.log
 *.sqlite*
 *.db*
-.codex/
+.pi/
 auth.json
 data/
 memory/
