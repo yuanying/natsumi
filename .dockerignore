@@ -1,0 +1,17 @@
+.git
+.local/
+node_modules/
+dist/
+docs/
+config.local.json
+.env
+.env.*
+*.log
+*.sqlite*
+*.db*
+.pi/
+auth.json
+data/
+memory/
+sessions/
+.DS_Store
