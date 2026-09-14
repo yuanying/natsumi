@@ -10,6 +10,7 @@ config.local.json
 *.db*
 .pi/
 auth.json
+secrets/
 data/
 memory/
 sessions/

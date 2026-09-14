@@ -20,5 +20,6 @@ RUN mkdir -p /data /var/lib/natsumi-pi \
   && chown node:node /data /var/lib/natsumi-pi \
   && chmod 700 /data /var/lib/natsumi-pi
 USER node
+EXPOSE 8443
 ENTRYPOINT ["node", "/app/dist/src/server/main.js"]
 CMD ["serve", "--config", "/etc/natsumi/config.json", "--data-dir", "/data"]
