@@ -45,9 +45,10 @@ Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
 
 クライアントのメッセージは 1 件ごとに `v` を検証する。`v` が 1 でなければ `command.rejected`（`unsupported-version`）を送り、
 close code 1002 で閉じる。JSON のオブジェクトでなければ `invalid-envelope` を送り、1007 で閉じる。1 メッセージは 64 KiB までとする。
-未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる。
-端末登録を実装するまでは、接続ごとに新しい `streamId` を発行する。下表の command は実装されるまで
-`command.rejected`（`not-implemented`）を返す。
+未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる（command を受けるたびに期限を確かめる）。
+下表のうち `session.sync`・`conversation.send`・`conversation.interrupt` は実装済みで、それ以外の command は
+`command.rejected`（`not-implemented`）を返す。`session.sync` の前の応答は、その接続だけの一時的な stream で採番する。
+判断の理由は [ADR 0007](adr/0007-conversation-ownership-and-device-sync.md) にある。
 
 ```json
 {"v":1,"requestId":"request-example","deviceId":"device-example","type":"conversation.send","payload":{"text":"架空のメッセージ"}}
@@ -70,29 +71,46 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 
 | クライアント command | payload | サーバーの結果 |
 | --- | --- | --- |
-| `session.sync` | 前回の epoch/streamId/seq または null | 本人の端末に紐づく stream を検証し、下記 snapshot 手順。承認待ちと未 ACK 通知も返す |
-| `conversation.send` | text、requestId | `command.accepted` と turnId、または busy / operation-unknown / invalid-request |
-| `conversation.interrupt` | 対象 turnId | 現在の turn の場合だけ中断。別 turn は拒否 |
+| `session.sync` | `resume`: 前回の epoch/streamId/seq または null | 下記「端末の登録と stream」。承認待ちと未 ACK 通知は後続の実装で加える |
+| `conversation.send` | text（32 KiB まで）、requestId | `command.accepted`（turnId、state）、または busy / request-conflict / operation-unknown / invalid-request |
+| `conversation.interrupt` | 対象 turnId | 現在の turn の場合だけ `command.accepted`。別 turn・turn なしは turn-not-active |
 | `approval.decide` | approvalId、revision、approve/reject | 確定した承認状態。内容・期限・権限を再検証 |
 | `notification.ack` | notificationId | 全端末共通の ACK 状態 |
 | `device.activity` | 明示操作の kind のみ | サーバー受理順で通知先更新。画面内容は含めない |
 
 | サーバー event | 内容 |
 | --- | --- |
-| `session.snapshot` | Pi session の現在 branch から変換した履歴、進行 turn、操作状態、承認待ち、通知待ち、snapshot の sequence |
-| `conversation.turn.started` | conversationId、turnId、対応 requestId |
-| `conversation.delta` | turnId、itemId、表示テキスト差分 |
-| `conversation.item.completed` | itemId と確定した表示内容 |
-| `conversation.turn.completed` | completed / failed / interrupted。成功と単なる終了を区別 |
+| `session.snapshot` | deviceId、conversationId、`history`（Pi session の現在 branch から変換した履歴）、`activeTurn`（進行 turn と応答中 item のそれまでのテキスト、なければ null）、`operations`（進行中・結果不明の操作）。envelope の seq が snapshot の sequence。承認待ち・通知待ちは後続の実装で加える |
+| `conversation.turn.started` | conversationId、turnId。envelope に対応 requestId |
+| `conversation.delta` | conversationId、turnId、itemId、表示テキスト差分 |
+| `conversation.item.completed` | conversationId、turnId、itemId、entryId、role（user / assistant）、確定した表示テキスト |
+| `conversation.turn.completed` | conversationId、turnId、status（completed / failed / interrupted）。failed には reason（model-error / length / timeout / prompt-failed）。envelope に対応 requestId |
 | `approval.pending` / `approval.resolved` | approvalId、revision、具体的変更内容または確定結果 |
 | `notification.batch` | 通知 ID、作成時刻、内容または会話参照、遅延の有無 |
-| `command.rejected` / `service.unavailable` | 安全なエラーコード。上流の生エラー本文は転送しない |
+| `command.accepted` | command ごとの結果（`conversation.send` は turnId と state、`session.sync` の再送は deviceId と mode: resume） |
+| `command.rejected` / `service.unavailable` | 安全なエラーコード。上流の生エラー本文は転送しない。`service.unavailable` の code は pi-unavailable / conversation-restore-failed / stopping |
+
+### 端末の登録と stream
+
+1. 接続後、最初に `session.sync` を送る。envelope の `deviceId` には前回サーバーから受け取った ID を入れる（初回は省略）。
+   サーバーは同じアカウントに発行済みの ID だけを使い続け、それ以外なら新しい ID を発行して応答の `deviceId` で返す。
+   Mac はこの ID を保存し、以後の command の envelope に付ける。
+2. `payload.resume` に前回最後に受け取ったイベントの epoch・streamId・seq を入れる。同じ epoch・streamId で、その seq より後が
+   サーバーのバッファに残っていれば、欠けたイベントが元の seq のまま届き、続けて `command.accepted`（mode: resume）が届く。
+3. それ以外の場合は `session.snapshot` が届く。Mac は表示をこの snapshot で置き換え、以後はこれより大きい seq のイベントを適用する。
+   `activeTurn` の item のテキストには、snapshot より後の `conversation.delta` を連結してよい。
+4. 会話が使えない場合は `service.unavailable` が届く（deviceId も付く）。
+5. 同期の前の会話 command は `sync-required`、接続の端末と異なる `deviceId` の command は `device-mismatch` で拒否される。
+6. 同じ端末で新しく接続すると古い接続は close code 4001 で閉じられる。受信が大きく遅れた接続は 4002 で閉じられるので、再接続して同期する。
+
+イベントのバッファはサーバーのメモリにあり、既定では stream ごとに直近 256 件である。サーバーの再起動で epoch が変わる。
 
 ## 会話の直列化と再同期
 
 一つの会話に同時に開始する turn は一つとする。割り込みは明示 command に限る。
 SQLite の操作表には requestId、端末 ID、本文の hash、状態、turnId、対応する Pi の user entry ID を保存する。
-同じ requestId で別の hash が来たら拒否する。本文は保存せず、受理確認まで Mac が保持する。
+同じ requestId で別の hash（または別の端末）が来たら `request-conflict` で拒否する。本文は保存せず、受理確認まで Mac が保持する。
+操作の状態は accepted → prompted（user entry ID を保存）→ completed / failed / interrupted と進み、照合できないものは unknown になる。
 natsumi が turnId を採番して `accepted` 状態を保存してから `command.accepted` を返し、その後 Pi に prompt を渡す。
 同一 requestId の再送は既存結果を返す。処理中・結果不明なら新しい prompt を開始しない。
 Pi は requestId を idempotency key として扱わない。
@@ -106,7 +124,8 @@ epoch/streamId が変わった、その stream の seq が抜けた、受信が�
 stream を破棄・再作成する場合は新しい streamId を発行し、同じ ID で seq をリセットしない。
 
 snapshot 中は新規 turn の受理を保留し、Pi session のイベントを購読したままバッファへ取り込む。
-履歴取得とイベントの原子的 snapshot API は仮定しない。
+履歴取得とイベントの原子的 snapshot API は仮定しない。現在の実装は Pi のメモリ上の branch と進行中 item の状態から
+一つの同期処理で snapshot を作るため、その間にイベントや turn の受理が割り込まない（ADR 0007）。
 履歴の確定 entry は entry ID で upsert し、取得中に進行した item は確定時に本文を置き換える。
 進行 item の delta に整合した開始点が得られなければ、その item は「応答中」と表示して
 completed event または再取得を待つ。snapshot の本文へ既存 delta を盲目的に連結しない。

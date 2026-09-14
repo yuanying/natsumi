@@ -2,8 +2,8 @@
 
 Pi Coding Agent を使う個人アシスタント。現在はサーバー基盤（設定の検証、data directory の初期化、
 二重起動の拒否、状態 DB の migration、専用の Pi 状態領域、コンテナ）、GitHub ログインと短期セッション、
-HTTPS/WSS の待ち受けと v1 envelope の入口、Pi SDK の隔離検証ハーネスを提供しています。
-会話、Mac UI、Google/Wiki 連携は後続の実装です。
+HTTPS/WSS の待ち受けと v1 envelope の入口、全端末で共有する永続 Pi 会話と端末ごとの同期、Pi SDK の隔離検証ハーネスを提供しています。
+Markdown 記憶、通知、Mac UI、Google/Wiki 連携は後続の実装です。
 
 Node.js 24.12.0 以降を使用します。通常の検証は外部認証・ネットワーク接続を必要としません
 （初回の npm 依存取得を除く）。Pi は `@earendil-works/pi-coding-agent` の SDK を npm 依存として固定しています。
@@ -29,6 +29,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
 2. 下記の手順で GitHub OAuth App と TLS 証明書を用意します。
 3. [config.example.json](config.example.json) を `config.local.json` などにコピーし、実環境に合わせます。
    - `pi`: Pi 状態領域のパス。data directory ともホームの `.pi` / `.codex` とも別の場所にします。
+     `model` でモデルの接続先を選びます（下記「モデルの接続先」）。
    - `publicOrigin`: クライアントが使う origin（例: `https://natsumi.example.net:8443`）。https に限ります。
    - `listen`: 待ち受けアドレス・ポート・TLS。`"host": "::"` で IPv4 と IPv6 の両方で待ち受けます。
      `tls` には証明書と鍵のファイルを指定します。
@@ -50,6 +51,21 @@ SIGTERM / SIGINT で停止します。
 
 設定の不備（未知の項目、相対パス、秘密の直書き、外部アドレスでの平文の待ち受けなど）は、該当する設定名を示して起動を止めます。
 秘密は設定ファイルに書かず、`...Env`（環境変数名）や `...File`（secret mount のパス）で参照します。
+
+### モデルの接続先と会話
+
+サーバーは全端末で共有する会話を一つ持ち、Pi の session を専用 Pi 状態領域の `sessions` に保存します
+（[ADR 0007](docs/adr/0007-conversation-ownership-and-device-sync.md)）。接続先は次のどちらかを明示し、自動で切り替わることはありません。
+
+- **ChatGPT のサブスクリプション**: `"model": { "provider": "openai-codex", "id": "gpt-5.5" }`。
+  専用 Pi 領域の `authPath` に Pi でログインした認証ファイルが必要です。
+- **自分で運用する OpenAI 互換エンドポイント**（llama.cpp など）: `"model": { "provider": "natsumi-compatible", "id": "<モデル名>" }` とし、
+  `pi.compatible` に `baseUrl`（https。http は loopback のみ）と、API key の参照 `apiKeyEnv`（環境変数名）か `apiKeyFile`（secret mount のパス）を書きます。
+  key は起動時に読みます。
+
+ログインや key がない場合、または保存した session ファイルが失われた・壊れた場合も、サーバーは起動して会話だけを使えない状態にし、
+クライアントに理由のコードを返します。失われた session の代わりに新しい会話を作ることはありません。
+data directory の `personality.md` は起動時に読み、会話のシステム指示に加えます。変更は再起動で反映されます。
 
 ### GitHub OAuth App を作る
 
@@ -101,7 +117,7 @@ volume の代わりに既存のディレクトリを bind mount する場合は�
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[会話の所有と端末間の同期](docs/adr/0007-conversation-ownership-and-device-sync.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。

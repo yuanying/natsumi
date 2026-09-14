@@ -1,7 +1,7 @@
 # 0004. Pi のツール・認証・音声の境界
 
 - Date: 2026-09-14
-- Status: Accepted
+- Status: Accepted（サーバーでの互換エンドポイントの key の受け渡しは [0007](0007-conversation-ownership-and-device-sync.md) で更新）
 
 ## Context
 
