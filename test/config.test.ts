@@ -65,6 +65,29 @@ test('invalid values name the offending setting', () => {
   rejects({ ...base(), pi: { ...pi(), voiceEnabled: true } }, 'pi.voiceEnabled', /not supported/);
 });
 
+test('an OpenAI-compatible endpoint is chosen explicitly, with its key referenced by env or file', () => {
+  const endpoint = { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY' };
+  const compatible = { ...pi(), model: { provider: 'natsumi-compatible', id: 'fixture-model' }, compatible: endpoint };
+  assert.deepEqual(parseConfig({ ...base(), pi: compatible }).pi.compatible,
+    { baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' } });
+  const { apiKeyEnv: _key, ...noKey } = endpoint;
+  assert.deepEqual(parseConfig({ ...base(), pi: { ...compatible, compatible: { ...noKey, apiKeyFile: '/run/secrets/pi-api-key' } } }).pi.compatible?.apiKey,
+    { file: '/run/secrets/pi-api-key' });
+  assert.equal(parseConfig({ ...base(), pi: { ...compatible, compatible: { ...endpoint, baseUrl: 'http://127.0.0.1:8080/v1' } } }).pi.compatible?.baseUrl,
+    'http://127.0.0.1:8080/v1');
+  assert.equal('compatible' in parseConfig(base()).pi, false);
+
+  rejects({ ...base(), pi: { ...compatible, compatible: noKey } }, 'pi.compatible.apiKeyEnv', /apiKeyFile/);
+  rejects({ ...base(), pi: { ...compatible, compatible: { ...endpoint, apiKeyFile: '/run/secrets/pi-api-key' } } }, 'pi.compatible.apiKeyFile', /only one/);
+  rejects({ ...base(), pi: { ...compatible, compatible: { ...endpoint, baseUrl: 'http://llm.example.test/v1' } } }, 'pi.compatible.baseUrl', /https/);
+  rejects({ ...base(), pi: { ...compatible, compatible: { ...endpoint, timeout: 5 } } }, 'pi.compatible.timeout', /unknown/);
+  rejects({ ...base(), pi: { ...compatible, compatible: { ...endpoint, apiKey: 'sk-fixture' } } }, 'pi.compatible.apiKey', /secret/);
+  // No implicit route: the compatible provider and the compatible section always come together.
+  rejects({ ...base(), pi: { ...pi(), compatible: endpoint } }, 'pi.model.provider', /natsumi-compatible/);
+  const { compatible: _endpoint, ...withoutEndpoint } = compatible;
+  rejects({ ...base(), pi: withoutEndpoint }, 'pi.compatible', /required/);
+});
+
 test('the connection and GitHub sections are required', () => {
   const { publicOrigin: _o, ...noOrigin } = base();
   rejects(noOrigin, 'publicOrigin', /required/);

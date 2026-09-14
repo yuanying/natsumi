@@ -6,6 +6,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer, type RunningServer } from '../../src/server/server.ts';
+import { fixtureRuntime } from './fixture.ts';
+import { ScriptedModel } from './scripted-model.ts';
 
 // Fictional values only. Every one of these must stay out of responses and logs.
 export const CLIENT_SECRET = 'fixture-client-secret-9f1c2e';
@@ -84,9 +86,14 @@ export class GitHubStub {
   close() { return new Promise<void>(resolve => this.server.close(() => resolve())); }
 }
 
-export interface FixtureOptions { allowedUserId?: number; env?: Record<string, string | undefined> }
+export interface FixtureOptions {
+  allowedUserId?: number;
+  env?: Record<string, string | undefined>;
+  /** Live events kept per device stream for replay. */
+  streamBufferSize?: number;
+}
 
-/** A running server on loopback plaintext with a stub GitHub, a controllable clock and captured logs. */
+/** A running server on loopback plaintext with a stub GitHub, a scripted Pi model, a controllable clock and captured logs. */
 export async function startFixture(options: FixtureOptions = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-auth-')));
   const data = join(root, 'data');
@@ -95,6 +102,7 @@ export async function startFixture(options: FixtureOptions = {}) {
   const logs: string[] = [];
   const clock = { now: Date.parse('2026-01-01T00:00:00Z'), advance(ms: number) { this.now += ms; } };
   const configFile = join(root, 'config.json');
+  const model = new ScriptedModel();
 
   let server: RunningServer;
   const launch = async (allowedUserId: number) => {
@@ -103,6 +111,8 @@ export async function startFixture(options: FixtureOptions = {}) {
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
       env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET },
       github: stub.endpoints, clock: () => clock.now, log: line => { logs.push(line); },
+      pi: { runtime: fixtureRuntime, configureSession: session => { session.agent.streamFunction = model.streamFunction; } },
+      streamBufferSize: options.streamBufferSize,
     });
   };
   try { await launch(options.allowedUserId ?? OWNER.id); } catch (error) {
@@ -112,7 +122,7 @@ export async function startFixture(options: FixtureOptions = {}) {
   }
 
   const f = {
-    root, data, stub, logs, clock,
+    root, data, stub, logs, clock, model,
     get server() { return server; },
     get base() { return `http://127.0.0.1:${server.address.port}`; },
     get wsUrl() { return `ws://127.0.0.1:${server.address.port}/v1/ws`; },

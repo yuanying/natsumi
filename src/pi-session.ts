@@ -1,4 +1,4 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Type } from 'typebox';
 import { AgentSession, createAgentSession, DefaultResourceLoader, defineTool, ModelRuntime,
@@ -19,43 +19,101 @@ export const proposalTool = defineTool({
     details: { title: params.title, status: 'pending-approval' } }),
 });
 
+type CustomTools = NonNullable<Parameters<typeof createAgentSession>[0]>['customTools'];
+
+/** A saved session could not be restored. It is never replaced by a new session. */
+export class PiSessionRestoreError extends Error {
+  constructor(message: string) { super(message); this.name = 'PiSessionRestoreError'; }
+}
+
+export interface PiSessionOptions {
+  cwd: string;
+  agentDir: string;
+  sessionDir: string;
+  modelRuntime: ModelRuntime;
+  target: PiTarget;
+  systemPrompt: string;
+  /** A saved session file to restore. Without it the session is new and Pi writes it after the first reply. */
+  file?: string;
+  /** The session ID the caller recorded for `file`. */
+  expectedSessionId?: string;
+  /** The tool allowlist and its definitions. Without it Pi has no tools at all (ADR 0004). */
+  tools?: { names: string[]; definitions: CustomTools };
+}
+
+/**
+ * The header session ID of a saved session. Every non-empty line must be JSON: Pi skips malformed lines when it
+ * loads, which must not count as a successful restore (ADR 0001).
+ */
+export async function readSessionId(file: string): Promise<string> {
+  try {
+    const entries = (await readFile(file, 'utf8')).split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
+    const header = entries[0];
+    if (header.type !== 'session' || typeof header.id !== 'string') throw new Error();
+    return header.id;
+  } catch { throw new PiSessionRestoreError('Missing or invalid Pi session'); }
+}
+
 /** One Pi integration boundary. No backend registry or alternate adapter. */
-export async function createPiSession(root: string, modelRuntime: ModelRuntime, file?: string,
-  target: PiTarget = SUBSCRIPTION_TARGET): Promise<AgentSession> {
-  const cwd = join(root, 'workspace');
-  const agentDir = join(root, 'pi');
-  const sessionDir = join(root, 'sessions');
-  for (const path of [cwd, agentDir, sessionDir]) await mkdir(path, { recursive: true, mode: 0o700 });
+export async function openPiSession(options: PiSessionOptions): Promise<AgentSession> {
+  const { cwd, agentDir, sessionDir, modelRuntime, target, file } = options;
   let expectedId: string | undefined;
   if (file) {
     // SessionManager.open can create a new session for a nonexistent/invalid file.
     // Fail closed before calling it so a lost conversation is never silently replaced.
-    try {
-      const entries = (await readFile(file, 'utf8')).split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
-      const header = entries[0];
-      if (header.type !== 'session' || typeof header.id !== 'string') throw new Error();
-      expectedId = header.id;
-    } catch { throw new Error('Missing or invalid Pi session'); }
+    expectedId = await readSessionId(file);
+    if (options.expectedSessionId !== undefined && options.expectedSessionId !== expectedId) {
+      throw new PiSessionRestoreError('Pi session identity mismatch');
+    }
   }
   const model = modelRuntime.getModel(target.provider, target.model);
   if (!model) throw new Error('Pinned Pi model unavailable');
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
   const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-    systemPrompt: 'You are a synthetic protocol test. Use only the supplied messages. Do not access files or external tools.',
+    systemPrompt: options.systemPrompt,
   });
   await resourceLoader.reload();
   const { session, modelFallbackMessage } = await createAgentSession({ cwd, agentDir, modelRuntime, model,
     sessionManager: file ? SessionManager.open(file, sessionDir, cwd) : SessionManager.create(cwd, sessionDir),
-    settingsManager, resourceLoader, tools: ['calendar_propose'], customTools: [proposalTool], thinkingLevel: 'off',
+    settingsManager, resourceLoader, tools: options.tools?.names ?? [], customTools: options.tools?.definitions ?? [],
+    thinkingLevel: 'off',
   });
   if (expectedId && session.sessionId !== expectedId) {
-    session.dispose(); throw new Error('Pi session identity mismatch');
+    session.dispose(); throw new PiSessionRestoreError('Pi session identity mismatch');
   }
   if (modelFallbackMessage || session.model?.provider !== target.provider || session.model.id !== target.model) {
     session.dispose(); throw new Error('Pi model fallback refused');
   }
   return session;
+}
+
+/**
+ * A new session whose file exists from the start. Pi itself writes a session file only after the first assistant
+ * reply, so a stop before that would leave a recorded reference to a missing file. The header is written here and the
+ * session is then opened through the same checks as any restore.
+ */
+export async function createPersistedPiSession(options: Omit<PiSessionOptions, 'file' | 'expectedSessionId'>): Promise<AgentSession> {
+  if (!options.modelRuntime.getModel(options.target.provider, options.target.model)) throw new Error('Pinned Pi model unavailable');
+  const manager = SessionManager.create(options.cwd, options.sessionDir);
+  const file = manager.getSessionFile();
+  const header = manager.getHeader();
+  if (!file || !header) throw new Error('Pi session was not persisted');
+  await writeFile(file, `${JSON.stringify(header)}\n`, { flag: 'wx', mode: 0o600 });
+  return openPiSession({ ...options, file, expectedSessionId: header.id });
+}
+
+/** The isolated probe harness: a private root, a synthetic instruction and only the proposal fixture tool. */
+export async function createPiSession(root: string, modelRuntime: ModelRuntime, file?: string,
+  target: PiTarget = SUBSCRIPTION_TARGET): Promise<AgentSession> {
+  const cwd = join(root, 'workspace');
+  const agentDir = join(root, 'pi');
+  const sessionDir = join(root, 'sessions');
+  for (const path of [cwd, agentDir, sessionDir]) await mkdir(path, { recursive: true, mode: 0o700 });
+  return openPiSession({ cwd, agentDir, sessionDir, modelRuntime, target, file,
+    systemPrompt: 'You are a synthetic protocol test. Use only the supplied messages. Do not access files or external tools.',
+    tools: { names: ['calendar_propose'], definitions: [proposalTool] },
+  });
 }
 
 export class PiConversation {
