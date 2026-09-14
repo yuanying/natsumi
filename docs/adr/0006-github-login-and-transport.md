@@ -1,7 +1,7 @@
 # 0006. GitHub ログイン・セッション・HTTPS/WSS の待ち受け
 
 - Date: 2026-09-14
-- Status: Accepted
+- Status: Accepted（ACME による証明書の取得・更新と tcp 80 の例外を [0007](0007-acme-and-fixed-ipv6.md) で追加）
 
 ## Context
 

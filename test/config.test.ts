@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { ConfigError, envReference, loadConfig, parseConfig } from '../src/server/config.ts';
+import { ConfigError, envReference, LETS_ENCRYPT_PRODUCTION, LETS_ENCRYPT_STAGING, loadConfig, parseConfig } from '../src/server/config.ts';
 
 const pi = () => ({
   agentDirectory: '/srv/natsumi-pi/agent',
@@ -96,6 +96,49 @@ test('plaintext listening is refused unless the host is loopback', () => {
   rejects({ ...base(), listen: { host: '::', port: 8443, tls: true } }, 'listen.tls');
   rejects({ ...base(), listen: { ...listen(), tls: { certFile: tls().certFile } } }, 'listen.tls.keyFile', /required/);
   rejects({ ...base(), listen: { ...listen(), tls: { ...tls(), certFile: 'cert.pem' } } }, 'listen.tls.certFile');
+});
+
+const acmeListen = (acme: unknown = {}) => ({ host: '::', port: 443, tls: { acme } });
+
+test('ACME can be chosen instead of certificate files, defaulting to Let\'s Encrypt production on port 80', () => {
+  assert.deepEqual(parseConfig({ ...base(), listen: acmeListen() }).listen,
+    { host: '::', port: 443, tls: { acme: { directoryUrl: LETS_ENCRYPT_PRODUCTION, httpPort: 80 } } });
+  assert.equal(LETS_ENCRYPT_PRODUCTION, 'https://acme-v02.api.letsencrypt.org/directory');
+  const staging = { directoryUrl: LETS_ENCRYPT_STAGING, contactEmail: 'owner@example.test', httpPort: 8080 };
+  assert.deepEqual(parseConfig({ ...base(), listen: acmeListen(staging) }).listen.tls, { acme: staging });
+  // A local test CA over plain http is accepted only on loopback, like publicOrigin.
+  const local = { directoryUrl: 'http://127.0.0.1:14000/directory', httpPort: 0 };
+  assert.deepEqual(parseConfig({ ...base(), listen: acmeListen(local) }).listen.tls, { acme: local });
+});
+
+test('ACME and certificate files cannot be combined, and ACME settings are validated', () => {
+  rejects({ ...base(), listen: { ...listen(), tls: { ...tls(), acme: {} } } }, 'listen.tls', /either/);
+  rejects({ ...base(), listen: { ...listen(), tls: { certFile: tls().certFile, acme: {} } } }, 'listen.tls', /either/);
+  rejects({ ...base(), listen: acmeListen('yes') }, 'listen.tls.acme', /object/);
+  rejects({ ...base(), listen: acmeListen({ challenge: 'dns-01' }) }, 'listen.tls.acme.challenge', /unknown/);
+  for (const directoryUrl of ['not a url', 'ftp://acme.example.test/directory', 'http://acme.example.test/directory',
+    'https://user:pw@acme.example.test/directory', 'https://acme.example.test/directory#x', 42, '']) {
+    rejects({ ...base(), listen: acmeListen({ directoryUrl }) }, 'listen.tls.acme.directoryUrl');
+  }
+  for (const contactEmail of ['mailto:owner@example.test', 'not-an-email', '', 'owner@example.test, other@example.test']) {
+    rejects({ ...base(), listen: acmeListen({ contactEmail }) }, 'listen.tls.acme.contactEmail', /email/);
+  }
+  for (const httpPort of [-1, 65536, 1.5, '80']) rejects({ ...base(), listen: acmeListen({ httpPort }) }, 'listen.tls.acme.httpPort');
+  rejects({ ...base(), listen: acmeListen({ httpPort: 443 }) }, 'listen.tls.acme.httpPort', /listen\.port/);
+});
+
+test('ACME needs a DNS host name in publicOrigin', () => {
+  for (const host of ['192.0.2.10', '[2001:db8::10]', 'localhost', 'natsumi']) {
+    const origin = `https://${host}`;
+    rejects({ ...base(), publicOrigin: origin, listen: acmeListen(), github: { ...github(), callbackUrl: `${origin}/auth/github/callback` } },
+      'publicOrigin', /host name/);
+  }
+});
+
+test('the shipped ACME example config is valid', async () => {
+  const config = await loadConfig(new URL('../config.acme.example.json', import.meta.url).pathname);
+  assert.ok(config.listen.tls && 'acme' in config.listen.tls);
+  assert.equal(config.listen.port, 443);
 });
 
 test('the listen address is an IP literal or localhost and a valid port', () => {
