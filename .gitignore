@@ -5,6 +5,8 @@ dist/
 .env.*
 !.env.example
 config.local.json
+compose.override.yaml
+compose.*.local.yaml
 *.log
 *.sqlite*
 *.db*

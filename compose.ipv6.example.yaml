@@ -1,0 +1,61 @@
+# Fixed-IPv6 layout (ADR 0007): natsumi answers on a stable global IPv6 address of an external network whose prefix
+# comes from a router's advertisements, and obtains its certificate from Let's Encrypt.
+#
+#   docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
+#
+# Nothing here is a real value. Put the network name and token in an untracked .env, and the host name in the
+# natsumi config (see config.acme.example.json and the README).
+services:
+  # Owns the network namespace. Only this container has NET_ADMIN, to set the interface token.
+  natsumi-net:
+    build:
+      context: .
+      target: ipv6-netns
+    image: natsumi-ipv6-netns:local
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NATSUMI_IPV6_TOKEN: ${NATSUMI_IPV6_TOKEN:?set NATSUMI_IPV6_TOKEN to the interface identifier, such as ::10}
+    # Per-namespace: lets natsumi, still unprivileged and without capabilities, listen on 80 and 443.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 80
+    networks:
+      public-ipv6:
+        driver_opts:
+          com.docker.network.endpoint.sysctls: net.ipv6.conf.IFNAME.disable_ipv6=0
+    healthcheck:
+      test: ["CMD", "natsumi-ipv6-netns", "check"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      start_interval: 2s
+      retries: 3
+
+  natsumi:
+    # Shares the namespace above, so the address survives natsumi restarts.
+    network_mode: service:natsumi-net
+    ports: !reset []
+    depends_on:
+      natsumi-net:
+        condition: service_healthy
+        restart: true
+    # The certificate comes from ACME and is kept in the data volume, so only the GitHub secret is mounted.
+    secrets: !override
+      - natsumi_github_client_secret
+    volumes:
+      - type: bind
+        source: ${NATSUMI_CONFIG:-./config.acme.example.json}
+        target: /etc/natsumi/config.json
+        read_only: true
+
+networks:
+  public-ipv6:
+    external: true
+    name: ${NATSUMI_IPV6_NETWORK:?set NATSUMI_IPV6_NETWORK to the external network that receives router advertisements}
