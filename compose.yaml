@@ -1,0 +1,36 @@
+name: natsumi
+
+services:
+  natsumi:
+    build: .
+    image: natsumi:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # No ports are published: the server opens no network listener until client authentication exists.
+    # Secrets are never written in the config. Pass them as environment variables or Compose `secrets:`
+    # when the settings that use them are added.
+    volumes:
+      - natsumi-data:/data
+      - natsumi-pi:/var/lib/natsumi-pi
+      - type: bind
+        source: ${NATSUMI_CONFIG:-./config.example.json}
+        target: /etc/natsumi/config.json
+        read_only: true
+    healthcheck:
+      test: ["CMD", "node", "/app/dist/src/server/main.js", "health", "--data-dir", "/data"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  natsumi-data:
+  natsumi-pi:
