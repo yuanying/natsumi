@@ -14,9 +14,16 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    # No ports are published: the server opens no network listener until client authentication exists.
-    # Secrets are never written in the config. Pass them as environment variables or Compose `secrets:`
-    # when the settings that use them are added.
+    # HTTPS/WSS with TLS terminated by the server (ADR 0006). Published on the host's IPv4 and IPv6 addresses;
+    # IPv6 publishing needs IPv6 enabled in the Docker daemon.
+    ports:
+      - "${NATSUMI_PORT:-8443}:8443"
+    # Secrets are never written in the config. They are mounted under /run/secrets and referenced by ...File settings.
+    # The files keep their host permissions: make them readable by the container's node user (UID 1000) only.
+    secrets:
+      - natsumi_tls_cert
+      - natsumi_tls_key
+      - natsumi_github_client_secret
     volumes:
       - natsumi-data:/data
       - natsumi-pi:/var/lib/natsumi-pi
@@ -34,3 +41,11 @@ services:
 volumes:
   natsumi-data:
   natsumi-pi:
+
+secrets:
+  natsumi_tls_cert:
+    file: ${NATSUMI_TLS_CERT:-./secrets/tls-cert.pem}
+  natsumi_tls_key:
+    file: ${NATSUMI_TLS_KEY:-./secrets/tls-key.pem}
+  natsumi_github_client_secret:
+    file: ${NATSUMI_GITHUB_CLIENT_SECRET_FILE:-./secrets/github-client-secret}

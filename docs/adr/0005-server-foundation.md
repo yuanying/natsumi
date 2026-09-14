@@ -1,7 +1,7 @@
 # 0005. サーバー基盤の設定・ロック・状態 DB・コンテナ
 
 - Date: 2026-09-14
-- Status: Accepted
+- Status: Accepted（listener とポートの公開は [0006](0006-github-login-and-transport.md) で更新）
 
 ## Context
 

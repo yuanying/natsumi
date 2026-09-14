@@ -35,4 +35,20 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX conversation_operations_by_conversation ON conversation_operations (conversation_id, created_at);
     `,
   },
+  {
+    version: 2,
+    name: 'client-sessions',
+    sql: `
+      -- Short-lived client sessions issued after GitHub login. Only the SHA-256 of the bearer token is kept, never the token.
+      CREATE TABLE client_sessions (
+        session_id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        github_user_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        revoked_at TEXT
+      ) STRICT;
+      CREATE INDEX client_sessions_by_expiry ON client_sessions (expires_at);
+    `,
+  },
 ];

@@ -10,6 +10,44 @@ Calendar の予定表現では UTC 時刻に加えて元の IANA timezone を保
 HTTPS の GitHub OAuth callback 後、短期セッションで WSS に接続する。
 セッション失効・本人以外のアカウントは接続と全コマンドを拒否する。
 Mac の `deviceId` はサーバー登録の ID であり、認証を代替しない。
+方式の理由は [ADR 0006](adr/0006-github-login-and-transport.md) にある。
+
+### ログインとセッション
+
+Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
+
+1. Mac が PKCE の verifier（43〜128 文字）と、アプリの state を生成する。
+2. `GET /auth/github/start?code_challenge=<S256>&code_challenge_method=S256&state=<アプリの state>` を開く。
+   サーバーは GitHub の認可画面へ redirect する。
+3. 認可が済むと、サーバーは `natsumi://oauth/callback?code=<login code>&state=<アプリの state>` に redirect する。
+   失敗の場合は `code` の代わりに `error` が付く。Mac は state が自分の生成したものと一致することを確かめる。
+4. `POST /auth/session` に JSON で `code` と `codeVerifier` を送る。成功すると `token` と `expiresAt` が返る。
+   login code は 60 秒で期限が切れ、1 回しか使えない（verifier が誤っていた場合も使えなくなる）。
+5. 以後の HTTPS 要求と WSS の upgrade には `Authorization: Bearer <token>` を付ける。
+   トークンは Keychain に保存する。期限（12 時間）が切れたら 1 からやり直す。
+6. `POST /auth/logout`（Bearer 付き）でセッションを失効させる。成功すると 204 が返り、そのセッションの WSS は閉じられる。
+
+| 経路 | 失敗時 | エラーコード |
+| --- | --- | --- |
+| `/auth/github/start` | 400 | `invalid-request`（challenge・method・state の不備）、429 `too-many-logins` |
+| `natsumi://oauth/callback` の `error` | — | `login-expired`、`github-denied`、`github-exchange-failed`、`github-unavailable`、`account-not-allowed`、`invalid-request` |
+| `/auth/github/callback` | 400 | `invalid-state`（state がない・一致しない・使用済み。アプリには戻らない） |
+| `/auth/session` | 400 | `invalid-request`（形式の不備）、`invalid-grant`（未知・使用済み・期限切れ・verifier の不一致） |
+| `/auth/logout` | 401 | `unauthorized` |
+
+エラー応答は `{"error": "<コード>"}` だけで、上流の本文や秘密を含まない。
+
+### WSS への接続
+
+`wss://<publicOrigin のホスト>/v1/ws` に Bearer 付きで upgrade する。
+セッションがない・失効・期限切れ・本人以外なら 401、Origin ヘッダーが `publicOrigin` と一致しなければ 403 を返し、接続を確立しない。
+ネイティブクライアントは Origin を省略してよい。
+
+クライアントのメッセージは 1 件ごとに `v` を検証する。`v` が 1 でなければ `command.rejected`（`unsupported-version`）を送り、
+close code 1002 で閉じる。JSON のオブジェクトでなければ `invalid-envelope` を送り、1007 で閉じる。1 メッセージは 64 KiB までとする。
+未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる。
+端末登録を実装するまでは、接続ごとに新しい `streamId` を発行する。下表の command は実装されるまで
+`command.rejected`（`not-implemented`）を返す。
 
 ```json
 {"v":1,"requestId":"request-example","deviceId":"device-example","type":"conversation.send","payload":{"text":"架空のメッセージ"}}
