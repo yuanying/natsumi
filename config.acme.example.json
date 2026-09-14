@@ -1,0 +1,27 @@
+{
+  "pi": {
+    "agentDirectory": "/var/lib/natsumi-pi/agent",
+    "sessionDirectory": "/var/lib/natsumi-pi/sessions",
+    "authPath": "/var/lib/natsumi-pi/agent/auth.json",
+    "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+    "voiceEnabled": false
+  },
+  "publicOrigin": "https://natsumi.example.net",
+  "listen": {
+    "host": "::",
+    "port": 443,
+    "tls": {
+      "acme": {
+        "directoryUrl": "https://acme-v02.api.letsencrypt.org/directory",
+        "contactEmail": "owner@example.net",
+        "httpPort": 80
+      }
+    }
+  },
+  "github": {
+    "clientId": "Ov23liExampleClientId",
+    "clientSecretFile": "/run/secrets/natsumi_github_client_secret",
+    "callbackUrl": "https://natsumi.example.net/auth/github/callback",
+    "allowedUserId": 12345678
+  }
+}

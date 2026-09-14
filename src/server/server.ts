@@ -1,5 +1,7 @@
 import { join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { CertificateManager, CHECK_INTERVAL_MS, type Certificate } from './certificates.ts';
+import { openChallengeListener, type ChallengeListener } from './challenge.ts';
 import { loadConfig, type ServerConfig } from './config.ts';
 import { ConnectionHub } from './connections.ts';
 import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from './data-directory.ts';
@@ -14,6 +16,8 @@ import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
 
 const SESSION_SWEEP_MS = 30_000;
+/** The shortest wait between background certificate checks, so a schedule surprise cannot spin. */
+const MIN_CERTIFICATE_CHECK_MS = 60_000;
 
 export interface StartOptions {
   config: string;
@@ -27,34 +31,62 @@ export interface StartOptions {
   clock?: () => number;
   /** Receives fixed event lines only: never secrets, tokens or upstream response bodies. */
   log?: (line: string) => void;
+  /** ACME polling interval. Tests shorten it. */
+  acme?: { pollIntervalMs?: number };
 }
+
+type Address = { host: string; port: number };
 
 export interface RunningServer {
   dataDirectory: string;
   config: ServerConfig;
   schemaVersion: number;
-  address: { host: string; port: number };
+  /** The HTTPS (or loopback HTTP) listener; undefined while ACME is still obtaining the first certificate. */
+  readonly address: Address | undefined;
+  /** Resolves once that listener is open. */
+  listening: Promise<Address>;
+  /** The plaintext ACME challenge listener; undefined without ACME. */
+  readonly challengeAddress: Address | undefined;
   /** Closes connections whose session has expired (also runs periodically). */
   expireSessions(): void;
+  /** Obtains or renews the ACME certificate when due and serves it (also runs periodically). Nothing to do without ACME. */
+  checkCertificate(): Promise<void>;
   stop(): Promise<void>;
 }
 
 /**
  * Config and secrets → data directory → lock → migration → Pi state → authenticated listener.
- * No listener opens without GitHub authentication in front of it.
+ * No listener opens without GitHub authentication in front of it; the ACME challenge listener has no route to it.
  */
 export async function startServer(options: StartOptions): Promise<RunningServer> {
   const config = await loadConfig(resolve(options.cwd, options.config));
   const clientSecret = await readSecret(config.github.clientSecret, 'github.clientSecret', options.env);
-  const tlsFiles = config.listen.tls ? await readTlsFiles(config.listen.tls, 'listen.tls') : undefined;
+  const tls = config.listen.tls;
+  const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
   const now = options.clock ?? Date.now;
   const log = options.log ?? (() => {});
   const dataDirectory = await resolveDataDirectory(options.dataDir, options.cwd);
   await initializeDataDirectory(dataDirectory);
   const lock = acquireProcessLock(dataDirectory);
   let db: DatabaseSync | undefined;
+  let hub: ConnectionHub | undefined;
   let listener: Listener | undefined;
+  let challenge: ChallengeListener | undefined;
+  let certificates: CertificateManager | undefined;
+  let checking: Promise<void> | undefined;
+  let renewal: NodeJS.Timeout | undefined;
+  let closed = false;
   const timers: NodeJS.Timeout[] = [];
+  const closeAll = async () => {
+    closed = true;
+    timers.forEach(clearInterval);
+    clearTimeout(renewal);
+    certificates?.close();
+    await checking?.catch(() => {});
+    try {
+      if (listener) await listener.close(); else await hub?.close();
+    } finally { await challenge?.close(); }
+  };
   try {
     db = openStateDatabase(join(dataDirectory, STATE_DIRECTORY, 'state.sqlite'));
     const { version } = migrate(db, MIGRATIONS);
@@ -62,7 +94,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
 
     const sessions = new SessionStore(db, now);
     const allowedUserId = config.github.allowedUserId;
-    const hub = new ConnectionHub({
+    const connections = hub = new ConnectionHub({
       publicOrigin: config.publicOrigin, now,
       authenticate: request => {
         const token = bearerToken(request);
@@ -70,35 +102,90 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       },
     });
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
-    listener = await openListener({ listen: config.listen, tlsFiles, login, sessions, hub, allowedUserId, log });
+    const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
+      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log });
 
     const started = new Date().toISOString();
     const status: ServerStatus = { state: 'running', pid: process.pid, startedAt: started, updatedAt: started, schemaVersion: version };
+    let opened!: (address: Address) => void;
+    const listening = new Promise<Address>(resolve => { opened = resolve; });
+
+    // A certificate goes into the running listener, or opens HTTPS if this is the first one.
+    let served: Certificate | undefined;
+    const serve = async (certificate: Certificate) => {
+      const files = { cert: certificate.cert, key: certificate.key };
+      if (listener) {
+        listener.updateCertificate(files);
+      } else {
+        listener = await open(files);
+        status.state = 'running';
+        await writeStatus(dataDirectory, { ...status, updatedAt: new Date().toISOString() }).catch(() => {});
+        log('listen: HTTPS is open');
+        opened(listener.address);
+      }
+      served = certificate;
+    };
+
+    if (tls && 'acme' in tls) {
+      certificates = await CertificateManager.open({
+        stateDirectory: join(dataDirectory, STATE_DIRECTORY), hostname: new URL(config.publicOrigin).hostname,
+        acme: tls.acme, now, log, pollIntervalMs: options.acme?.pollIntervalMs,
+      });
+      challenge = await openChallengeListener({
+        host: config.listen.host, port: tls.acme.httpPort, publicOrigin: config.publicOrigin, challenges: certificates.challenges,
+      });
+      // Without a certificate HTTPS stays closed: no self-signed stand-in (ADR 0007).
+      if (certificates.current) await serve(certificates.current); else status.state = 'waiting-for-certificate';
+    } else {
+      listener = await open(tlsFiles);
+      opened(listener.address);
+    }
+
+    const manager = certificates;
+    const checkCertificate = (): Promise<void> => {
+      if (!manager || closed) return Promise.resolve();
+      checking ??= (async () => {
+        await manager.check();
+        if (manager.current && manager.current !== served && !closed) await serve(manager.current);
+      })().finally(() => { checking = undefined; });
+      return checking;
+    };
+    const report = (error: unknown) => {
+      log(`acme: the certificate could not be served (${(error as NodeJS.ErrnoException).code ?? (error as Error).name ?? 'error'})`);
+    };
+    const scheduleCheck = () => {
+      if (!manager || closed) return;
+      const wait = Math.min(Math.max(manager.nextCheckAt() - now(), MIN_CERTIFICATE_CHECK_MS), CHECK_INTERVAL_MS);
+      renewal = setTimeout(() => { void checkCertificate().catch(report).finally(scheduleCheck); }, wait);
+    };
+
     await writeStatus(dataDirectory, status);
     timers.push(setInterval(() => {
       void writeStatus(dataDirectory, { ...status, updatedAt: new Date().toISOString() }).catch(() => {});
     }, HEARTBEAT_MS));
-    timers.push(setInterval(() => hub.expireSessions(), SESSION_SWEEP_MS));
+    timers.push(setInterval(() => connections.expireSessions(), SESSION_SWEEP_MS));
+    if (manager) void checkCertificate().catch(report).finally(scheduleCheck);
 
     let stopping: Promise<void> | undefined;
-    const opened = { db, listener };
+    const database = db;
     return {
-      dataDirectory, config, schemaVersion: version, address: listener.address,
-      expireSessions: () => hub.expireSessions(),
+      dataDirectory, config, schemaVersion: version, listening,
+      get address() { return listener?.address; },
+      get challengeAddress() { return challenge?.address; },
+      expireSessions: () => connections.expireSessions(),
+      checkCertificate,
       stop() {
         stopping ??= (async () => {
-          timers.forEach(clearInterval);
           try {
-            await opened.listener.close();
+            await closeAll();
             await writeStatus(dataDirectory, { ...status, state: 'stopped', updatedAt: new Date().toISOString() });
-          } finally { shutdown(opened.db, lock); }
+          } finally { shutdown(database, lock); }
         })();
         return stopping;
       },
     };
   } catch (error) {
-    timers.forEach(clearInterval);
-    try { await listener?.close(); } finally { shutdown(db, lock); }
+    try { await closeAll(); } finally { shutdown(db, lock); }
     throw error;
   }
 }

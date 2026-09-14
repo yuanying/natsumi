@@ -19,9 +19,15 @@ try {
     });
     // Pi reads its state area from here; the personal default under the home directory is never used.
     process.env.PI_CODING_AGENT_DIR = server.config.pi.agentDirectory;
-    const { host, port } = server.address;
     const scheme = server.config.listen.tls ? 'https' : 'http (loopback only)';
-    process.stdout.write(`natsumi: serving data directory (schema ${server.schemaVersion}); listening on ${host} port ${port} over ${scheme}\n`);
+    if (server.challengeAddress) {
+      const { host, port } = server.challengeAddress;
+      process.stdout.write(`natsumi: answering ACME challenges on ${host} port ${port} over http (challenges and redirects only)\n`);
+    }
+    if (!server.address) process.stdout.write('natsumi: waiting for the ACME certificate before listening\n');
+    void server.listening.then(({ host, port }) => {
+      process.stdout.write(`natsumi: serving data directory (schema ${server.schemaVersion}); listening on ${host} port ${port} over ${scheme}\n`);
+    });
     let signalled = false;
     const onSignal = () => {
       if (signalled) process.exit(1);

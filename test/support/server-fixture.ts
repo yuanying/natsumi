@@ -114,8 +114,8 @@ export async function startFixture(options: FixtureOptions = {}) {
   const f = {
     root, data, stub, logs, clock,
     get server() { return server; },
-    get base() { return `http://127.0.0.1:${server.address.port}`; },
-    get wsUrl() { return `ws://127.0.0.1:${server.address.port}/v1/ws`; },
+    get base() { return `http://127.0.0.1:${server.address!.port}`; },
+    get wsUrl() { return `ws://127.0.0.1:${server.address!.port}/v1/ws`; },
     /** Every response body and Location seen, for leak checks. */
     seen: [] as string[],
     async restart(allowedUserId: number) { await server.stop(); await launch(allowedUserId); },

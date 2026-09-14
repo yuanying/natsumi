@@ -55,7 +55,7 @@ test('startup initializes, locks, migrates, prepares Pi state and listens; stop 
     assert.equal(server.dataDirectory, f.data);
     assert.ok(server.schemaVersion >= 2);
     assert.equal((await readStatus(f.data))?.state, 'running');
-    const url = `http://127.0.0.1:${server.address.port}/nothing-here`;
+    const url = `http://127.0.0.1:${server.address!.port}/nothing-here`;
     assert.equal((await fetch(url)).status, 404);
     await assert.rejects(startServer({ config: f.config, dataDir: f.data, cwd: '/', home: f.home, env: f.env }), /already running/);
     await server.stop();
@@ -73,7 +73,7 @@ test('a listener that cannot start releases the lock', async () => {
     const first = await startServer({ config: f.config, dataDir: f.data, cwd: '/', home: f.home, env: f.env });
     const other = join(f.root, 'other');
     await mkdir(other);
-    await writeFile(f.config, JSON.stringify(serverConfig(f.root, { listen: { host: '127.0.0.1', port: first.address.port, tls: false } })));
+    await writeFile(f.config, JSON.stringify(serverConfig(f.root, { listen: { host: '127.0.0.1', port: first.address!.port, tls: false } })));
     await assert.rejects(startServer({ config: f.config, dataDir: other, cwd: '/', home: f.home, env: f.env }), /listen/);
     await first.stop();
     const again = await startServer({ config: f.config, dataDir: other, cwd: '/', home: f.home, env: f.env });
@@ -144,14 +144,14 @@ test('with TLS configured, HTTPS and WSS are served on IPv6', { skip: !hasOpenss
     const ca = await readFile(certFile);
     try {
       const res = await new Promise<import('node:http').IncomingMessage>((resolve, reject) => {
-        get(`https://[::1]:${server.address.port}/nothing-here`, { ca }, resolve).on('error', reject);
+        get(`https://[::1]:${server.address!.port}/nothing-here`, { ca }, resolve).on('error', reject);
       });
       res.resume();
       assert.equal(res.statusCode, 404);
       assert.match(String(res.headers['strict-transport-security']), /max-age=/);
 
       const status = await new Promise<number>((resolve, reject) => {
-        const ws = new WebSocket(`wss://[::1]:${server.address.port}/v1/ws`, { ca });
+        const ws = new WebSocket(`wss://[::1]:${server.address!.port}/v1/ws`, { ca });
         ws.once('unexpected-response', (_req, r) => { resolve(r.statusCode ?? 0); r.resume(); ws.terminate(); });
         ws.once('open', () => { ws.close(); reject(new Error('connected without a session')); });
         ws.once('error', reject);

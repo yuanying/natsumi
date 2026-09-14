@@ -1,5 +1,5 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { createServer as createHttpsServer } from 'node:https';
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
@@ -20,6 +20,8 @@ export interface ListenerOptions {
 
 export interface Listener {
   address: { host: string; port: number };
+  /** Serves a new certificate to new TLS connections without a restart; open connections keep theirs. */
+  updateCertificate(files: { cert: Buffer; key: Buffer }): void;
   close(): Promise<void>;
 }
 
@@ -37,9 +39,10 @@ export async function openListener(options: ListenerOptions): Promise<Listener> 
     });
   };
   let server: Server;
+  let secure: HttpsServer | undefined;
   if (options.tlsFiles) {
     try {
-      server = createHttpsServer({ ...options.tlsFiles, minVersion: 'TLSv1.2' }, handle);
+      server = secure = createHttpsServer({ ...options.tlsFiles, minVersion: 'TLSv1.2' }, handle);
     } catch {
       throw new ConfigError('listen.tls', 'the certificate and key cannot be used');
     }
@@ -57,6 +60,14 @@ export async function openListener(options: ListenerOptions): Promise<Listener> 
   const { address, port } = server.address() as AddressInfo;
   return {
     address: { host: address, port },
+    updateCertificate(files) {
+      if (!secure) throw new Error('listen: the listener does not use TLS');
+      try {
+        secure.setSecureContext({ ...files, minVersion: 'TLSv1.2' });
+      } catch {
+        throw new ConfigError('listen.tls', 'the certificate and key cannot be used');
+      }
+    },
     async close() {
       await options.hub.close();
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });

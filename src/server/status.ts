@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { STATE_DIRECTORY } from './data-directory.ts';
 
 export interface ServerStatus {
-  state: 'running' | 'stopped';
+  /** `waiting-for-certificate`: ACME has not yet obtained the first certificate, so HTTPS is not open. */
+  state: 'running' | 'waiting-for-certificate' | 'stopped';
   pid: number;
   startedAt: string;
   updatedAt: string;

@@ -23,11 +23,22 @@ export interface PiConfig {
 
 export interface TlsConfig { certFile: string; keyFile: string }
 
+export const LETS_ENCRYPT_PRODUCTION = 'https://acme-v02.api.letsencrypt.org/directory';
+export const LETS_ENCRYPT_STAGING = 'https://acme-staging-v02.api.letsencrypt.org/directory';
+
+/** Certificates obtained and renewed by the server itself over ACME HTTP-01 for the publicOrigin host (ADR 0007). */
+export interface AcmeConfig {
+  directoryUrl: string;
+  contactEmail?: string;
+  /** The plaintext port answering HTTP-01 challenges. CAs validate on port 80. */
+  httpPort: number;
+}
+
 export interface ListenConfig {
   host: string;
   port: number;
   /** `false` (plaintext) is accepted only on a loopback host, for a reverse proxy on the same host (ADR 0006). */
-  tls: TlsConfig | false;
+  tls: TlsConfig | { acme: AcmeConfig } | false;
 }
 
 /** A secret named by environment variable or read from a secret mount; never the value itself. */
@@ -92,6 +103,12 @@ export function parseConfig(raw: unknown): ServerConfig {
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
   }
+  if (config.listen.tls && 'acme' in config.listen.tls) {
+    const host = new URL(config.publicOrigin).hostname.replace(/^\[(.*)\]$/, '$1');
+    if (isIP(host) !== 0 || host === 'localhost' || !host.includes('.')) {
+      throw new ConfigError('publicOrigin', 'ACME needs a DNS host name, not an IP address or a single label');
+    }
+  }
   return config;
 }
 
@@ -142,9 +159,13 @@ function parseListen(value: unknown, path: string): ListenConfig {
     return { host, port, tls: false };
   }
   if (typeof tls !== 'object' || tls === null || Array.isArray(tls)) {
-    throw new ConfigError(tlsPath, 'must be { certFile, keyFile }, or false on a loopback host');
+    throw new ConfigError(tlsPath, 'must be { certFile, keyFile }, { acme }, or false on a loopback host');
   }
   const files = tls as Record<string, unknown>;
+  if ('acme' in files) {
+    if (Object.keys(files).length !== 1) throw new ConfigError(tlsPath, 'set either certFile and keyFile, or acme');
+    return { host, port, tls: { acme: parseAcme(files.acme, `${tlsPath}.acme`, port) } };
+  }
   onlyKeys(files, tlsPath, ['certFile', 'keyFile']);
   return {
     host, port,
@@ -153,6 +174,33 @@ function parseListen(value: unknown, path: string): ListenConfig {
       keyFile: absolutePath(required(files, 'keyFile', tlsPath), `${tlsPath}.keyFile`),
     },
   };
+}
+
+const EMAIL = /^[^\s@:,;<>()[\]"\\]+@[^\s@:,;<>()[\]"\\]+\.[^\s@:,;<>()[\]"\\]+$/;
+
+function parseAcme(value: unknown, path: string, listenPort: number): AcmeConfig {
+  const acme = object(value, path);
+  onlyKeys(acme, path, ['directoryUrl', 'contactEmail', 'httpPort']);
+  let directoryUrl = LETS_ENCRYPT_PRODUCTION;
+  if (acme.directoryUrl !== undefined) {
+    const urlPath = `${path}.directoryUrl`;
+    const url = parseUrl(acme.directoryUrl, urlPath);
+    if (url.username || url.password || url.hash) throw new ConfigError(urlPath, 'must not contain credentials or a fragment');
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+      throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
+    }
+    directoryUrl = url.href;
+  }
+  const email = acme.contactEmail;
+  if (email !== undefined && (typeof email !== 'string' || !EMAIL.test(email))) {
+    throw new ConfigError(`${path}.contactEmail`, 'must be a single email address without mailto:');
+  }
+  const httpPort = acme.httpPort ?? 80;
+  if (typeof httpPort !== 'number' || !Number.isInteger(httpPort) || httpPort < 0 || httpPort > 65535) {
+    throw new ConfigError(`${path}.httpPort`, 'must be an integer from 0 to 65535');
+  }
+  if (httpPort !== 0 && httpPort === listenPort) throw new ConfigError(`${path}.httpPort`, 'must differ from listen.port');
+  return { directoryUrl, ...(email === undefined ? {} : { contactEmail: email }), httpPort };
 }
 
 function parseGitHub(value: unknown, path: string): GitHubConfig {
