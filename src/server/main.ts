@@ -13,10 +13,15 @@ try {
     process.stdout.write(`${result.reason}\n`);
     process.exitCode = result.healthy ? 0 : 1;
   } else {
-    const server = await startServer({ config: cli.config, dataDir: cli.dataDir, cwd: process.cwd(), home: homedir() });
+    const server = await startServer({
+      config: cli.config, dataDir: cli.dataDir, cwd: process.cwd(), home: homedir(), env: process.env,
+      log: line => { process.stderr.write(`natsumi: ${line}\n`); },
+    });
     // Pi reads its state area from here; the personal default under the home directory is never used.
     process.env.PI_CODING_AGENT_DIR = server.config.pi.agentDirectory;
-    process.stdout.write(`natsumi: serving data directory (schema ${server.schemaVersion}); no network listener\n`);
+    const { host, port } = server.address;
+    const scheme = server.config.listen.tls ? 'https' : 'http (loopback only)';
+    process.stdout.write(`natsumi: serving data directory (schema ${server.schemaVersion}); listening on ${host} port ${port} over ${scheme}\n`);
     let signalled = false;
     const onSignal = () => {
       if (signalled) process.exit(1);

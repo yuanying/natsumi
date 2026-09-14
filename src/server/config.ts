@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
 
 /** A startup-stopping config problem. `path` names the setting (for example `pi.authPath`); values are never echoed. */
@@ -20,9 +21,35 @@ export interface PiConfig {
   voiceEnabled: false;
 }
 
+export interface TlsConfig { certFile: string; keyFile: string }
+
+export interface ListenConfig {
+  host: string;
+  port: number;
+  /** `false` (plaintext) is accepted only on a loopback host, for a reverse proxy on the same host (ADR 0006). */
+  tls: TlsConfig | false;
+}
+
+/** A secret named by environment variable or read from a secret mount; never the value itself. */
+export type SecretReference = { env: string } | { file: string };
+
+export interface GitHubConfig {
+  clientId: string;
+  clientSecret: SecretReference;
+  callbackUrl: string;
+  /** The one GitHub account allowed in, by its numeric user ID. Login names can change hands (ADR 0002). */
+  allowedUserId: number;
+}
+
 export interface ServerConfig {
   pi: PiConfig;
+  /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
+  publicOrigin: string;
+  listen: ListenConfig;
+  github: GitHubConfig;
 }
+
+export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
 
 type Section<T> = (value: unknown, path: string) => T;
 
@@ -32,6 +59,9 @@ type Section<T> = (value: unknown, path: string) => T;
  */
 const SECTIONS = {
   pi: parsePi,
+  publicOrigin: parsePublicOrigin,
+  listen: parseListen,
+  github: parseGitHub,
 } satisfies { [K in keyof ServerConfig]: Section<ServerConfig[K]> };
 
 const MOVED: Record<string, string> = {
@@ -53,7 +83,16 @@ export function parseConfig(raw: unknown): ServerConfig {
     if (MOVED[key]) throw new ConfigError(key, MOVED[key]);
     if (!(key in SECTIONS)) throw new ConfigError(key, 'unknown setting');
   }
-  return { pi: SECTIONS.pi(required(root, 'pi', ''), 'pi') };
+  const config: ServerConfig = {
+    pi: SECTIONS.pi(required(root, 'pi', ''), 'pi'),
+    publicOrigin: SECTIONS.publicOrigin(required(root, 'publicOrigin', ''), 'publicOrigin'),
+    listen: SECTIONS.listen(required(root, 'listen', ''), 'listen'),
+    github: SECTIONS.github(required(root, 'github', ''), 'github'),
+  };
+  if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
+    throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
+  }
+  return config;
 }
 
 function parsePi(value: unknown, path: string): PiConfig {
@@ -74,6 +113,80 @@ function parsePi(value: unknown, path: string): PiConfig {
     },
     voiceEnabled: false,
   };
+}
+
+function parsePublicOrigin(value: unknown, path: string): string {
+  const url = parseUrl(value, path);
+  if (url.pathname !== '/' || url.search || url.hash || url.username || url.password) {
+    throw new ConfigError(path, 'must be an origin without a path, query or credentials');
+  }
+  if (url.protocol === 'https:') return url.origin;
+  if (url.protocol === 'http:' && isLoopbackHost(url.hostname)) return url.origin;
+  throw new ConfigError(path, 'must use https (http is accepted only for a loopback host)');
+}
+
+function parseListen(value: unknown, path: string): ListenConfig {
+  const listen = object(value, path);
+  onlyKeys(listen, path, ['host', 'port', 'tls']);
+  const host = nonEmptyString(required(listen, 'host', path), `${path}.host`);
+  if (host !== 'localhost' && isIP(host) === 0) throw new ConfigError(`${path}.host`, 'must be an IP address or localhost');
+  const port = required(listen, 'port', path);
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new ConfigError(`${path}.port`, 'must be an integer from 0 to 65535');
+  }
+  const tlsPath = `${path}.tls`;
+  const tls = required(listen, 'tls', path);
+  if (tls === false) {
+    // Plaintext is never exposed beyond this host: the only exception is loopback behind a local TLS proxy.
+    if (!isLoopbackHost(host)) throw new ConfigError(tlsPath, 'plaintext is accepted only on a loopback host; set certFile and keyFile');
+    return { host, port, tls: false };
+  }
+  if (typeof tls !== 'object' || tls === null || Array.isArray(tls)) {
+    throw new ConfigError(tlsPath, 'must be { certFile, keyFile }, or false on a loopback host');
+  }
+  const files = tls as Record<string, unknown>;
+  onlyKeys(files, tlsPath, ['certFile', 'keyFile']);
+  return {
+    host, port,
+    tls: {
+      certFile: absolutePath(required(files, 'certFile', tlsPath), `${tlsPath}.certFile`),
+      keyFile: absolutePath(required(files, 'keyFile', tlsPath), `${tlsPath}.keyFile`),
+    },
+  };
+}
+
+function parseGitHub(value: unknown, path: string): GitHubConfig {
+  const github = object(value, path);
+  onlyKeys(github, path, ['clientId', 'clientSecretEnv', 'clientSecretFile', 'callbackUrl', 'allowedUserId']);
+  let clientSecret: SecretReference;
+  if (github.clientSecretEnv !== undefined && github.clientSecretFile !== undefined) {
+    throw new ConfigError(`${path}.clientSecretFile`, 'set only one of clientSecretEnv and clientSecretFile');
+  } else if (github.clientSecretEnv !== undefined) {
+    clientSecret = { env: envReference(github.clientSecretEnv, `${path}.clientSecretEnv`) };
+  } else if (github.clientSecretFile !== undefined) {
+    clientSecret = { file: absolutePath(github.clientSecretFile, `${path}.clientSecretFile`) };
+  } else {
+    throw new ConfigError(`${path}.clientSecretEnv`, 'is required (or clientSecretFile)');
+  }
+  const callbackPath = `${path}.callbackUrl`;
+  const callback = parseUrl(required(github, 'callbackUrl', path), callbackPath);
+  if (callback.pathname !== GITHUB_CALLBACK_PATH || callback.search || callback.hash || callback.username || callback.password) {
+    throw new ConfigError(callbackPath, `must be publicOrigin followed by ${GITHUB_CALLBACK_PATH}`);
+  }
+  const id = required(github, 'allowedUserId', path);
+  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) {
+    throw new ConfigError(`${path}.allowedUserId`, 'must be a numeric GitHub user ID, not a login name');
+  }
+  return {
+    clientId: nonEmptyString(required(github, 'clientId', path), `${path}.clientId`),
+    clientSecret, callbackUrl: callback.href, allowedUserId: id,
+  };
+}
+
+/** 127.0.0.0/8, ::1 and localhost. Accepts a URL hostname, where IPv6 is bracketed. */
+export function isLoopbackHost(host: string): boolean {
+  const bare = host.replace(/^\[(.*)\]$/, '$1');
+  return bare === 'localhost' || bare === '::1' || (isIP(bare) === 4 && bare.startsWith('127.'));
 }
 
 // Helpers for section parsers.
@@ -101,6 +214,11 @@ export function absolutePath(value: unknown, path: string): string {
   const text = nonEmptyString(value, path);
   if (!isAbsolute(text)) throw new ConfigError(path, 'must be an absolute path');
   return text;
+}
+
+function parseUrl(value: unknown, path: string): URL {
+  const text = nonEmptyString(value, path);
+  try { return new URL(text); } catch { throw new ConfigError(path, 'must be a URL'); }
 }
 
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;

@@ -5,5 +5,20 @@
     "authPath": "/var/lib/natsumi-pi/agent/auth.json",
     "model": { "provider": "openai-codex", "id": "gpt-5.5" },
     "voiceEnabled": false
+  },
+  "publicOrigin": "https://natsumi.example.net:8443",
+  "listen": {
+    "host": "::",
+    "port": 8443,
+    "tls": {
+      "certFile": "/run/secrets/natsumi_tls_cert",
+      "keyFile": "/run/secrets/natsumi_tls_key"
+    }
+  },
+  "github": {
+    "clientId": "Ov23liExampleClientId",
+    "clientSecretFile": "/run/secrets/natsumi_github_client_secret",
+    "callbackUrl": "https://natsumi.example.net:8443/auth/github/callback",
+    "allowedUserId": 12345678
   }
 }
