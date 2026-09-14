@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.local/
+.env
+.env.*
+!.env.example
+config.local.json
+*.log
+*.sqlite*
+*.db*
+.pi/
+auth.json
+data/
+memory/
+sessions/
+.DS_Store

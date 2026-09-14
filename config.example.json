@@ -1,0 +1,25 @@
+{
+  "dataDirectory": "/srv/natsumi-data",
+  "publicOrigin": "https://assistant.example.com",
+  "github": {
+    "allowedLogin": "example-person",
+    "clientIdEnv": "NATSUMI_GITHUB_CLIENT_ID",
+    "clientSecretEnv": "NATSUMI_GITHUB_CLIENT_SECRET"
+  },
+  "pi": {
+    "agentDirectory": "/srv/natsumi-pi/agent",
+    "sessionDirectory": "/srv/natsumi-pi/sessions",
+    "authPath": "/srv/natsumi-pi/agent/auth.json",
+    "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+    "voiceEnabled": false
+  },
+  "google": {
+    "credentialsFile": "/run/secrets/google-credentials",
+    "pollIntervalSeconds": 900,
+    "gmailReadOnly": true,
+    "calendarRequireApproval": true,
+    "calendarDeleteEnabled": false,
+    "calendarInvitationsEnabled": false
+  },
+  "wiki": { "checkout": "/srv/private-wiki" }
+}
