@@ -9,7 +9,7 @@ export type OutputCheck =
 const CONTROL = /<\/?think>|<\/?tool_call>|<\/?tool_response>|<\/?parameter(?:=[^>]*)?>|<\/?function(?:=[^>]*)?>|<\|[a-z_]+\|>/gi;
 const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힯]/gu;
 // Simplified Chinese characters that Japanese text does not use. A heuristic: shared kanji cannot be told apart.
-const SIMPLIFIED = /[这个们说还过时见长轻为对问题么东车应该实现开关边话语让给钱认识经处头两发样]/gu;
+const SIMPLIFIED = /[这个们说还过时见长轻为对问题么东车应该实现开关边话语让给钱认识经处头两发样简洁记忆读书习继续请谢爱门马鱼鸟电脑网务员场钟间业专从众买卖虽节气听视觉须预顺页]/gu;
 
 /**
  * Checks text before it reaches the owner. Nothing that fails is sent: the model is told why and may rewrite it
@@ -21,7 +21,7 @@ export function checkOutgoingText(text: string): OutputCheck {
   if ([...text].length > MAX_OUTPUT_CHARS) return { ok: false, reason: 'too-long' };
   const control = findControlStrings(text);
   if (control.length > 0) return { ok: false, reason: 'control', found: control };
-  const foreign = unique([...(text.match(HANGUL) ?? []), ...(text.match(SIMPLIFIED) ?? [])]);
+  const foreign = findForeignScript(text);
   if (foreign.length > 0) return { ok: false, reason: 'foreign-script', found: foreign };
   return { ok: true };
 }
@@ -29,6 +29,11 @@ export function checkOutgoingText(text: string): OutputCheck {
 /** Chat-template markers in the text, each once. */
 export function findControlStrings(text: string): string[] {
   return unique(text.match(CONTROL));
+}
+
+/** Hangul and simplified Chinese characters Japanese does not use, each once. */
+export function findForeignScript(text: string): string[] {
+  return unique([...(text.match(HANGUL) ?? []), ...(text.match(SIMPLIFIED) ?? [])]);
 }
 
 /** A sentence for the model saying why the text was not sent. */

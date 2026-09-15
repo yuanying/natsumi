@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, readdir, rename, rm } from 'node:fs/promises';
+import { lstat, open, readdir, rename, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ToolOutcome } from './loop-tools.ts';
 import { localDate } from './nightly.ts';
-import { findControlStrings } from './output-checks.ts';
+import { findControlStrings, findForeignScript } from './output-checks.ts';
 
 export const MAX_NOTE_CHARS = 1000;
 export const MAX_TOPIC_CHARS = 60;
@@ -17,6 +17,10 @@ const EXTENSION = '.md';
 // C0 controls and DEL. Newlines in a note are folded to spaces before this check.
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 const NOTE_LINE = /^- \d{4}-\d{2}-\d{2}: (.*)$/;
+// Kanji and katakana carry the meaning of a Japanese question; kana particles and punctuation do not.
+const CONTENT_CHARACTER = /[\p{Script=Han}\p{Script=Katakana}]/gu;
+/** A line without a matching word counts when it holds at least this share of the question's kanji and katakana. */
+const COVERAGE_THRESHOLD = 0.5;
 
 /**
  * The file name for a topic: letters, digits, `_` and `-` only, so it has no separator or dot and cannot name a
@@ -90,7 +94,9 @@ export class MemoryStore {
   private async recallNow(query: string): Promise<ToolOutcome> {
     const directory = await this.directory();
     if (directory) return directory;
-    const terms = [...new Set(query.normalize('NFKC').toLowerCase().split(/\s+/).filter(term => term !== ''))];
+    const folded = fold(query);
+    const terms = [...new Set(folded.split(/\s+/).filter(term => term !== ''))];
+    const wanted = new Set(folded.match(CONTENT_CHARACTER) ?? []);
     const topics = await this.topics();
     const hits: { score: number; order: number; line: string }[] = [];
     for (const { name, path } of topics) {
@@ -98,12 +104,17 @@ export class MemoryStore {
       if (typeof content !== 'string') continue;
       const lines = content.split('\n');
       const title = lines.find(line => line.startsWith('# '))?.slice(2).trim() ?? name;
-      const inTitle = terms.filter(term => title.normalize('NFKC').toLowerCase().includes(term) || name.toLowerCase().includes(term)).length;
-      for (const line of lines) {
-        if (line.trim() === '' || line.startsWith('#')) continue;
-        const folded = line.normalize('NFKC').toLowerCase();
-        const score = terms.filter(term => folded.includes(term)).length + inTitle;
-        if (score > 0) hits.push({ score, order: hits.length, line: `[${title}] ${line.trim()}` });
+      const inTitle = terms.filter(term => fold(title).includes(term) || name.toLowerCase().includes(term)).length;
+      for (const line of memoryLines(content)) {
+        const text = fold(line);
+        // Whole words first; then how much of the question's kanji and katakana the line holds, so a question
+        // written without spaces, with a particle or a question mark still finds its memory.
+        const words = terms.filter(term => text.includes(term)).length;
+        const present = new Set(text.match(CONTENT_CHARACTER) ?? []);
+        const shared = [...wanted].filter(character => present.has(character)).length;
+        const coverage = wanted.size > 0 && shared >= Math.min(2, wanted.size) ? shared / wanted.size : 0;
+        const score = words * 2 + inTitle + (coverage >= COVERAGE_THRESHOLD ? coverage : 0);
+        if (words + inTitle > 0 || coverage >= COVERAGE_THRESHOLD) hits.push({ score, order: hits.length, line: `[${title}] ${line.trim()}` });
       }
     }
     hits.sort((a, b) => b.score - a.score || a.order - b.order);
@@ -124,7 +135,9 @@ export class MemoryStore {
     if ('ok' in target) return target;
     const content = await this.readFile(target.path);
     if (content === 'refused') return notAFile(target.topic);
-    if (content === undefined) return { ok: false, text: `「${target.topic}」の記憶はまだありません。recall で探せます。` };
+    if (content === undefined || memoryLines(content).length === 0) {
+      return { ok: false, text: `「${target.topic}」の記憶はまだありません。recall で探せます。` };
+    }
     const cut = [...content].length > READ_CHARS_LIMIT ? `${[...content].slice(0, READ_CHARS_LIMIT).join('')}\n（長いので途中までです）` : content;
     return { ok: true, text: `記憶「${target.topic}」:\n${cut}` };
   }
@@ -145,6 +158,12 @@ export class MemoryStore {
     const kept = lines.filter(line => line.startsWith('#') || line.trim() === '' || !line.includes(needle));
     const removed = lines.length - kept.length;
     if (removed === 0) return { ok: false, text: `「${target.topic}」に「${needle}」を含む記憶はありません。何も消していません。` };
+    if (memoryLines(kept.join('\n')).length === 0) {
+      // A topic with nothing left is removed, so it is not offered as a topic any more. The path was opened without
+      // following symlinks just above, and unlinking removes only the directory entry.
+      try { await unlink(target.path); } catch { return notAFile(target.topic); }
+      return { ok: true, text: `「${target.topic}」から「${needle}」を含む記憶を ${removed} 行消しました。このトピックの記憶はなくなりました。` };
+    }
     // Written beside the file and renamed over it: a symlink put in its place is replaced, never followed.
     const temporary = join(this.options.directory, `.${target.name}.tmp-${randomBytes(6).toString('hex')}`);
     try {
@@ -178,14 +197,21 @@ export class MemoryStore {
     return { topic: title, name, path: join(this.options.directory, name) };
   }
 
-  /** Regular Markdown files directly in the memory directory. Symlinks, directories and hidden files are skipped. */
+  /**
+   * Regular Markdown files directly in the memory directory that hold at least one memory line.
+   * Symlinks, directories, hidden files and heading-only files are skipped.
+   */
   private async topics(): Promise<{ name: string; path: string }[]> {
-    try {
-      const entries = await readdir(this.options.directory, { withFileTypes: true });
-      return entries.filter(entry => entry.isFile() && entry.name.endsWith(EXTENSION) && !entry.name.startsWith('.'))
-        .map(entry => ({ name: entry.name, path: join(this.options.directory, entry.name) }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-    } catch { return []; }
+    let entries;
+    try { entries = await readdir(this.options.directory, { withFileTypes: true }); } catch { return []; }
+    const topics: { name: string; path: string }[] = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(EXTENSION) || entry.name.startsWith('.')) continue;
+      const path = join(this.options.directory, entry.name);
+      const content = await this.readFile(path);
+      if (typeof content === 'string' && memoryLines(content).length > 0) topics.push({ name: entry.name, path });
+    }
+    return topics.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /** The file's text, undefined when it does not exist, or 'refused' when it is a symlink or not a regular file. */
@@ -211,7 +237,21 @@ function checkText(text: string, label: string, max: number): Refusal | undefine
     return { ok: false, text: `${label}にテンプレートの制御文字列（${control.join(' ')}）が含まれています。除いて書き直してください。` };
   }
   if (CONTROL_CHARACTERS.test(text)) return { ok: false, text: `${label}に制御文字が含まれています。除いて書き直してください。` };
+  const foreign = findForeignScript(text);
+  if (foreign.length > 0) {
+    return { ok: false, text: `${label}に日本語以外の文字（${foreign.join(' ')}）が含まれています。日本語で書き直してください。` };
+  }
   return undefined;
+}
+
+/** Lines that are memories: everything but headings and blank lines. A hand-written file may use any line shape. */
+function memoryLines(content: string): string[] {
+  return content.split('\n').filter(line => line.trim() !== '' && !line.startsWith('#'));
+}
+
+/** NFKC, lower case, and punctuation and symbols turned into spaces. */
+function fold(text: string): string {
+  return text.normalize('NFKC').toLowerCase().replace(/[\p{P}\p{S}]+/gu, ' ');
 }
 
 function noteLines(content: string): string[] {

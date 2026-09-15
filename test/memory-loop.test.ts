@@ -164,9 +164,9 @@ test('the memory tools refuse path tricks and forget removes a memory', async ()
     call2.call('finish_event', { event_id: sent.eventId });
     call2.finish();
     await completed(events, sent.eventId);
-    assert.deepEqual((await readdir(join(f.data, 'memory'))).sort(), ['escape.md', '予定.md']);
+    // The topic lost its only memory, so its file is gone.
+    assert.deepEqual((await readdir(join(f.data, 'memory'))).sort(), ['escape.md']);
     assert.deepEqual((await readdir(f.root)).filter(name => !name.startsWith('state.sqlite')).sort(), ['data', 'pi']);
-    assert.equal(await readFile(join(f.data, 'memory', '予定.md'), 'utf8'), '# 予定\n\n');
   } finally { await f.cleanup(); }
 });
 
@@ -309,6 +309,39 @@ test('a review without a handoff note keeps the current session, and the tools r
     assert.equal(replies(events).at(-1), '続けます');
     assert.equal(outcome.result, 'failed');
     assert.equal(f.model.contexts.some(c => (c.systemPrompt ?? '').includes('勝手な引き継ぎ')), false);
+  } finally { await f.cleanup(); }
+});
+
+test('a handoff note in non-Japanese script is refused and never reaches the next session\'s instructions', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    behave(f, {});
+    const day = f.send(loop, `昼の話 ${EARLIER}`);
+    await completed(events, day.eventId);
+    await loop.idle();
+
+    f.model.takeOver();
+    const rotating = loop.rotate();
+    const review = await f.model.next();
+    const [reviewEvent] = eventLines(lastUserText(review.context));
+    review.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 简洁にまとめる` });
+    review.finish();
+    const review2 = await f.model.next();
+    const [refused] = toolResults(review2.context);
+    assert.equal(refused!.isError, true);
+    assert.match(refused!.text, /日本語以外/);
+    review2.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 簡潔にまとめる` });
+    review2.call('finish_event', { event_id: reviewEvent!.event_id });
+    review2.finish();
+    assert.equal((await rotating).result, 'switched');
+
+    let next: Context | undefined;
+    behave(f, { owner: (event, context) => { next = context; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    const morning = f.send(loop, 'おはよう');
+    await completed(events, morning.eventId);
+    assert.match(next!.systemPrompt ?? '', /簡潔にまとめる/);
+    assert.equal((next!.systemPrompt ?? '').includes('简洁'), false);
   } finally { await f.cleanup(); }
 });
 

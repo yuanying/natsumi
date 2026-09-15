@@ -132,6 +132,59 @@ test('recall finds lines by their words across topics and names the topics it ha
   } finally { await f.cleanup(); }
 });
 
+test('recall finds a memory from a natural Japanese question without spaces, and unrelated memories do not come first', async () => {
+  const f = await setup();
+  try {
+    await f.store.remember('自転車', '自転車の鍵の番号は HERON-ABC123');
+    await f.store.remember('自転車', '自転車屋は駅前にある');
+    await f.store.remember('仕事', '週次の定例は水曜の10時');
+    await f.store.remember('妹', '妹の誕生日は3月14日');
+    for (const query of ['自転車の鍵の番号は？', '私の自転車の鍵番号', '自転車の鍵番号', '自転車の鍵の暗証番号',
+      '前に覚えてもらった、私の自転車の鍵の番号は何でしたか？']) {
+      const found = await f.store.recall(query);
+      const lines = found.text.split('\n').filter(line => line.startsWith('['));
+      assert.match(lines[0] ?? '', /HERON-ABC123/, query);
+      assert.doesNotMatch(found.text, /定例|誕生日/, query);
+    }
+    // The line holding more of the question comes first.
+    const shop = (await f.store.recall('自転車屋はどこ？')).text.split('\n').filter(line => line.startsWith('['));
+    assert.match(shop[0] ?? '', /自転車屋は駅前/);
+    assert.match((await f.store.recall('会議の議事録')).text, /見つかりませんでした/);
+  } finally { await f.cleanup(); }
+});
+
+test('topics and notes in non-Japanese script are refused so the model rewrites them', async () => {
+  const f = await setup();
+  try {
+    for (const [topic, note] of [['自行车', '鍵の番号'], ['自転車', '简洁に書く'], ['自転車', '자전거 열쇠']] as const) {
+      const outcome = await f.store.remember(topic, note);
+      assert.equal(outcome.ok, false, `${topic} ${note}`);
+      assert.match(outcome.text, /日本語以外/);
+    }
+    assert.deepEqual(await f.files(), []);
+  } finally { await f.cleanup(); }
+});
+
+test('a topic whose last memory is forgotten disappears, and a heading-only file is not offered as a topic', async () => {
+  const f = await setup();
+  try {
+    await f.store.remember('予定', '歯医者は金曜');
+    await f.store.remember('仕事', '週次の定例は水曜');
+    assert.equal((await f.store.forget('予定', '歯医者')).ok, true);
+    assert.deepEqual(await f.files(), ['仕事.md']);
+    assert.equal((await f.store.read('予定')).ok, false);
+    // A file left with only its heading (by hand, or by an older version) is neither listed nor searched.
+    await writeFile(join(f.directory, '空.md'), '# 空\n\n');
+    const index = await f.store.recall('存在しない話題');
+    assert.match(index.text, /記憶のトピック: 仕事$/m);
+    assert.doesNotMatch(index.text, /空|予定/);
+    assert.equal((await f.store.read('空')).ok, false);
+    // Remembering into it again writes a normal topic.
+    assert.equal((await f.store.remember('空', '中身を足す')).ok, true);
+    assert.match(await readFile(join(f.directory, '空.md'), 'utf8'), /^- 2026-09-16: 中身を足す$/m);
+  } finally { await f.cleanup(); }
+});
+
 test('read_memory returns a whole topic and forget removes only the lines containing the given text', async () => {
   const f = await setup();
   try {
