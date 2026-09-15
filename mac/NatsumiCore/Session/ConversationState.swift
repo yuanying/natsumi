@@ -21,6 +21,30 @@ public struct OutgoingMessage: Equatable, Identifiable, Sendable {
     public var id: String { requestId }
 }
 
+/// Something the owner read or checked on this device that the server has not answered yet. It shows at once and is
+/// dropped when the server accepts it (its answer is then the state) or refuses it (the server's state stands).
+public struct ReadChange: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        case read(throughMessageId: String)
+        case acknowledge(notificationId: String)
+    }
+
+    public let requestId: String
+    public let kind: Kind
+
+    public init(requestId: String, kind: Kind) {
+        self.requestId = requestId
+        self.kind = kind
+    }
+
+    var command: ClientCommand {
+        switch kind {
+        case .read(let id): .conversationRead(throughMessageId: id)
+        case .acknowledge(let id): .notificationAck(notificationId: id)
+        }
+    }
+}
+
 /// What the conversation window shows, built only from server events and the owner's own unsent messages.
 public struct ConversationState: Equatable, Sendable {
     public private(set) var messages: [ShownMessage] = []
@@ -28,8 +52,10 @@ public struct ConversationState: Equatable, Sendable {
     public private(set) var pendingEvents: [String: EventState] = [:]
     public private(set) var expression: Expression = .neutral
     public private(set) var outbox: [OutgoingMessage] = []
-    /// Counts the snapshots applied, so a view can tell messages that came back in one from ones that just arrived.
-    public private(set) var snapshotGeneration = 0
+    /// What the server says the owner has read and checked.
+    public private(set) var readState = ReadState()
+    /// Reads and checks on this device the server has not answered, oldest first.
+    public private(set) var localReadChanges: [ReadChange] = []
 
     public init() {}
 
@@ -39,6 +65,64 @@ public struct ConversationState: Equatable, Sendable {
 
     /// Messages to send (again) once the connection is synced. The server answers a resent requestId with the same result.
     public var unsent: [OutgoingMessage] { outbox.filter { $0.status == .sending } }
+
+    // MARK: - Read state
+
+    /// Unread replies in `messages`, oldest first.
+    public var unreadReplies: [ShownMessage] {
+        messages[(readIndex + 1)...].filter { $0.kind == .reply }
+    }
+
+    /// All unread replies. When the read position is older than `messages`, the server's count includes replies
+    /// before them.
+    public var unreadReplyCount: Int {
+        let listed = unreadReplies.count
+        guard readIndex < 0 else { return listed }
+        return max(readState.unreadReplyCount, listed)
+    }
+
+    /// Notices not checked yet, oldest first; some may be older than `messages`.
+    public var unacknowledgedNotificationIds: [String] {
+        let checking = Set(localReadChanges.compactMap { if case .acknowledge(let id) = $0.kind { id } else { nil } })
+        return readState.unacknowledgedNotificationIds.filter { !checking.contains($0) }
+    }
+
+    /// An unread reply or a notice not checked yet.
+    public func isUnread(_ message: ShownMessage) -> Bool {
+        switch message.kind {
+        case .reply: (messages.firstIndex { $0.messageId == message.messageId } ?? -1) > readIndex
+        case .notice: unacknowledgedNotificationIds.contains(message.messageId)
+        case .message: false
+        }
+    }
+
+    /// Where reading has got to in `messages`, counting this device's reads not answered yet; -1 before all of them.
+    /// A position not in `messages` is older than them.
+    private var readIndex: Int {
+        var positions = localReadChanges.compactMap { if case .read(let id) = $0.kind { id } else { nil } }
+        if let server = readState.readThroughMessageId { positions.append(server) }
+        return positions.compactMap { id in messages.lastIndex { $0.messageId == id } }.max() ?? -1
+    }
+
+    /// Reads replies up to `messageId` before the server answers. Nothing changes unless it moves the position forward.
+    @discardableResult
+    public mutating func markRead(through messageId: String, requestId: String) -> ReadChange? {
+        guard let index = messages.firstIndex(where: { $0.messageId == messageId }), index > readIndex else { return nil }
+        let change = ReadChange(requestId: requestId, kind: .read(throughMessageId: messageId))
+        localReadChanges.append(change)
+        return change
+    }
+
+    /// Checks a notice before the server answers. Nothing changes unless it is still unchecked.
+    @discardableResult
+    public mutating func markAcknowledged(_ notificationId: String, requestId: String) -> ReadChange? {
+        guard unacknowledgedNotificationIds.contains(notificationId) else { return nil }
+        let change = ReadChange(requestId: requestId, kind: .acknowledge(notificationId: notificationId))
+        localReadChanges.append(change)
+        return change
+    }
+
+    // MARK: - Sending
 
     public mutating func enqueue(text: String, requestId: String) {
         outbox.append(OutgoingMessage(requestId: requestId, text: text, status: .sending))
@@ -52,22 +136,43 @@ public struct ConversationState: Equatable, Sendable {
         switch event {
         case .snapshot(let snapshot):
             messages = snapshot.messages
-            snapshotGeneration += 1
             pendingEvents = Dictionary(
                 snapshot.pendingEvents.filter { $0.state.isPending }.map { ($0.eventId, $0.state) },
                 uniquingKeysWith: { _, latest in latest })
             expression = snapshot.expression
+            readState = snapshot.readState
         case .message(let message):
             guard !messages.contains(where: { $0.messageId == message.messageId }) else { return }
             messages.append(message)
-            if message.kind == .message, let eventId = message.eventId, pendingEvents[eventId] == nil {
-                pendingEvents[eventId] = .queued
+            switch message.kind {
+            case .message:
+                if let eventId = message.eventId, pendingEvents[eventId] == nil { pendingEvents[eventId] = .queued }
+            case .reply:
+                readState.unreadReplyCount += 1
+            case .notice:
+                if !readState.unacknowledgedNotificationIds.contains(message.messageId) {
+                    readState.unacknowledgedNotificationIds.append(message.messageId)
+                }
             }
         case .expression(let expression):
             self.expression = expression
         case .eventCompleted(let completion):
             pendingEvents[completion.eventId] = nil
+        case .readMoved(let through, let count):
+            readState.readThroughMessageId = through
+            readState.unreadReplyCount = count
+        case .notificationAcked(let id):
+            readState.unacknowledgedNotificationIds.removeAll { $0 == id }
         case .accepted(let accepted):
+            if let index = changeIndex(requestId) {
+                localReadChanges.remove(at: index)
+                if let through = accepted.readThroughMessageId {
+                    readState.readThroughMessageId = through
+                    readState.unreadReplyCount = accepted.unreadReplyCount ?? readState.unreadReplyCount
+                }
+                if let id = accepted.notificationId { readState.unacknowledgedNotificationIds.removeAll { $0 == id } }
+                return
+            }
             guard let index = outboxIndex(requestId) else { return }
             outbox.remove(at: index)
             if let eventId = accepted.eventId, let state = accepted.state {
@@ -78,14 +183,27 @@ public struct ConversationState: Equatable, Sendable {
                 }
             }
         case .rejected(let code):
-            if let index = outboxIndex(requestId) { outbox[index].status = .rejected(code) }
+            if let index = changeIndex(requestId) {
+                localReadChanges.remove(at: index)
+            } else if let index = outboxIndex(requestId) {
+                outbox[index].status = .rejected(code)
+            }
         case .unavailable(let code, _):
-            if let index = outboxIndex(requestId) { outbox[index].status = .unavailable(code) }
+            if let index = changeIndex(requestId) {
+                localReadChanges.remove(at: index)
+            } else if let index = outboxIndex(requestId) {
+                outbox[index].status = .unavailable(code)
+            }
         }
     }
 
     private func outboxIndex(_ requestId: String?) -> Int? {
         guard let requestId else { return nil }
         return outbox.firstIndex { $0.requestId == requestId }
+    }
+
+    private func changeIndex(_ requestId: String?) -> Int? {
+        guard let requestId else { return nil }
+        return localReadChanges.firstIndex { $0.requestId == requestId }
     }
 }

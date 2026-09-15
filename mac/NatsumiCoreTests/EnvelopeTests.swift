@@ -44,6 +44,44 @@ struct ServerEnvelopeTests {
             expression: .thinking)))
     }
 
+    @Test("session.snapshot は既読のカーソル・未読の返事の数・未確認の知らせを持つ")
+    func snapshotReadState() {
+        let envelope = Fixture.decoded(Fixture.snapshot(
+            seq: 7, deviceId: "device-1", readThrough: "m1", unreadReplyCount: 3, unacknowledged: ["n1", "n2"]))
+        guard case .snapshot(let snapshot) = envelope.event else {
+            Issue.record("snapshot として読めなかった")
+            return
+        }
+        #expect(snapshot.readState == ReadState(readThroughMessageId: "m1", unreadReplyCount: 3, unacknowledgedNotificationIds: ["n1", "n2"]))
+
+        let empty = Fixture.decoded(Fixture.snapshot(seq: 8))
+        guard case .snapshot(let first) = empty.event else {
+            Issue.record("snapshot として読めなかった")
+            return
+        }
+        #expect(first.readState == ReadState(readThroughMessageId: nil, unreadReplyCount: 0, unacknowledgedNotificationIds: []))
+    }
+
+    @Test("conversation.read と notification.acked のイベントを読む")
+    func readEvents() {
+        let read = Fixture.decoded(Fixture.envelope("conversation.read", seq: 3,
+            payload: ["readThroughMessageId": "m4", "unreadReplyCount": 1]))
+        #expect(read.event == .readMoved(readThroughMessageId: "m4", unreadReplyCount: 1))
+        let acked = Fixture.decoded(Fixture.envelope("notification.acked", seq: 4,
+            payload: ["notificationId": "n1", "acknowledgedAt": "2026-01-01T00:00:00.000Z"]))
+        #expect(acked.event == .notificationAcked(notificationId: "n1"))
+    }
+
+    @Test("確認への command.accepted は、今のカーソルと件数、または確認した知らせを持つ")
+    func acceptedReadAndAck() {
+        let read = Fixture.decoded(Fixture.envelope("command.accepted", seq: 5, requestId: "r1",
+            payload: ["readThroughMessageId": "m4", "unreadReplyCount": 2]))
+        #expect(read.event == .accepted(CommandAccepted(readThroughMessageId: "m4", unreadReplyCount: 2)))
+        let ack = Fixture.decoded(Fixture.envelope("command.accepted", seq: 6, requestId: "r2",
+            payload: ["notificationId": "n1", "acknowledgedAt": "2026-01-01T00:00:00.000Z"]))
+        #expect(ack.event == .accepted(CommandAccepted(notificationId: "n1")))
+    }
+
     @Test("8 つの表情をすべて読める")
     func expressions() {
         for expression in Expression.allCases {
@@ -141,5 +179,20 @@ struct ClientEnvelopeTests {
         let object = Fixture.object(ClientEnvelope(requestId: "r3", deviceId: "device-1", command: .conversationSend(text: "架空のメッセージ")))
         #expect(object["type"] as? String == "conversation.send")
         #expect((object["payload"] as? [String: Any])?["text"] as? String == "架空のメッセージ")
+    }
+
+    @Test("conversation.read は throughMessageId を、notification.ack は notificationId を payload に入れる")
+    func readAndAck() {
+        let read = Fixture.object(ClientEnvelope(requestId: "r4", deviceId: "device-1", command: .conversationRead(throughMessageId: "m4")))
+        #expect(read["v"] as? Int == 1)
+        #expect(read["requestId"] as? String == "r4")
+        #expect(read["deviceId"] as? String == "device-1")
+        #expect(read["type"] as? String == "conversation.read")
+        #expect(read["payload"] as? [String: String] == ["throughMessageId": "m4"])
+
+        let ack = Fixture.object(ClientEnvelope(requestId: "r5", deviceId: "device-1", command: .notificationAck(notificationId: "n1")))
+        #expect(ack["type"] as? String == "notification.ack")
+        #expect(ack["requestId"] as? String == "r5")
+        #expect(ack["payload"] as? [String: String] == ["notificationId": "n1"])
     }
 }

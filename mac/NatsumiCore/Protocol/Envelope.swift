@@ -13,6 +13,10 @@ public enum ServerEvent: Equatable, Sendable {
     case message(ShownMessage)
     case expression(Expression)
     case eventCompleted(EventCompletion)
+    /// `conversation.read`: some device moved the read position.
+    case readMoved(readThroughMessageId: String, unreadReplyCount: Int)
+    /// `notification.acked`: some device checked a notice for the first time.
+    case notificationAcked(notificationId: String)
     case accepted(CommandAccepted)
     case rejected(code: String)
     case unavailable(code: String, deviceId: String?)
@@ -37,11 +41,18 @@ public struct ServerEnvelope: Equatable, Sendable {
         let event: ServerEvent? = switch type {
         case "session.snapshot":
             payload(SnapshotPayload.self).map {
-                .snapshot(Snapshot(deviceId: $0.deviceId, messages: $0.messages, pendingEvents: $0.pendingEvents, expression: $0.avatar.expression))
+                .snapshot(Snapshot(
+                    deviceId: $0.deviceId, messages: $0.messages, pendingEvents: $0.pendingEvents, expression: $0.avatar.expression,
+                    readState: ReadState(
+                        readThroughMessageId: $0.readThroughMessageId, unreadReplyCount: $0.unreadReplyCount ?? 0,
+                        unacknowledgedNotificationIds: $0.unacknowledgedNotificationIds ?? [])))
             }
         case "conversation.message": payload(ShownMessage.self).map { .message($0) }
         case "avatar.expression": payload(ExpressionPayload.self).map { .expression($0.expression) }
         case "conversation.event.completed": payload(EventCompletion.self).map { .eventCompleted($0) }
+        case "conversation.read":
+            payload(ReadPayload.self).map { .readMoved(readThroughMessageId: $0.readThroughMessageId, unreadReplyCount: $0.unreadReplyCount) }
+        case "notification.acked": payload(AckedPayload.self).map { .notificationAcked(notificationId: $0.notificationId) }
         case "command.accepted": payload(CommandAccepted.self).map { .accepted($0) }
         case "command.rejected": payload(CodePayload.self).map { .rejected(code: $0.code) }
         case "service.unavailable": payload(CodePayload.self).map { .unavailable(code: $0.code, deviceId: $0.deviceId) }
@@ -66,9 +77,19 @@ public struct ServerEnvelope: Equatable, Sendable {
         let messages: [ShownMessage]
         let pendingEvents: [PendingEvent]
         let avatar: ExpressionPayload
+        let readThroughMessageId: String?
+        let unreadReplyCount: Int?
+        let unacknowledgedNotificationIds: [String]?
     }
 
     private struct ExpressionPayload: Decodable { let expression: Expression }
+
+    private struct ReadPayload: Decodable {
+        let readThroughMessageId: String
+        let unreadReplyCount: Int
+    }
+
+    private struct AckedPayload: Decodable { let notificationId: String }
 
     private struct CodePayload: Decodable {
         let code: String
@@ -79,6 +100,8 @@ public struct ServerEnvelope: Equatable, Sendable {
 public enum ClientCommand: Equatable, Sendable {
     case sessionSync(resume: StreamPosition?)
     case conversationSend(text: String)
+    case conversationRead(throughMessageId: String)
+    case notificationAck(notificationId: String)
 }
 
 /// One command to the server.
@@ -107,6 +130,12 @@ public struct ClientEnvelope: Equatable, Sendable {
         case .conversationSend(let text):
             object["type"] = "conversation.send"
             object["payload"] = ["text": text]
+        case .conversationRead(let throughMessageId):
+            object["type"] = "conversation.read"
+            object["payload"] = ["throughMessageId": throughMessageId]
+        case .notificationAck(let notificationId):
+            object["type"] = "notification.ack"
+            object["payload"] = ["notificationId": notificationId]
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }

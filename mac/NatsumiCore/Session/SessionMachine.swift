@@ -80,6 +80,45 @@ public struct SessionMachine {
         conversation.dismiss(requestId: requestId)
     }
 
+    /// Reads the oldest unread reply and brings the next one to the front.
+    public mutating func confirmFrontReply() -> [SessionEffect] {
+        guard let front = conversation.unreadReplies.first else { return [] }
+        return read(through: front.messageId)
+    }
+
+    /// Reads every unread reply at once.
+    public mutating func confirmAllReplies() -> [SessionEffect] {
+        guard let last = conversation.unreadReplies.last else { return [] }
+        return read(through: last.messageId)
+    }
+
+    /// Checks every notice not checked yet, from the menu.
+    public mutating func acknowledgeAllNotices() -> [SessionEffect] {
+        acknowledge(conversation.unacknowledgedNotificationIds)
+    }
+
+    /// Checks notices, one command each. The view changes before the server answers.
+    public mutating func acknowledge(_ notificationIds: [String]) -> [SessionEffect] {
+        var effects: [SessionEffect] = []
+        for id in notificationIds {
+            let requestId = makeRequestId()
+            if let change = conversation.markAcknowledged(id, requestId: requestId) { effects += sendNow(change) }
+        }
+        return effects
+    }
+
+    private mutating func read(through messageId: String) -> [SessionEffect] {
+        let requestId = makeRequestId()
+        guard let change = conversation.markRead(through: messageId, requestId: requestId) else { return [] }
+        return sendNow(change)
+    }
+
+    /// A read or check goes out now when synced; otherwise it waits for the sync like an unsent message.
+    private func sendNow(_ change: ReadChange) -> [SessionEffect] {
+        guard phase == .ready, let deviceId else { return [] }
+        return [.send(ClientEnvelope(requestId: change.requestId, deviceId: deviceId, command: change.command))]
+    }
+
     public mutating func received(_ data: Data) -> [SessionEffect] {
         switch phase {
         case .syncing, .ready, .unavailable: break
@@ -176,8 +215,12 @@ public struct SessionMachine {
         phase = .ready
         failures = 0
         guard let deviceId else { return [] }
-        return conversation.unsent.map {
-            .send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: .conversationSend(text: $0.text)))
+        let sends = conversation.unsent.map {
+            SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: .conversationSend(text: $0.text)))
+        }
+        // Reads and checks are safe to send again: the position only moves forward and a check is recorded once.
+        return sends + conversation.localReadChanges.map {
+            .send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: $0.command))
         }
     }
 }
