@@ -37,7 +37,18 @@ struct ReadCommandTests {
         #expect(m.confirmFrontReply().isEmpty)
     }
 
-    @Test("× は、未読の最後の返事の messageId で一度だけ送り、全部を確かめたことにする")
+    @Test("知らせの × とメニューの「知らせをすべて確認する」は、未確認の知らせを 1 件ずつ送り、束を空にする")
+    func acknowledgeAllNotices() {
+        var m = machine()
+        ready(&m, notices: ["n-old", "n2"])
+        #expect(sent(m.acknowledgeAllNotices()).map(\.command) == [
+            .notificationAck(notificationId: "n-old"), .notificationAck(notificationId: "n2"),
+        ])
+        #expect(m.conversation.unacknowledgedNotificationIds.isEmpty)
+        #expect(m.acknowledgeAllNotices().isEmpty)
+    }
+
+    @Test("返事の × とメニューの「返事をすべて既読にする」は、未読の最後の返事の messageId で一度だけ送り、本文のクリックは前の 1 件ずつ")
     func confirmAll() {
         var m = machine()
         ready(&m)

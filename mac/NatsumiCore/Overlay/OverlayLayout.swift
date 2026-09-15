@@ -29,9 +29,10 @@ public struct StackBudget: Equatable, Sendable {
 ///
 /// The panels stand in one column on the character's vertical center line: from the top, the notices, the balloon,
 /// the character and the input field. When there is not room above, the column flips (notices and balloon below,
-/// input field above); a panel that would leave the screen sideways moves inward on its own. The input field sits
-/// between the character and the balloon when its own side has no room. The history is not in the column; it opens
-/// beside it. The character itself is never moved here.
+/// input field above); a panel that would leave the screen sideways moves inward on its own. The balloon and the
+/// notices always stay next to the character; when the input field has no room on its own side, it goes to the far
+/// end of the column, past the notices. The history is not in the column; it opens beside it. The character itself
+/// is never moved here.
 public struct OverlayLayout: Equatable, Sendable {
     /// How far the tail stays from the balloon's sides.
     public static let tailInset: CGFloat = 18
@@ -81,11 +82,11 @@ public struct OverlayLayout: Equatable, Sendable {
         let speech = need(balloon) + need(notices)
         let inputNeed = need(input)
 
-        func arrangement(flipped: Bool) -> (overflow: CGFloat, inputBetween: Bool) {
+        func arrangement(flipped: Bool) -> (overflow: CGFloat, inputBeyond: Bool) {
             let speechRoom = flipped ? roomBelow : roomAbove
             let otherRoom = flipped ? roomAbove : roomBelow
-            let between = input != nil && inputNeed > otherRoom
-            return (max(0, speech + (between ? inputNeed : 0) - speechRoom), between)
+            let beyond = input != nil && inputNeed > otherRoom
+            return (max(0, speech + (beyond ? inputNeed : 0) - speechRoom), beyond)
         }
         let normal = arrangement(flipped: false)
         let flip = arrangement(flipped: true)
@@ -110,11 +111,13 @@ public struct OverlayLayout: Equatable, Sendable {
             edge = flipped ? rect.minY : rect.maxY
             return rect
         }
-        if let input, chosen.inputBetween { layout.input = stacked(input) }
+        // The balloon is always next to the character, so nothing comes between the tail and her.
         if let balloon { layout.balloon = stacked(balloon) }
         if let notices { layout.notices = stacked(notices) }
-        if let input, !chosen.inputBetween {
-            layout.input = placed(input, y: flipped ? character.maxY + spacing : character.minY - spacing - input.height)
+        if let input {
+            layout.input = chosen.inputBeyond
+                ? stacked(input)
+                : placed(input, y: flipped ? character.maxY + spacing : character.minY - spacing - input.height)
         }
 
         if let rect = layout.balloon {

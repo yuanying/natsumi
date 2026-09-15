@@ -53,15 +53,45 @@ struct OverlayLayoutTests {
         #expect(layout.input == CGRect(x: 310, y: 700 + spacing, width: 280, height: 40))
     }
 
-    @Test("入力欄が反対側に入らなければ、キャラと吹き出しの間に入れる")
-    func inputBetweenAtBottom() {
+    @Test("入力欄が自分の側に入らなければ、一列の反対の端（知らせの束の外側）に回し、吹き出しはキャラの隣のままにする")
+    func inputBeyondAtBottom() {
         let character = CGRect(x: 400, y: 10, width: 100, height: 100)
         let layout = make(character, notices: notices, balloon: balloon, input: input)
         #expect(layout.isFlipped == false)
         #expect(layout.tail == .down)
-        #expect(layout.input == CGRect(x: 310, y: 110 + spacing, width: 280, height: 40))
-        #expect(layout.balloon == CGRect(x: 330, y: 110 + spacing + 40 + spacing, width: 240, height: 80))
-        #expect(layout.notices?.minY == layout.balloon!.maxY + spacing)
+        #expect(layout.balloon == CGRect(x: 330, y: 110 + spacing, width: 240, height: 80))
+        #expect(layout.notices == CGRect(x: 350, y: 110 + spacing + 80 + spacing, width: 200, height: 60))
+        #expect(layout.input == CGRect(x: 310, y: 110 + spacing + 80 + spacing + 60 + spacing, width: 280, height: 40))
+    }
+
+    @Test("反転して入力欄が上に入らないときも、入力欄は知らせの束の外側に回る")
+    func inputBeyondAtTop() {
+        let character = CGRect(x: 400, y: 700, width: 100, height: 100)
+        let layout = make(character, notices: notices, balloon: balloon, input: input)
+        #expect(layout.isFlipped)
+        #expect(layout.balloon == CGRect(x: 330, y: 700 - spacing - 80, width: 240, height: 80))
+        #expect(layout.notices == CGRect(x: 350, y: 700 - spacing - 80 - spacing - 60, width: 200, height: 60))
+        #expect(layout.input == CGRect(x: 310, y: 700 - spacing - 80 - spacing - 60 - spacing - 40, width: 280, height: 40))
+    }
+
+    @Test("どの位置でも、吹き出しはキャラの隣に、知らせの束は吹き出し（無ければキャラ）の隣に置き、しっぽとキャラの間に何も挟まない")
+    func speechNextToCharacter() {
+        let art = CGSize(width: 96, height: 104)
+        let origins = [CGPoint(x: 0, y: 0), CGPoint(x: 904, y: 0), CGPoint(x: 0, y: 696), CGPoint(x: 904, y: 696), CGPoint(x: 452, y: 348)]
+        for origin in origins {
+            let character = CGRect(origin: origin, size: art)
+            for b in [nil, balloon] as [CGSize?] {
+                let layout = make(character, notices: notices, balloon: b, input: input)
+                let near = layout.isFlipped ? character.minY - spacing : character.maxY + spacing
+                if let placed = layout.balloon {
+                    #expect((layout.isFlipped ? placed.maxY : placed.minY) == near, "\(origin)")
+                    let next = layout.isFlipped ? placed.minY - spacing : placed.maxY + spacing
+                    #expect((layout.isFlipped ? layout.notices!.maxY : layout.notices!.minY) == next, "\(origin)")
+                } else {
+                    #expect((layout.isFlipped ? layout.notices!.maxY : layout.notices!.minY) == near, "\(origin)")
+                }
+            }
+        }
     }
 
     @Test("横にはみ出すパネルだけを内側にずらし、しっぽはキャラの中心を指し続ける")

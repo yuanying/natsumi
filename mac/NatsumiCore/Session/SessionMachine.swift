@@ -92,6 +92,11 @@ public struct SessionMachine {
         return read(through: last.messageId)
     }
 
+    /// Checks every notice not checked yet, from the menu.
+    public mutating func acknowledgeAllNotices() -> [SessionEffect] {
+        acknowledge(conversation.unacknowledgedNotificationIds)
+    }
+
     /// Checks notices, one command each. The view changes before the server answers.
     public mutating func acknowledge(_ notificationIds: [String]) -> [SessionEffect] {
         var effects: [SessionEffect] = []
