@@ -51,28 +51,32 @@ private struct MessageRow: View {
                 if message.isNotice || isUnread {
                     HStack(spacing: 6) {
                         if message.isNotice {
-                            Label("お知らせ", systemImage: "bell.fill").font(.caption2.weight(.semibold))
+                            Label("お知らせ", systemImage: "bell.fill").font(Comic.font(10, bold: true))
                         }
                         if isUnread {
                             Label(message.isNotice ? "未確認" : "未読", systemImage: "circle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(message.isNotice ? NoticeColors.border : .accentColor)
+                                .font(Comic.font(10, bold: true))
+                                .foregroundStyle(message.isNotice ? Color.orange : Color.blue)
                         }
                     }
+                    .foregroundStyle(Comic.ink)
                 }
-                Text(message.text).textSelection(.enabled)
+                Text(message.text).font(Comic.font(13)).lineSpacing(3).textSelection(.enabled)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .foregroundStyle(isOwner ? Color.primary : Comic.ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .background {
-                let shape = RoundedRectangle(cornerRadius: 10)
-                if message.isNotice {
-                    shape.fill(NoticeColors.background)
-                    shape.stroke(NoticeColors.border, lineWidth: 1)
+                // natsumi's words look like her balloons: paper or yellow with the ink outline.
+                let shape = RoundedRectangle(cornerRadius: Comic.radius(1))
+                if isOwner {
+                    shape.fill(Color.accentColor.opacity(0.2))
                 } else {
-                    shape.fill(isOwner ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15))
+                    shape.fill(message.isNotice ? Comic.noticePaper : Comic.paper)
+                    shape.stroke(Comic.ink, lineWidth: 1.5)
                 }
             }
+            .padding(1)
             if !isOwner { Spacer(minLength: 40) }
         }
     }

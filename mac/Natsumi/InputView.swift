@@ -15,6 +15,8 @@ struct InputView: View {
         let scale = model.characterScale.textScale
         let fontSize = 13 * scale
         let box = model.inputBoxSize
+        let ink = Comic.outline(scale)
+        let shape = RoundedRectangle(cornerRadius: Comic.radius(scale))
         VStack(alignment: .leading, spacing: 6 * scale) {
             if model.status != .connected {
                 StatusRow(model: model, scale: scale)
@@ -30,35 +32,39 @@ struct InputView: View {
                 .frame(height: box.textHeight(content: model.inputTextHeight, minimum: InputTextView.lineHeight(fontSize: fontSize)))
                 .overlay(alignment: .topLeading) {
                     if draft.isEmpty {
-                        Text("ナツミに話しかける（Shift+Enter で改行）")
-                            .font(.system(size: fontSize))
-                            .foregroundStyle(.tertiary)
+                        Text("話しかける（Shift+Enter で改行）")
+                            .font(Comic.font(fontSize))
+                            .foregroundStyle(Comic.faint)
                             .padding(.leading, InputTextView.inset.width + 5)
                             .padding(.top, InputTextView.inset.height)
                             .allowsHitTesting(false)
                     }
                 }
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.4)))
                 Button(action: openHistory) { Image(systemName: "clock.arrow.circlepath") }
                     .buttonStyle(.borderless)
+                    .foregroundStyle(Comic.ink)
                     .help("履歴")
             }
         }
-        .padding(8 * scale)
+        .padding(.horizontal, 12 * scale)
+        .padding(.vertical, 8 * scale)
         .padding(.bottom, 4)
-        .frame(width: box.width)
+        .frame(width: box.width - ink * 2)
         .fixedSize(horizontal: false, vertical: true)
-        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10 * scale))
-        .overlay(RoundedRectangle(cornerRadius: 10 * scale).stroke(Color.secondary.opacity(0.5)))
-        .overlay(alignment: .bottomTrailing) { grip }
+        .background {
+            shape.fill(Comic.paper)
+            shape.stroke(Comic.ink, lineWidth: ink)
+        }
+        .overlay(alignment: .bottomTrailing) { grip.padding(2 * scale) }
+        .padding(ink)
+        .environment(\.colorScheme, .light)
     }
 
     /// Dragging right widens the box on both sides (it stays centered under the character); dragging down makes it taller.
     private var grip: some View {
         Image(systemName: "arrow.down.right")
             .font(.system(size: 8, weight: .bold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Comic.faint)
             .frame(width: 14, height: 14)
             .contentShape(Rectangle())
             .help("ドラッグで大きさを変える")
@@ -102,7 +108,7 @@ struct StatusRow: View {
                 EmptyView()
             }
         }
-        .font(.system(size: 11 * scale))
+        .font(Comic.font(11 * scale))
     }
 }
 
@@ -122,7 +128,7 @@ private struct FailedRow: View {
             Spacer(minLength: 0)
             Button(action: dismiss) { Image(systemName: "xmark.circle") }.buttonStyle(.borderless)
         }
-        .font(.system(size: 11 * scale))
+        .font(Comic.font(11 * scale))
     }
 }
 
@@ -139,7 +145,7 @@ struct InputTextView: NSViewRepresentable {
     let onHeight: (CGFloat) -> Void
 
     static func lineHeight(fontSize: CGFloat) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: fontSize)
+        let font = Comic.nsFont(fontSize)
         return ceil(NSLayoutManager().defaultLineHeight(for: font) + inset.height * 2)
     }
 
@@ -160,7 +166,10 @@ struct InputTextView: NSViewRepresentable {
         textView.textContainerInset = Self.inset
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
-        textView.font = .systemFont(ofSize: fontSize)
+        textView.font = Comic.nsFont(fontSize)
+        // The panel is paper-white in both appearances.
+        textView.textColor = .black
+        textView.insertionPointColor = .black
         textView.string = text
         return scroll
     }
@@ -168,7 +177,7 @@ struct InputTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? NSTextView else { return }
-        if textView.font?.pointSize != fontSize { textView.font = .systemFont(ofSize: fontSize) }
+        if textView.font?.pointSize != fontSize { textView.font = Comic.nsFont(fontSize) }
         if !textView.hasMarkedText(), textView.string != text { textView.string = text }
         context.coordinator.reportHeight(of: textView)
     }
