@@ -1,0 +1,410 @@
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import type { Context } from '@earendil-works/pi-ai';
+import type { AgentSession } from '@earendil-works/pi-coding-agent';
+import { SUBSCRIPTION_TARGET } from '../src/pi-session.ts';
+import { MIGRATIONS } from '../src/server/migrations.ts';
+import { migrate, openStateDatabase } from '../src/server/state-db.ts';
+import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
+import { fixtureRuntime } from './support/fixture.ts';
+import { PRIVATE_DETAIL, ScriptedModel } from './support/scripted-model.ts';
+
+const PERSONALITY_MARKER = 'FIXTURE-PERSONALITY-5521';
+const TOKEN = 'SYNTHETIC-ORCHID-731';
+
+async function until<T>(check: () => T | undefined | false, timeout = 5_000): Promise<T> {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const value = check();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+async function setup() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-loop-')));
+  const data = join(root, 'data');
+  const sessionDirectory = join(root, 'pi', 'sessions');
+  const agentDirectory = join(root, 'pi', 'agent');
+  await mkdir(data);
+  await mkdir(sessionDirectory, { recursive: true });
+  await mkdir(agentDirectory, { recursive: true });
+  await writeFile(join(data, 'personality.md'), `# 性格・話し方\n${PERSONALITY_MARKER}\n`);
+  const db = openStateDatabase(join(root, 'state.sqlite'));
+  migrate(db, MIGRATIONS);
+  const model = new ScriptedModel();
+  const sessions: AgentSession[] = [];
+  const opened: ThinkingLoop[] = [];
+  let counter = 0;
+  const f = {
+    root, data, sessionDirectory, db, model, sessions,
+    async open(options: Partial<LoopOptions> = {}) {
+      const loop = await ThinkingLoop.open({
+        db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
+        runtime: fixtureRuntime, maxModelCalls: 4,
+        configureSession: session => { session.agent.streamFunction = model.streamFunction; sessions.push(session); },
+        ...options,
+      });
+      opened.push(loop);
+      const events: LoopClientEvent[] = [];
+      loop.subscribe(event => { events.push(event); });
+      return { loop, events };
+    },
+    /** Sends an owner message and returns its IDs; fails the test unless it was accepted. */
+    send(loop: ThinkingLoop, text: string, requestId = `request-${++counter}`, deviceId = 'device-1') {
+      const outcome = loop.send({ requestId, deviceId, text });
+      assert.equal(outcome.kind, 'accepted', JSON.stringify(outcome));
+      return outcome as Extract<SendOutcome, { kind: 'accepted' }>;
+    },
+    rows: () => db.prepare('SELECT * FROM conversations').all() as Record<string, unknown>[],
+    sessionFiles: async () => (await readdir(sessionDirectory)).filter(name => name.endsWith('.jsonl')),
+    async cleanup() {
+      for (const loop of opened) await loop.close();
+      db.close();
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+  return f;
+}
+
+const textOf = (message: Context['messages'][number]) => {
+  const content = (message as { content: unknown }).content;
+  if (typeof content === 'string') return content;
+  return (content as { type: string; text?: string }[]).filter(part => part.type === 'text').map(part => part.text).join('');
+};
+const lastUserText = (context: Context) => textOf(context.messages.filter(m => m.role === 'user').at(-1)!);
+const eventIds = (text: string) => [...text.matchAll(/"event_id":"([^"]+)"/g)].map(match => match[1]!);
+/** The tool results a model call saw after its previous assistant message, in order. */
+const toolResults = (context: Context) => {
+  const lastAssistant = context.messages.map(m => m.role).lastIndexOf('assistant');
+  return context.messages.slice(lastAssistant + 1).filter(m => m.role === 'toolResult')
+    .map(m => ({ text: textOf(m), isError: (m as { isError: boolean }).isError }));
+};
+const messages = (events: LoopClientEvent[], role?: string) =>
+  events.filter(e => e.type === 'conversation.message' && (role === undefined || e.payload.role === role));
+const completed = (events: LoopClientEvent[], eventId: string) =>
+  until(() => events.find(e => e.type === 'conversation.event.completed' && e.payload.eventId === eventId));
+const call = (name: string, args: Record<string, unknown>) => ({ name, arguments: args });
+
+test('an owner message is shown at once with the thinking expression and gets one reply through reply_to_mac', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const sent = f.send(loop, 'おはよう');
+    // Client events follow the acceptance on a microtask, so a connection answers the sender first.
+    assert.equal(events.length, 0);
+    await until(() => events.length >= 2);
+    assert.deepEqual(events.map(e => e.type), ['conversation.message', 'avatar.expression']);
+    assert.deepEqual({ ...events[0]!.payload, createdAt: undefined },
+      { messageId: sent.messageId, eventId: sent.eventId, role: 'owner', kind: 'message', text: 'おはよう', createdAt: undefined });
+    assert.equal(events[1]!.payload.expression, 'thinking');
+
+    const reply = await f.model.next();
+    const prompt = lastUserText(reply.context);
+    assert.match(prompt, /^<events>\n/);
+    assert.deepEqual(eventIds(prompt), [sent.eventId]);
+    assert.match(prompt, /"type":"mac_message"/);
+    assert.match(prompt, /おはよう/);
+    assert.match(reply.context.systemPrompt ?? '', new RegExp(PERSONALITY_MARKER));
+    reply.think('private thinking about the reply');
+    reply.delta('（内心）明るく返そう');
+    reply.call('reply_to_mac', { event_id: sent.eventId, text: 'おはようございます' });
+    reply.call('finish_event', { event_id: sent.eventId });
+    reply.finish();
+
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
+    await loop.idle();
+    assert.equal(f.model.calls, 1);
+    const replies = messages(events, 'natsumi');
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0]!.payload.kind, 'reply');
+    assert.equal(replies[0]!.payload.text, 'おはようございます');
+    assert.equal(replies[0]!.payload.replyTo, sent.eventId);
+
+    const snapshot = loop.snapshot();
+    assert.deepEqual(snapshot.messages.map(m => [m.role, m.kind, m.text]), [['owner', 'message', 'おはよう'], ['natsumi', 'reply', 'おはようございます']]);
+    assert.deepEqual(snapshot.pendingEvents, []);
+    // The server's thinking expression is released once the event is done.
+    assert.equal(snapshot.avatar.expression, 'neutral');
+    const shown = JSON.stringify([snapshot, events]);
+    for (const hidden of ['private thinking', '内心', 'reply_to_mac', 'finish_event', f.rows()[0]!.pi_session_id as string]) {
+      assert.equal(shown.includes(hidden), false, hidden);
+    }
+  } finally { await f.cleanup(); }
+});
+
+test('reply_to_mac is refused a second time for the same event and for an event that is not being handled', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const sent = f.send(loop, 'こんにちは');
+    const first = await f.model.next();
+    first.call('reply_to_mac', { event_id: sent.eventId, text: '一回目' });
+    first.call('reply_to_mac', { event_id: sent.eventId, text: '二回目' });
+    first.call('reply_to_mac', { event_id: 'event-fabricated', text: '架空の宛先' });
+    first.finish();
+    const second = await f.model.next();
+    const results = toolResults(second.context);
+    assert.deepEqual(results.map(r => r.isError), [false, true, true]);
+    assert.match(results[0]!.text, /送りました/);
+    assert.match(results[1]!.text, /すでに返事/);
+    assert.match(results[2]!.text, /処理中の本人のメッセージではありません/);
+    second.call('finish_event', { event_id: sent.eventId });
+    second.finish();
+    await completed(events, sent.eventId);
+
+    // An event that is already finished cannot be answered again from a later turn either.
+    const later = f.send(loop, 'もう一件');
+    const third = await f.model.next();
+    third.call('reply_to_mac', { event_id: sent.eventId, text: '遅れた返事' });
+    third.finish();
+    const fourth = await f.model.next();
+    assert.deepEqual(toolResults(fourth.context).map(r => r.isError), [true]);
+    fourth.finish();
+    await completed(events, later.eventId);
+    await loop.idle();
+    assert.deepEqual(messages(events, 'natsumi').map(e => e.payload.text), ['一回目']);
+  } finally { await f.cleanup(); }
+});
+
+test('text written without a tool stays inside: nothing reaches the owner and the event ends without a reply', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const sent = f.send(loop, 'ねえ');
+    const reply = await f.model.next();
+    reply.think('hidden reasoning');
+    reply.delta('はい、なんでしょう？');
+    reply.finish();
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'no-reply');
+    await loop.idle();
+    assert.deepEqual(messages(events, 'natsumi'), []);
+    assert.deepEqual(loop.snapshot().messages.map(m => m.role), ['owner']);
+    assert.equal(JSON.stringify([loop.snapshot(), events]).includes('なんでしょう'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('finish_event closes the turn only once every handled event is finished', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const first = f.send(loop, '一件目');
+    const call1 = await f.model.next();
+    // The second message arrives while the model is thinking about the first: it is steered in, not queued behind.
+    const second = f.send(loop, '二件目');
+    assert.deepEqual(loop.snapshot().pendingEvents.map(e => e.eventId), [first.eventId, second.eventId]);
+    call1.call('reply_to_mac', { event_id: first.eventId, text: '一件目への返事' });
+    call1.finish();
+
+    const call2 = await f.model.next();
+    assert.deepEqual(eventIds(lastUserText(call2.context)), [second.eventId]);
+    call2.call('reply_to_mac', { event_id: second.eventId, text: '二件目への返事' });
+    call2.call('finish_event', { event_id: first.eventId });
+    call2.finish();
+
+    // The second event is still open, so the turn goes on.
+    const call3 = await f.model.next();
+    assert.match(toolResults(call3.context)[1]!.text, /完了/);
+    call3.call('finish_event', { event_id: second.eventId });
+    call3.finish();
+    await completed(events, second.eventId);
+    await loop.idle();
+    assert.equal(f.model.calls, 3);
+    assert.deepEqual(messages(events, 'natsumi').map(e => e.payload.text), ['一件目への返事', '二件目への返事']);
+    assert.equal((await completed(events, first.eventId)).payload.status, 'replied');
+  } finally { await f.cleanup(); }
+});
+
+test('a reply and finish_event in the same model call end the turn without another call', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    f.model.auto = context => {
+      const [eventId] = eventIds(lastUserText(context));
+      return { calls: [call('reply_to_mac', { event_id: eventId, text: 'はい' }), call('finish_event', { event_id: eventId })] };
+    };
+    const sent = f.send(loop, 'テスト');
+    await completed(events, sent.eventId);
+    await loop.idle();
+    assert.equal(f.model.calls, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('a turn that keeps calling tools stops at the model call limit and the event fails without touching the owner record', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open({ maxModelCalls: 3 });
+    f.model.auto = () => ({ calls: [call('set_mac_avatar_expression', { expression: 'happy' })] });
+    const sent = f.send(loop, '止まらない場面');
+    const done = await completed(events, sent.eventId);
+    assert.deepEqual([done.payload.status, done.payload.reason], ['failed', 'model-call-limit']);
+    await loop.idle();
+    assert.equal(f.model.calls, 3);
+    assert.deepEqual(loop.snapshot().messages.map(m => [m.role, m.text]), [['owner', '止まらない場面']]);
+    assert.ok(events.some(e => e.type === 'avatar.expression' && e.payload.expression === 'happy'));
+
+    // The loop keeps working afterwards.
+    f.model.auto = context => {
+      const [eventId] = eventIds(lastUserText(context));
+      return { calls: [call('reply_to_mac', { event_id: eventId, text: '戻りました' }), call('finish_event', { event_id: eventId })] };
+    };
+    const next = f.send(loop, '次');
+    assert.equal((await completed(events, next.eventId)).payload.status, 'replied');
+  } finally { await f.cleanup(); }
+});
+
+test('a reply carrying template control strings or non-Japanese script is refused before it is sent', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const sent = f.send(loop, '確認');
+    const call1 = await f.model.next();
+    call1.call('reply_to_mac', { event_id: sent.eventId, text: '了解です</think> <tool_call> <parameter=finish_event>' });
+    call1.finish();
+    const call2 = await f.model.next();
+    assert.match(toolResults(call2.context)[0]!.text, /制御文字列/);
+    call2.call('reply_to_mac', { event_id: sent.eventId, text: '네 알겠습니다' });
+    call2.call('notify_owner', { text: '这个很长' });
+    call2.finish();
+    const call3 = await f.model.next();
+    const refused = toolResults(call3.context);
+    assert.deepEqual(refused.map(r => r.isError), [true, true]);
+    assert.match(refused[0]!.text, /日本語以外/);
+    assert.match(refused[1]!.text, /日本語以外/);
+    // A refused reply does not use up the one reply.
+    call3.call('reply_to_mac', { event_id: sent.eventId, text: '了解です' });
+    call3.call('finish_event', { event_id: sent.eventId });
+    call3.finish();
+    await completed(events, sent.eventId);
+    assert.deepEqual(messages(events, 'natsumi').map(e => e.payload.text), ['了解です']);
+  } finally { await f.cleanup(); }
+});
+
+test('notify_owner delivers notices with checked references and a per-event limit', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const sent = f.send(loop, '相談があるかも');
+    const call1 = await f.model.next();
+    call1.call('notify_owner', { text: '架空の参照', about_event_ids: ['event-fabricated'] });
+    call1.call('notify_owner', { text: '相談 1', about_event_ids: [sent.eventId] });
+    call1.call('notify_owner', { text: '相談 2' });
+    call1.call('notify_owner', { text: '相談 3' });
+    call1.call('notify_owner', { text: '相談 4' });
+    call1.finish();
+    const call2 = await f.model.next();
+    const results = toolResults(call2.context);
+    assert.deepEqual(results.map(r => r.isError), [true, false, false, false, true]);
+    assert.match(results[0]!.text, /event-fabricated/);
+    assert.match(results[4]!.text, /上限/);
+    call2.call('finish_event', { event_id: sent.eventId });
+    call2.finish();
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'no-reply');
+    const notices = messages(events, 'natsumi');
+    assert.deepEqual(notices.map(e => [e.payload.kind, e.payload.text]), [['notice', '相談 1'], ['notice', '相談 2'], ['notice', '相談 3']]);
+    assert.deepEqual(notices[0]!.payload.about, [sent.eventId]);
+    assert.deepEqual(loop.snapshot().messages.map(m => m.kind), ['message', 'notice', 'notice', 'notice']);
+  } finally { await f.cleanup(); }
+});
+
+test('a resent requestId is not handled twice; a different body or device is refused', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    f.model.auto = context => {
+      const [eventId] = eventIds(lastUserText(context));
+      return { calls: [call('reply_to_mac', { event_id: eventId, text: 'はい' }), call('finish_event', { event_id: eventId })] };
+    };
+    const first = f.send(loop, 'hello', 'request-same');
+    const again = f.send(loop, 'hello', 'request-same');
+    assert.deepEqual([again.messageId, again.eventId], [first.messageId, first.eventId]);
+    assert.deepEqual(loop.send({ requestId: 'request-same', deviceId: 'device-1', text: 'other' }), { kind: 'rejected', code: 'request-conflict' });
+    assert.deepEqual(loop.send({ requestId: 'request-same', deviceId: 'device-2', text: 'hello' }), { kind: 'rejected', code: 'request-conflict' });
+    await completed(events, first.eventId);
+    await loop.idle();
+    assert.equal(f.send(loop, 'hello', 'request-same').messageId, first.messageId);
+    await loop.idle();
+    assert.equal(f.model.calls, 1);
+    assert.equal(messages(events, 'owner').length, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('the conversation shown to the owner survives a restart, the same Pi session continues, and thinking follows the config', async () => {
+  const f = await setup();
+  try {
+    const first = await f.open();
+    assert.equal(first.loop.unavailable, undefined);
+    assert.notEqual(f.sessions[0]!.thinkingLevel, 'off');
+    const [file] = await f.sessionFiles();
+    assert.ok(file);
+    assert.deepEqual(f.rows().map(row => row.pi_session_file), [file]);
+    f.model.auto = context => {
+      const [eventId] = eventIds(lastUserText(context));
+      const earlier = JSON.stringify(context.messages.slice(0, -1)).includes(TOKEN);
+      return { calls: [call('reply_to_mac', { event_id: eventId, text: earlier ? TOKEN : 'OK' }), call('finish_event', { event_id: eventId })] };
+    };
+    const sent = f.send(first.loop, `合言葉は ${TOKEN}`);
+    await completed(first.events, sent.eventId);
+    const snapshot = first.loop.snapshot();
+    await first.loop.close();
+
+    const second = await f.open({ thinking: 'off' });
+    assert.equal(f.sessions[1]!.thinkingLevel, 'off');
+    assert.deepEqual(second.loop.snapshot().messages, snapshot.messages);
+    const asked = f.send(second.loop, '合言葉は？');
+    await completed(second.events, asked.eventId);
+    assert.equal(messages(second.events, 'natsumi').at(-1)?.payload.text, TOKEN);
+    assert.deepEqual(await f.sessionFiles(), [file]);
+  } finally { await f.cleanup(); }
+});
+
+test('a missing, corrupt or mismatched session file makes the loop unavailable instead of replacing it', async () => {
+  const f = await setup();
+  try {
+    const first = await f.open();
+    f.model.auto = context => {
+      const [eventId] = eventIds(lastUserText(context));
+      return { calls: [call('finish_event', { event_id: eventId })] };
+    };
+    const sent = f.send(first.loop, 'hello');
+    await completed(first.events, sent.eventId);
+    await first.loop.close();
+    const rows = f.rows();
+    const name = String(rows[0]!.pi_session_file);
+    const file = join(f.sessionDirectory, name);
+    const original = await readFile(file, 'utf8');
+    const damage = [
+      () => rm(file),
+      () => writeFile(file, `${original}{"type":"message","message":\n`),
+      () => writeFile(file, original.replace(String(rows[0]!.pi_session_id), '00000000-0000-4000-8000-000000000000')),
+    ];
+    let n = 0;
+    for (const apply of damage) {
+      await apply();
+      const { loop } = await f.open();
+      assert.equal(loop.unavailable, 'conversation-restore-failed');
+      assert.deepEqual(loop.send({ requestId: `request-damaged-${n++}`, deviceId: 'device-1', text: 'hello' }),
+        { kind: 'unavailable', code: 'conversation-restore-failed' });
+      await loop.close();
+      assert.deepEqual(f.rows(), rows);
+      for (const seen of await f.sessionFiles()) assert.equal(seen, name);
+      await writeFile(file, original);
+    }
+    assert.equal(f.model.calls, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('a model runtime that cannot start leaves the loop unavailable without creating a session', async () => {
+  const f = await setup();
+  try {
+    const { loop } = await f.open({ runtime: async () => { throw new Error(PRIVATE_DETAIL); } });
+    assert.equal(loop.unavailable, 'pi-unavailable');
+    assert.deepEqual(loop.send({ requestId: 'request-1', deviceId: 'device-1', text: 'hello' }), { kind: 'unavailable', code: 'pi-unavailable' });
+    assert.deepEqual(f.rows(), []);
+    assert.deepEqual(await f.sessionFiles(), []);
+  } finally { await f.cleanup(); }
+});

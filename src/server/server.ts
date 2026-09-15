@@ -1,5 +1,6 @@
 import { join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { CertificateManager, CHECK_INTERVAL_MS, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
 import { loadConfig, type ServerConfig } from './config.ts';
@@ -9,11 +10,13 @@ import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-lo
 import { bearerToken, openListener, type Listener } from './http.ts';
 import { acquireProcessLock, type ProcessLock } from './lock.ts';
 import { MIGRATIONS } from './migrations.ts';
+import { createModelRuntime } from './pi-runtime.ts';
 import { preparePiState } from './pi-state.ts';
 import { readSecret, readTlsFiles } from './secrets.ts';
 import { SessionStore } from './sessions.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
+import { ThinkingLoop } from './thinking-loop.ts';
 
 const SESSION_SWEEP_MS = 30_000;
 /** The shortest wait between background certificate checks, so a schedule surprise cannot spin. */
@@ -33,6 +36,15 @@ export interface StartOptions {
   log?: (line: string) => void;
   /** ACME polling interval. Tests shorten it. */
   acme?: { pollIntervalMs?: number };
+  /** Replaces the configured model route and loop limits. Tests supply a synthetic runtime and model stream here. */
+  pi?: {
+    runtime?: () => Promise<ModelRuntime>;
+    configureSession?: (session: AgentSession) => void;
+    maxModelCalls?: number;
+    runTimeoutMs?: number;
+  };
+  /** Events kept per device stream for replay after a reconnect. */
+  streamBufferSize?: number;
 }
 
 type Address = { host: string; port: number };
@@ -70,6 +82,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   const lock = acquireProcessLock(dataDirectory);
   let db: DatabaseSync | undefined;
   let hub: ConnectionHub | undefined;
+  let loop: ThinkingLoop | undefined;
   let listener: Listener | undefined;
   let challenge: ChallengeListener | undefined;
   let certificates: CertificateManager | undefined;
@@ -85,17 +98,28 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     await checking?.catch(() => {});
     try {
       if (listener) await listener.close(); else await hub?.close();
-    } finally { await challenge?.close(); }
+    } finally {
+      try { await challenge?.close(); } finally { await loop?.close(); }
+    }
   };
   try {
     db = openStateDatabase(join(dataDirectory, STATE_DIRECTORY, 'state.sqlite'));
     const { version } = migrate(db, MIGRATIONS);
     await preparePiState(config.pi, { dataDirectory, home: options.home });
 
+    // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
+    const thinkingLoop = loop = await ThinkingLoop.open({
+      db, dataDirectory, sessionDirectory: config.pi.sessionDirectory, agentDirectory: config.pi.agentDirectory,
+      target: { provider: config.pi.model.provider, model: config.pi.model.id }, thinking: config.pi.thinking,
+      runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
+      configureSession: options.pi?.configureSession, maxModelCalls: options.pi?.maxModelCalls,
+      runTimeoutMs: options.pi?.runTimeoutMs, now, log,
+    });
+
     const sessions = new SessionStore(db, now);
     const allowedUserId = config.github.allowedUserId;
     const connections = hub = new ConnectionHub({
-      publicOrigin: config.publicOrigin, now,
+      publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize,
       authenticate: request => {
         const token = bearerToken(request);
         return token ? sessions.verify(token, allowedUserId) : undefined;

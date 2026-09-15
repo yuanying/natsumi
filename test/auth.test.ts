@@ -45,14 +45,16 @@ test('compatible endpoint rejects plaintext remote URLs but allows loopback', as
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('compatible endpoint registers one non-thinking chat-completions model and references the key by env name only', async () => {
+test('compatible endpoint registers one thinking-capable chat-completions model and references the key by env name only', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-compat-fixture-'));
   try {
     const runtime = await compatibleRuntime(root, endpoint, { [COMPATIBLE_KEY_ENV]: 'fixture-secret-value' });
     const model = runtime.getModel(COMPATIBLE_PROVIDER, 'fixture-model');
     assert.equal(model?.api, 'openai-completions');
     assert.equal(model?.baseUrl, endpoint.baseUrl);
-    assert.equal(model?.reasoning, false);
+    // Thinking is switched per session through Pi's thinking level (ADR 0008); the model itself can think.
+    assert.equal(model?.reasoning, true);
+    assert.equal((model?.compat as { thinkingFormat?: string } | undefined)?.thinkingFormat, 'qwen-chat-template');
     assert.deepEqual(runtime.getModels(COMPATIBLE_PROVIDER).map(m => m.id), ['fixture-model']);
     const config = runtime.getRegisteredProviderConfig(COMPATIBLE_PROVIDER);
     assert.equal(config?.apiKey, `$${COMPATIBLE_KEY_ENV}`);

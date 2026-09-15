@@ -71,12 +71,14 @@ test('the initial schema applies cleanly and twice', () => withDb(db => {
   assert.equal(db.prepare('PRAGMA foreign_keys').get()?.foreign_keys, 1);
 }));
 
-test('the initial schema keeps references to Pi sessions but never conversation text', () => withDb(db => {
+test('the schema keeps the conversation shown to the owner and only references to the Pi session', () => withDb(db => {
   migrate(db, MIGRATIONS);
+  // Text lives in one table: what the owner sees. Thoughts and tool calls stay in the Pi session (ADR 0008).
   for (const table of tables(db)) {
     const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(c => c.name);
     for (const column of columns) {
-      assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response)$/i, `${table}.${column}`);
+      if (table === 'conversation_messages' && column === 'text') continue;
+      assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response|thinking|tool_calls?)$/i, `${table}.${column}`);
     }
   }
   const conversation = { id: 'conversation-example', session: 'session-example' };
@@ -87,10 +89,17 @@ test('the initial schema keeps references to Pi sessions but never conversation 
     assert.throws(() => db.prepare('INSERT INTO conversations (conversation_id, pi_session_id, pi_session_file, created_at) VALUES (?, ?, ?, ?)')
       .run(`c-${file}`, `s-${file}`, file, '2026-01-01T00:00:00Z'), /constraint/i);
   }
-  const insertOp = db.prepare(`INSERT INTO conversation_operations
-    (request_id, device_id, conversation_id, body_hash, state, turn_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'accepted', ?, ?, ?)`);
-  insertOp.run('request-1', 'device-1', conversation.id, 'hash', 'turn-1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
-  assert.throws(() => insertOp.run('request-1', 'device-1', conversation.id, 'other', 'turn-2', 'x', 'x'), /constraint/i);
-  assert.throws(() => insertOp.run('request-2', 'device-1', 'unknown-conversation', 'h', 'turn-3', 'x', 'x'), /constraint/i);
+
+  const insert = db.prepare(`INSERT INTO conversation_messages
+    (message_id, position, role, kind, text, event_id, request_id, device_id, created_at) VALUES (?, ?, ?, ?, 'x', ?, ?, ?, 'x')`);
+  insert.run('message-1', 1, 'owner', 'message', 'event-1', 'request-1', 'device-1');
+  // A request ID names one owner message.
+  assert.throws(() => insert.run('message-2', 2, 'owner', 'message', 'event-2', 'request-1', 'device-1'), /constraint/i);
+  // Only the owner writes messages; natsumi's words are replies or notices.
+  assert.throws(() => insert.run('message-3', 3, 'natsumi', 'message', 'event-3', 'request-3', 'device-1'), /constraint/i);
+  assert.throws(() => insert.run('message-4', 4, 'owner', 'reply', 'event-1', null, null), /constraint/i);
+  // One reply per event.
+  insert.run('message-5', 5, 'natsumi', 'reply', 'event-1', null, null);
+  assert.throws(() => insert.run('message-6', 6, 'natsumi', 'reply', 'event-1', null, null), /constraint/i);
+  assert.equal(tables(db).includes('conversation_operations'), false);
 }));

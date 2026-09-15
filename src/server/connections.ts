@@ -1,37 +1,65 @@
 import { randomUUID } from 'node:crypto';
 import { STATUS_CODES, type IncomingMessage } from 'node:http';
+import type { DatabaseSync } from 'node:sqlite';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
+import { DEFAULT_STREAM_BUFFER_SIZE, DeviceStreams, EventStream, PROTOCOL_VERSION } from './device-streams.ts';
 import type { VerifiedSession } from './sessions.ts';
+import type { ThinkingLoop } from './thinking-loop.ts';
 
-export const PROTOCOL_VERSION = 1;
+export { PROTOCOL_VERSION };
 export const WEBSOCKET_PATH = '/v1/ws';
 const MAX_MESSAGE_BYTES = 64 * 1024;
+const MAX_TEXT_BYTES = 32 * 1024;
+/** A client this far behind is disconnected; it reconnects and syncs, falling back to a snapshot. */
+const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+export const CLOSE_DEVICE_REPLACED = 4001;
+export const CLOSE_TOO_SLOW = 4002;
 
-/** Commands of the v1 client contract. None is implemented yet; each receives a safe rejection. */
+/** Commands of the v1 client contract. The ones not handled below receive a safe rejection. */
 const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.interrupt', 'approval.decide', 'notification.ack', 'device.activity']);
 
-interface Connection { sessionId: string; expiresAt: number; streamId: string; seq: number }
+interface Connection {
+  session: VerifiedSession;
+  expiresAt: number;
+  /** Answers sent before `session.sync` binds the connection to a device stream. */
+  local: EventStream;
+  deliver: (text: string) => void;
+  deviceId?: string;
+  stream?: EventStream;
+}
 
 export interface ConnectionHubOptions {
   publicOrigin: string;
   /** The live session presented by an upgrade request, or undefined. */
   authenticate: (request: IncomingMessage) => VerifiedSession | undefined;
   now: () => number;
+  db: DatabaseSync;
+  loop: ThinkingLoop;
+  /** Events kept per device stream for replay after a reconnect. */
+  streamBufferSize?: number;
 }
+
+type Payload = Record<string, unknown>;
+const isObject = (value: unknown): value is Payload => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * Authenticated WebSocket connections. Every check happens during the HTTP upgrade, so a refused client never
- * gets an open connection. Until device registration exists each connection is its own stream.
+ * gets an open connection. `session.sync` binds a connection to a server-registered device and its stream.
  */
 export class ConnectionHub {
   readonly epoch = randomUUID();
   private readonly server = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
   private readonly connections = new Map<WebSocket, Connection>();
   private readonly options: ConnectionHubOptions;
+  private readonly devices: DeviceStreams;
+  private readonly unsubscribe: () => void;
 
   constructor(options: ConnectionHubOptions) {
     this.options = options;
+    this.devices = new DeviceStreams(options.db, this.epoch, options.streamBufferSize ?? DEFAULT_STREAM_BUFFER_SIZE);
+    // Everything the loop shows the owner goes to every device alike.
+    this.unsubscribe = options.loop.subscribe(event => this.devices.broadcast(event.type, event.payload));
   }
 
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -48,54 +76,130 @@ export class ConnectionHub {
 
   /** Closes every connection opened with this session (logout). */
   closeSession(sessionId: string): void {
-    for (const [ws, connection] of this.connections) if (connection.sessionId === sessionId) ws.close(1008, 'session ended');
+    for (const [ws, connection] of this.connections) if (connection.session.sessionId === sessionId) ws.close(1008, 'session ended');
   }
 
-  /** Closes connections whose session has expired. Called periodically. */
+  /** Closes connections whose session has expired. Called periodically and before every command. */
   expireSessions(): void {
     const now = this.options.now();
     for (const [ws, connection] of this.connections) if (connection.expiresAt <= now) ws.close(1008, 'session ended');
   }
 
   close(): Promise<void> {
+    this.unsubscribe();
     for (const ws of this.connections.keys()) ws.terminate();
     return new Promise(resolve => this.server.close(() => resolve()));
   }
 
   private accept(ws: WebSocket, session: VerifiedSession) {
-    const connection: Connection = { sessionId: session.sessionId, expiresAt: Date.parse(session.expiresAt), streamId: randomUUID(), seq: 0 };
+    const deliver = (text: string) => {
+      if (ws.readyState !== ws.OPEN) return;
+      if (ws.bufferedAmount > MAX_BUFFERED_BYTES) { ws.close(CLOSE_TOO_SLOW, 'too far behind; sync again'); return; }
+      ws.send(text);
+    };
+    const local = new EventStream(this.epoch, 0);
+    local.sink = deliver;
+    const connection: Connection = { session, expiresAt: Date.parse(session.expiresAt), local, deliver };
     this.connections.set(ws, connection);
-    ws.on('close', () => this.connections.delete(ws));
+    ws.on('close', () => {
+      this.connections.delete(ws);
+      // Events keep numbering on the device stream while nobody receives them.
+      if (connection.stream?.sink === deliver) connection.stream.sink = undefined;
+    });
     ws.on('error', () => ws.terminate());
     ws.on('message', (data, isBinary) => this.receive(ws, connection, data, isBinary));
   }
 
   private receive(ws: WebSocket, connection: Connection, data: RawData, isBinary: boolean) {
+    if (connection.expiresAt <= this.options.now()) { ws.close(1008, 'session ended'); return; }
+    const out = () => connection.stream ?? connection.local;
     let envelope: unknown;
     try { if (!isBinary) envelope = JSON.parse(String(data)); } catch { /* handled below */ }
-    if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) {
-      this.send(ws, connection, 'command.rejected', undefined, { code: 'invalid-envelope' });
+    if (!isObject(envelope)) {
+      out().publish('command.rejected', { code: 'invalid-envelope' });
       ws.close(1007, 'invalid envelope');
       return;
     }
-    const { v, type, requestId } = envelope as Record<string, unknown>;
-    const id = typeof requestId === 'string' && requestId.length <= 128 ? requestId : undefined;
+    const { v, type, requestId, deviceId } = envelope;
+    const id = typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 128 ? requestId : undefined;
     if (v !== PROTOCOL_VERSION) {
-      this.send(ws, connection, 'command.rejected', id, { code: 'unsupported-version' });
+      out().publish('command.rejected', { code: 'unsupported-version' }, id);
       ws.close(1002, 'unsupported protocol version');
       return;
     }
     // Unknown types are ignored so newer clients keep working. deviceId is never treated as authentication.
     if (typeof type !== 'string' || !KNOWN_COMMANDS.has(type)) return;
-    this.send(ws, connection, 'command.rejected', id, { code: 'not-implemented' });
+    const payload = isObject(envelope.payload) ? envelope.payload : {};
+    const reject = (code: string) => out().publish('command.rejected', { code }, id);
+
+    switch (type) {
+      case 'session.sync':
+        return this.sync(ws, connection, deviceId, payload, id);
+      case 'conversation.send': {
+        const stream = connection.stream;
+        if (!stream || !connection.deviceId) return reject('sync-required');
+        if (deviceId !== connection.deviceId) return reject('device-mismatch');
+        if (id === undefined) return reject('invalid-request');
+        return this.send(stream, connection.deviceId, payload, id);
+      }
+      default:
+        // conversation.interrupt among them: a thought in progress is never stopped from outside (ADR 0008).
+        return reject('not-implemented');
+    }
   }
 
-  private send(ws: WebSocket, connection: Connection, type: string, requestId: string | undefined, payload: Record<string, unknown>) {
-    connection.seq += 1;
-    ws.send(JSON.stringify({
-      v: PROTOCOL_VERSION, epoch: this.epoch, streamId: connection.streamId, seq: connection.seq, type,
-      ...(requestId === undefined ? {} : { requestId }), payload,
-    }));
+  private sync(ws: WebSocket, connection: Connection, requested: unknown, payload: Payload, requestId: string | undefined) {
+    if (connection.deviceId && requested !== connection.deviceId) {
+      connection.stream!.publish('command.rejected', { code: 'device-mismatch' }, requestId);
+      return;
+    }
+    const { session } = connection;
+    const deviceId = this.devices.register(requested, session.githubUserId, session.sessionId);
+    const stream = this.devices.stream(deviceId);
+    for (const [other, otherConnection] of this.connections) {
+      if (other === ws || otherConnection.deviceId !== deviceId) continue;
+      otherConnection.deviceId = undefined;
+      otherConnection.stream = undefined;
+      other.close(CLOSE_DEVICE_REPLACED, 'replaced by a newer connection of this device');
+    }
+    connection.deviceId = deviceId;
+    connection.stream = stream;
+    stream.sink = connection.deliver;
+
+    const { loop } = this.options;
+    if (loop.unavailable) {
+      stream.publish('service.unavailable', { code: loop.unavailable, deviceId }, requestId);
+      return;
+    }
+    const resume = isObject(payload.resume) ? payload.resume : undefined;
+    if (resume && resume.epoch === this.epoch && resume.streamId === stream.streamId) {
+      const missed = stream.replayAfter(resume.seq);
+      if (missed) {
+        for (const text of missed) connection.deliver(text);
+        stream.publish('command.accepted', { deviceId, mode: 'resume' }, requestId);
+        return;
+      }
+    }
+    // A different epoch or stream, a gap, or events already gone from the buffer: start over from a snapshot.
+    // Its own seq is the barrier; events numbered after it apply on top.
+    stream.publish('session.snapshot', { deviceId, ...loop.snapshot() }, requestId);
+  }
+
+  private send(stream: EventStream, deviceId: string, payload: Payload, requestId: string) {
+    const { text } = payload;
+    if (typeof text !== 'string' || text.trim() === '' || Buffer.byteLength(text) > MAX_TEXT_BYTES) {
+      stream.publish('command.rejected', { code: 'invalid-request' }, requestId);
+      return;
+    }
+    const outcome = this.options.loop.send({ requestId, deviceId, text });
+    if (outcome.kind === 'unavailable') {
+      stream.publish('service.unavailable', { code: outcome.code }, requestId);
+    } else if (outcome.kind === 'rejected') {
+      stream.publish('command.rejected', { code: outcome.code }, requestId);
+    } else {
+      // The message is already recorded; the loop's own events follow this answer.
+      stream.publish('command.accepted', { messageId: outcome.messageId, eventId: outcome.eventId, state: outcome.state }, requestId);
+    }
   }
 }
 

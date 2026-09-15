@@ -3,8 +3,9 @@
 Pi Coding Agent を使う個人アシスタント。現在はサーバー基盤（設定の検証、data directory の初期化、
 二重起動の拒否、状態 DB の migration、専用の Pi 状態領域、コンテナ）、GitHub ログインと短期セッション、
 HTTPS/WSS の待ち受けと v1 envelope の入口、Let's Encrypt（ACME HTTP-01）による証明書の自動取得、
-固定 IPv6 で公開するコンテナ構成、Pi SDK の隔離検証ハーネスを提供しています。
-会話、Mac UI、Google/Wiki 連携は後続の実装です。
+固定 IPv6 で公開するコンテナ構成、Pi SDK の隔離検証ハーネス、単一の思考ループによる Mac との会話
+（端末の登録と同期、表情、表示用の会話の記録）を提供しています。
+記憶、Slack、通知・スケジューラー、Mac UI、Google/Wiki 連携は後続の実装です。
 
 Node.js 24.12.0 以降を使用します。通常の検証は外部認証・ネットワーク接続を必要としません
 （初回の npm 依存取得を除く）。Pi は `@earendil-works/pi-coding-agent` の SDK を npm 依存として固定しています。
@@ -30,6 +31,10 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
 2. 下記の手順で GitHub OAuth App と TLS 証明書を用意します。
 3. [config.example.json](config.example.json) を `config.local.json` などにコピーし、実環境に合わせます。
    - `pi`: Pi 状態領域のパス。data directory ともホームの `.pi` / `.codex` とも別の場所にします。
+     `model` でモデルを選びます。専用領域で login した Pi のサブスクリプション（例: `openai-codex`）か、
+     `"provider": "natsumi-compatible"` と `compatible`（自分で動かす OpenAI 互換エンドポイントの `baseUrl` と、
+     API key の参照 `apiKeyEnv` か `apiKeyFile`）の組です。両者の間で自動の切り替えはしません。
+     `thinking` は既定で `"on"`（思考あり）で、`"off"` にもできます。
    - `publicOrigin`: クライアントが使う origin（例: `https://natsumi.example.net:8443`）。https に限ります。
    - `listen`: 待ち受けアドレス・ポート・TLS。`"host": "::"` で IPv4 と IPv6 の両方で待ち受けます。
      `tls` には証明書と鍵のファイル、または Let's Encrypt から自動取得する `acme` を指定します。
@@ -46,6 +51,11 @@ node dist/src/server/main.js serve --config config.local.json --data-dir <data d
 `.natsumi/`（状態 DB・ロック・状態ファイル）を作ります。既存のファイルは上書きしません。
 同じ data directory で 2 つ目のサーバーを起動すると拒否します。異常終了後のロックは OS が解放するため、そのまま再起動できます。
 SIGTERM / SIGINT で停止します。
+
+会話は、一本の Pi session が思考ループとして本人のメッセージを 1 件ずつ処理し、ツールで返事や表情を出す形です
+（[ADR 0008](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)）。本人のメッセージと natsumi の返事・知らせは
+`.natsumi/state.sqlite` に、思考の記録は Pi の session に保存されます。どちらも個人データとして一緒にバックアップしてください。
+Pi の session ファイルが消えた・壊れた場合は新しい session を作らず、会話を使えない状態で起動します。
 
 稼働状態は `node dist/src/server/main.js health --data-dir <data directory>` で確認できます（稼働中なら終了コード 0）。
 
@@ -151,7 +161,7 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json)（証明書ファイル）と [ACME の設定例](config.acme.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。

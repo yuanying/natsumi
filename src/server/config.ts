@@ -17,9 +17,21 @@ export interface PiConfig {
   sessionDirectory: string;
   authPath: string;
   model: { provider: string; id: string };
+  /** Present only for the `natsumi-compatible` provider. Without it the OAuth login at `authPath` is the only route. */
+  compatible?: CompatibleConfig;
+  /** Whether the model thinks before it acts. On by default (ADR 0008). */
+  thinking: 'on' | 'off';
   /** Voice is unsupported until its method and billing terms are verified (ADR 0004). */
   voiceEnabled: false;
 }
+
+/** An OpenAI-compatible Chat Completions endpoint the owner runs (ADR 0004). */
+export interface CompatibleConfig {
+  baseUrl: string;
+  apiKey: SecretReference;
+}
+
+export const COMPATIBLE_PROVIDER = 'natsumi-compatible';
 
 export interface TlsConfig { certFile: string; keyFile: string }
 
@@ -114,22 +126,48 @@ export function parseConfig(raw: unknown): ServerConfig {
 
 function parsePi(value: unknown, path: string): PiConfig {
   const pi = object(value, path);
-  onlyKeys(pi, path, ['agentDirectory', 'sessionDirectory', 'authPath', 'model', 'voiceEnabled']);
+  onlyKeys(pi, path, ['agentDirectory', 'sessionDirectory', 'authPath', 'model', 'compatible', 'thinking', 'voiceEnabled']);
   const modelPath = `${path}.model`;
   const model = object(required(pi, 'model', path), modelPath);
   onlyKeys(model, modelPath, ['provider', 'id']);
   const voice = required(pi, 'voiceEnabled', path);
   if (voice !== false) throw new ConfigError(`${path}.voiceEnabled`, 'voice is not supported; set false');
+  const thinking = pi.thinking === undefined ? 'on' : pi.thinking;
+  if (thinking !== 'on' && thinking !== 'off') throw new ConfigError(`${path}.thinking`, 'must be "on" or "off"');
+  const provider = nonEmptyString(required(model, 'provider', modelPath), `${modelPath}.provider`);
+  // The route is chosen explicitly and never falls back: the compatible provider and its endpoint come together.
+  let compatible: CompatibleConfig | undefined;
+  if (pi.compatible !== undefined) {
+    if (provider !== COMPATIBLE_PROVIDER) {
+      throw new ConfigError(`${modelPath}.provider`, `must be ${COMPATIBLE_PROVIDER} when ${path}.compatible is set`);
+    }
+    compatible = parseCompatible(pi.compatible, `${path}.compatible`);
+  } else if (provider === COMPATIBLE_PROVIDER) {
+    throw new ConfigError(`${path}.compatible`, `is required for the ${COMPATIBLE_PROVIDER} provider`);
+  }
   return {
     agentDirectory: absolutePath(required(pi, 'agentDirectory', path), `${path}.agentDirectory`),
     sessionDirectory: absolutePath(required(pi, 'sessionDirectory', path), `${path}.sessionDirectory`),
     authPath: absolutePath(required(pi, 'authPath', path), `${path}.authPath`),
-    model: {
-      provider: nonEmptyString(required(model, 'provider', modelPath), `${modelPath}.provider`),
-      id: nonEmptyString(required(model, 'id', modelPath), `${modelPath}.id`),
-    },
+    model: { provider, id: nonEmptyString(required(model, 'id', modelPath), `${modelPath}.id`) },
+    ...(compatible ? { compatible } : {}),
+    thinking,
     voiceEnabled: false,
   };
+}
+
+function parseCompatible(value: unknown, path: string): CompatibleConfig {
+  const compatible = object(value, path);
+  onlyKeys(compatible, path, ['baseUrl', 'apiKeyEnv', 'apiKeyFile']);
+  const baseUrlPath = `${path}.baseUrl`;
+  const url = parseUrl(required(compatible, 'baseUrl', path), baseUrlPath);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new ConfigError(baseUrlPath, 'must not carry credentials, a query or a fragment');
+  }
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new ConfigError(baseUrlPath, 'must use https (http is accepted only for a loopback host)');
+  }
+  return { baseUrl: url.href, apiKey: secretReference(compatible, path, 'apiKey') };
 }
 
 function parsePublicOrigin(value: unknown, path: string): string {
@@ -206,16 +244,7 @@ function parseAcme(value: unknown, path: string, listenPort: number): AcmeConfig
 function parseGitHub(value: unknown, path: string): GitHubConfig {
   const github = object(value, path);
   onlyKeys(github, path, ['clientId', 'clientSecretEnv', 'clientSecretFile', 'callbackUrl', 'allowedUserId']);
-  let clientSecret: SecretReference;
-  if (github.clientSecretEnv !== undefined && github.clientSecretFile !== undefined) {
-    throw new ConfigError(`${path}.clientSecretFile`, 'set only one of clientSecretEnv and clientSecretFile');
-  } else if (github.clientSecretEnv !== undefined) {
-    clientSecret = { env: envReference(github.clientSecretEnv, `${path}.clientSecretEnv`) };
-  } else if (github.clientSecretFile !== undefined) {
-    clientSecret = { file: absolutePath(github.clientSecretFile, `${path}.clientSecretFile`) };
-  } else {
-    throw new ConfigError(`${path}.clientSecretEnv`, 'is required (or clientSecretFile)');
-  }
+  const clientSecret = secretReference(github, path, 'clientSecret');
   const callbackPath = `${path}.callbackUrl`;
   const callback = parseUrl(required(github, 'callbackUrl', path), callbackPath);
   if (callback.pathname !== GITHUB_CALLBACK_PATH || callback.search || callback.hash || callback.username || callback.password) {
@@ -267,6 +296,18 @@ export function absolutePath(value: unknown, path: string): string {
 function parseUrl(value: unknown, path: string): URL {
   const text = nonEmptyString(value, path);
   try { return new URL(text); } catch { throw new ConfigError(path, 'must be a URL'); }
+}
+
+/** Exactly one of `<name>Env` and `<name>File`. */
+function secretReference(parent: Record<string, unknown>, path: string, name: string): SecretReference {
+  const env = parent[`${name}Env`];
+  const file = parent[`${name}File`];
+  if (env !== undefined && file !== undefined) {
+    throw new ConfigError(`${path}.${name}File`, `set only one of ${name}Env and ${name}File`);
+  }
+  if (env !== undefined) return { env: envReference(env, `${path}.${name}Env`) };
+  if (file !== undefined) return { file: absolutePath(file, `${path}.${name}File`) };
+  throw new ConfigError(`${path}.${name}Env`, `is required (or ${name}File)`);
 }
 
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
