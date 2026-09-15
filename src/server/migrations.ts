@@ -109,4 +109,30 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX loop_events_by_state ON loop_events (state, created_at);
     `,
   },
+  {
+    version: 5,
+    name: 'session-rotations',
+    sql: `
+      -- Nightly switches of the thinking loop's Pi session (ADR 0009). The old session file is kept; conversations
+      -- points to the new one only once the switch is committed. A 'switching' row carries a handoff written before
+      -- a stop, and the next start finishes that switch.
+      CREATE TABLE session_rotations (
+        rotation_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE REFERENCES loop_events (event_id),
+        conversation_id TEXT NOT NULL REFERENCES conversations (conversation_id),
+        from_session_id TEXT NOT NULL,
+        from_session_file TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('reviewing', 'switching', 'switched', 'failed')),
+        -- What the review wrote for the next session. It goes into that session's instructions.
+        handoff TEXT,
+        to_session_id TEXT UNIQUE,
+        to_session_file TEXT UNIQUE,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (state NOT IN ('switching', 'switched') OR handoff IS NOT NULL),
+        CHECK (state <> 'switched' OR (to_session_id IS NOT NULL AND to_session_file IS NOT NULL))
+      ) STRICT;
+    `,
+  },
 ];

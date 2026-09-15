@@ -41,6 +41,8 @@ export interface PiSessionOptions {
   expectedSessionId?: string;
   /** The tool allowlist and its definitions. Without it Pi has no tools at all (ADR 0004). */
   tools?: { names: string[]; definitions: CreateOptions['customTools'] };
+  /** How much recent context a compaction keeps unsummarized. Pi's default when omitted. */
+  keepRecentTokens?: number;
 }
 
 /**
@@ -70,7 +72,11 @@ export async function openPiSession(options: PiSessionOptions): Promise<AgentSes
   }
   const model = modelRuntime.getModel(target.provider, target.model);
   if (!model) throw new Error('Pinned Pi model unavailable');
-  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+  // Pi never compacts on its own; the thinking loop compacts between turns (ADR 0009).
+  const settingsManager = SettingsManager.inMemory({
+    compaction: { enabled: false, ...(options.keepRecentTokens ? { keepRecentTokens: options.keepRecentTokens } : {}) },
+    retry: { enabled: false },
+  });
   const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     systemPrompt: options.systemPrompt,

@@ -43,6 +43,7 @@ test('a valid config becomes a typed server config', () => {
       callbackUrl: 'https://natsumi.example.test/auth/github/callback',
       allowedUserId: 4242001,
     },
+    loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000 },
   });
   const { clientSecretEnv: _, ...rest } = github();
   assert.deepEqual(parseConfig({ ...base(), github: { ...rest, clientSecretFile: '/run/secrets/github-client-secret' } }).github.clientSecret,
@@ -69,6 +70,19 @@ test('thinking is on unless the config switches it off', () => {
   assert.equal(parseConfig(base()).pi.thinking, 'on');
   assert.equal(parseConfig({ ...base(), pi: { ...pi(), thinking: 'off' } }).pi.thinking, 'off');
   for (const thinking of [true, 'medium', '', null]) rejects({ ...base(), pi: { ...pi(), thinking } }, 'pi.thinking', /on.*off/);
+});
+
+test('the loop section sets the time zone, the nightly switch and the compaction limit, each with a default', () => {
+  const loop = { timeZone: 'Asia/Tokyo', nightlyRotationAt: '03:30', compactionThreshold: 80000, compactionKeepRecent: 10000 };
+  assert.deepEqual(parseConfig({ ...base(), loop }).loop, loop);
+  assert.deepEqual(parseConfig({ ...base(), loop: { timeZone: 'Asia/Tokyo' } }).loop,
+    { timeZone: 'Asia/Tokyo', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000 });
+  assert.equal(parseConfig({ ...base(), loop: { nightlyRotationAt: false } }).loop.nightlyRotationAt, false);
+  rejects({ ...base(), loop: { timeZone: 'Mars/Olympus' } }, 'loop.timeZone', /time zone/);
+  for (const time of ['4:00', '24:00', '04:60', '', true]) rejects({ ...base(), loop: { nightlyRotationAt: time } }, 'loop.nightlyRotationAt', /HH:MM/);
+  for (const tokens of [0, 1.5, -1, '60000', 5000]) rejects({ ...base(), loop: { compactionThreshold: tokens } }, 'loop.compactionThreshold');
+  rejects({ ...base(), loop: { compactionThreshold: 20000, compactionKeepRecent: 20000 } }, 'loop.compactionKeepRecent', /smaller/);
+  rejects({ ...base(), loop: { rotateAt: '04:00' } }, 'loop.rotateAt', /unknown/);
 });
 
 test('an OpenAI-compatible endpoint is chosen explicitly, with its key referenced by env or file', () => {

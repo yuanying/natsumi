@@ -19,11 +19,16 @@ const SIMPLIFIED = /[这个们说还过时见长轻为对问题么东车应该�
 export function checkOutgoingText(text: string): OutputCheck {
   if (text.trim() === '') return { ok: false, reason: 'empty' };
   if ([...text].length > MAX_OUTPUT_CHARS) return { ok: false, reason: 'too-long' };
-  const control = unique(text.match(CONTROL));
+  const control = findControlStrings(text);
   if (control.length > 0) return { ok: false, reason: 'control', found: control };
   const foreign = unique([...(text.match(HANGUL) ?? []), ...(text.match(SIMPLIFIED) ?? [])]);
   if (foreign.length > 0) return { ok: false, reason: 'foreign-script', found: foreign };
   return { ok: true };
+}
+
+/** Chat-template markers in the text, each once. */
+export function findControlStrings(text: string): string[] {
+  return unique(text.match(CONTROL));
 }
 
 /** A sentence for the model saying why the text was not sent. */

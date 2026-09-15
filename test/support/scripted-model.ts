@@ -36,6 +36,12 @@ export class ScriptedModel {
 
   get calls(): number { return this.contexts.length; }
 
+  /** Stops answering automatically and drops the calls already answered, so `next()` waits for a new one. */
+  takeOver(): void {
+    this.auto = undefined;
+    this.pending.length = 0;
+  }
+
   /** The next model call, including one that already happened and was not taken yet. */
   next(): Promise<ScriptedReply> {
     const ready = this.pending.shift();

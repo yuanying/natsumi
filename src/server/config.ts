@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
+import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 
 /** A startup-stopping config problem. `path` names the setting (for example `pi.authPath`); values are never echoed. */
 export class ConfigError extends Error {
@@ -64,12 +65,27 @@ export interface GitHubConfig {
   allowedUserId: number;
 }
 
+/** How the thinking loop keeps its Pi session in shape (ADR 0009). Token counts are Pi's context estimates. */
+export interface LoopConfig {
+  /** The owner's IANA time zone: memory dates and the nightly switch use it. */
+  timeZone: string;
+  /** Local `HH:MM` of the nightly session switch, or false to switch only by hand. */
+  nightlyRotationAt: string | false;
+  /** Past this many context tokens the session is compacted between turns. */
+  compactionThreshold: number;
+  /** Recent context tokens a compaction keeps as they are. */
+  compactionKeepRecent: number;
+}
+
+export const LOOP_DEFAULTS: LoopConfig = { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000 };
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
   publicOrigin: string;
   listen: ListenConfig;
   github: GitHubConfig;
+  loop: LoopConfig;
 }
 
 export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
@@ -85,6 +101,7 @@ const SECTIONS = {
   publicOrigin: parsePublicOrigin,
   listen: parseListen,
   github: parseGitHub,
+  loop: parseLoop,
 } satisfies { [K in keyof ServerConfig]: Section<ServerConfig[K]> };
 
 const MOVED: Record<string, string> = {
@@ -111,6 +128,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     publicOrigin: SECTIONS.publicOrigin(required(root, 'publicOrigin', ''), 'publicOrigin'),
     listen: SECTIONS.listen(required(root, 'listen', ''), 'listen'),
     github: SECTIONS.github(required(root, 'github', ''), 'github'),
+    loop: SECTIONS.loop(root.loop ?? {}, 'loop'),
   };
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
@@ -258,6 +276,27 @@ function parseGitHub(value: unknown, path: string): GitHubConfig {
     clientId: nonEmptyString(required(github, 'clientId', path), `${path}.clientId`),
     clientSecret, callbackUrl: callback.href, allowedUserId: id,
   };
+}
+
+function parseLoop(value: unknown, path: string): LoopConfig {
+  const loop = object(value, path);
+  onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent']);
+  const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
+  if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
+  const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
+  if (at !== false && (typeof at !== 'string' || !TIME_OF_DAY.test(at))) {
+    throw new ConfigError(`${path}.nightlyRotationAt`, 'must be a 24-hour HH:MM time, or false');
+  }
+  const threshold = loop.compactionThreshold ?? LOOP_DEFAULTS.compactionThreshold;
+  if (typeof threshold !== 'number' || !Number.isInteger(threshold) || threshold < 10000) {
+    throw new ConfigError(`${path}.compactionThreshold`, 'must be an integer of at least 10000');
+  }
+  const keep = loop.compactionKeepRecent ?? LOOP_DEFAULTS.compactionKeepRecent;
+  if (typeof keep !== 'number' || !Number.isInteger(keep) || keep < 1000) {
+    throw new ConfigError(`${path}.compactionKeepRecent`, 'must be an integer of at least 1000');
+  }
+  if (keep >= threshold) throw new ConfigError(`${path}.compactionKeepRecent`, 'must be smaller than compactionThreshold');
+  return { timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep };
 }
 
 /** 127.0.0.0/8, ::1 and localhost. Accepts a URL hostname, where IPv6 is bracketed. */

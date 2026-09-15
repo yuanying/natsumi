@@ -16,9 +16,12 @@ import { readSecret, readTlsFiles } from './secrets.ts';
 import { SessionStore } from './sessions.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
-import { ThinkingLoop } from './thinking-loop.ts';
+import { nextOccurrence, previousOccurrence } from './nightly.ts';
+import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
 
 const SESSION_SWEEP_MS = 30_000;
+/** setTimeout's longest delay; a longer wait is re-armed when it fires. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The shortest wait between background certificate checks, so a schedule surprise cannot spin. */
 const MIN_CERTIFICATE_CHECK_MS = 60_000;
 
@@ -63,6 +66,8 @@ export interface RunningServer {
   expireSessions(): void;
   /** Obtains or renews the ACME certificate when due and serves it (also runs periodically). Nothing to do without ACME. */
   checkCertificate(): Promise<void>;
+  /** Runs the nightly session switch now, as the schedule would. For operation checks. */
+  rotateSession(): Promise<RotationOutcome>;
   stop(): Promise<void>;
 }
 
@@ -88,12 +93,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let certificates: CertificateManager | undefined;
   let checking: Promise<void> | undefined;
   let renewal: NodeJS.Timeout | undefined;
+  let rotation: NodeJS.Timeout | undefined;
   let closed = false;
   const timers: NodeJS.Timeout[] = [];
   const closeAll = async () => {
     closed = true;
     timers.forEach(clearInterval);
     clearTimeout(renewal);
+    clearTimeout(rotation);
     certificates?.close();
     await checking?.catch(() => {});
     try {
@@ -113,8 +120,28 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       target: { provider: config.pi.model.provider, model: config.pi.model.id }, thinking: config.pi.thinking,
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
       configureSession: options.pi?.configureSession, maxModelCalls: options.pi?.maxModelCalls,
-      runTimeoutMs: options.pi?.runTimeoutMs, now, log,
+      runTimeoutMs: options.pi?.runTimeoutMs, now, log, timeZone: config.loop.timeZone,
+      compactAtTokens: config.loop.compactionThreshold, keepRecentTokens: config.loop.compactionKeepRecent,
     });
+
+    // The nightly switch at the configured local time (ADR 0009). A night missed while stopped is caught up at start.
+    const nightlyAt = config.loop.nightlyRotationAt;
+    const rotate = () => thinkingLoop.rotate().then(outcome => {
+      log(`thinking loop: nightly switch ${outcome.result}${'reason' in outcome ? ` (${outcome.reason})` : ''}`);
+    });
+    const scheduleRotation = () => {
+      if (nightlyAt === false || closed) return;
+      const target = nextOccurrence(now(), nightlyAt, config.loop.timeZone);
+      rotation = setTimeout(() => {
+        void (now() >= target ? rotate() : Promise.resolve()).finally(scheduleRotation);
+      }, Math.min(Math.max(target - now(), 1_000), MAX_TIMER_MS));
+      rotation.unref();
+    };
+    if (nightlyAt !== false && !thinkingLoop.unavailable) {
+      const started = thinkingLoop.sessionStartedAt();
+      if (started !== undefined && started < previousOccurrence(now(), nightlyAt, config.loop.timeZone)) void rotate();
+      scheduleRotation();
+    }
 
     const sessions = new SessionStore(db, now);
     const allowedUserId = config.github.allowedUserId;
@@ -198,6 +225,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       get challengeAddress() { return challenge?.address; },
       expireSessions: () => connections.expireSessions(),
       checkCertificate,
+      rotateSession: () => thinkingLoop.rotate(),
       stop() {
         stopping ??= (async () => {
           try {
