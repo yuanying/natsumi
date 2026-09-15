@@ -1,8 +1,9 @@
 import type { Migration } from './state-db.ts';
 
 /**
- * natsumi-owned state in `.natsumi/state.sqlite`. Conversation text lives only in Pi session JSONL (ADR 0001).
- * Append new migrations; never edit a released one. Approvals, schedules, notifications and devices are added
+ * natsumi-owned state in `.natsumi/state.sqlite`. The conversation shown to the owner lives here; the thinking loop's
+ * own record (every event, thought and tool call) lives only in the Pi session JSONL (ADR 0008).
+ * Append new migrations; never edit a released one. Approvals, schedules and notifications are added
  * by the changes that implement them.
  */
 export const MIGRATIONS: readonly Migration[] = [
@@ -64,6 +65,48 @@ export const MIGRATIONS: readonly Migration[] = [
         created_at TEXT NOT NULL,
         last_seen_at TEXT NOT NULL
       ) STRICT;
+    `,
+  },
+  {
+    version: 4,
+    name: 'thinking-loop',
+    sql: `
+      -- The per-turn send operations of the first design were never used; owner messages carry their request ID instead.
+      DROP TABLE conversation_operations;
+
+      -- What the owner sees: owner messages and what natsumi sent them through reply_to_mac and notify_owner.
+      -- Thoughts, tool calls and other events stay in the Pi session, which is a different record (ADR 0008).
+      CREATE TABLE conversation_messages (
+        message_id TEXT PRIMARY KEY,
+        position INTEGER NOT NULL UNIQUE,
+        role TEXT NOT NULL CHECK (role IN ('owner', 'natsumi')),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'reply', 'notice')),
+        text TEXT NOT NULL,
+        -- An owner message: its event. A reply: the event it answers.
+        event_id TEXT,
+        -- A notice: the JSON array of events it is about, if any.
+        about_event_ids TEXT,
+        request_id TEXT UNIQUE,
+        device_id TEXT,
+        created_at TEXT NOT NULL,
+        CHECK ((kind = 'message') = (role = 'owner')),
+        CHECK (kind <> 'message' OR (event_id IS NOT NULL AND request_id IS NOT NULL AND device_id IS NOT NULL)),
+        CHECK (kind <> 'reply' OR event_id IS NOT NULL)
+      ) STRICT;
+      -- One reply per event, even across restarts.
+      CREATE UNIQUE INDEX conversation_messages_one_reply ON conversation_messages (event_id) WHERE kind = 'reply';
+
+      -- Inputs of the thinking loop and how far each got.
+      CREATE TABLE loop_events (
+        event_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        message_id TEXT REFERENCES conversation_messages (message_id),
+        state TEXT NOT NULL CHECK (state IN ('queued', 'processing', 'replied', 'no-reply', 'failed')),
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX loop_events_by_state ON loop_events (state, created_at);
     `,
   },
 ];
