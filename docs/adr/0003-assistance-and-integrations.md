@@ -1,7 +1,7 @@
 # 0003. 自発的支援と外部連携の境界
 
 - Date: 2026-09-14
-- Status: Accepted
+- Status: Accepted（長期記憶の Markdown の形とツールは [ADR 0009](0009-long-term-memory-and-nightly-session-switch.md) で具体化）
 
 ## Context
 

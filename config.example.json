@@ -20,5 +20,9 @@
     "clientSecretFile": "/run/secrets/natsumi_github_client_secret",
     "callbackUrl": "https://natsumi.example.net:8443/auth/github/callback",
     "allowedUserId": 12345678
+  },
+  "loop": {
+    "timeZone": "Asia/Tokyo",
+    "nightlyRotationAt": "04:00"
   }
 }
