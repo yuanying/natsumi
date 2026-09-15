@@ -1,7 +1,7 @@
 # 0004. Pi のツール・認証・音声の境界
 
 - Date: 2026-09-14
-- Status: Accepted
+- Status: Accepted（思考ループに登録するツールは [ADR 0008](0008-single-thinking-loop-and-mac-conversation.md) で置き換え）
 
 ## Context
 

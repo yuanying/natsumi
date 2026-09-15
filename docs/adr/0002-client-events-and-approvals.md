@@ -1,7 +1,7 @@
 # 0002. 会話・承認・通知のサーバー契約
 
 - Date: 2026-09-14
-- Status: Accepted
+- Status: Accepted（会話の配信・busy・snapshot の作り方は [ADR 0008](0008-single-thinking-loop-and-mac-conversation.md) で置き換え）
 
 ## Context
 
