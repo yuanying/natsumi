@@ -73,6 +73,49 @@ struct OverlayLayoutTests {
         #expect(left.history == CGRect(x: 200 + gap, y: 200, width: 300, height: 400))
     }
 
+    @Test("知らせの束はキャラの右に、上端をキャラの上端にそろえて置く")
+    func noticesBeside() {
+        let character = CGRect(x: 400, y: 300, width: 100, height: 100)
+        let layout = OverlayLayout.make(
+            visible: screen, character: character, balloon: nil, input: nil, history: nil, notices: CGSize(width: 180, height: 60))
+        #expect(layout.notices == CGRect(x: 500 + gap, y: 400 - 60, width: 180, height: 60))
+    }
+
+    @Test("知らせの束は、吹き出しと入力欄に重ならないように外へずらす")
+    func noticesAvoidBalloonAndInput() {
+        let character = CGRect(x: 400, y: 300, width: 100, height: 100)
+        let notices = CGSize(width: 180, height: 160)
+        let layout = OverlayLayout.make(
+            visible: screen, character: character, balloon: balloon, input: input, history: nil, notices: notices)
+        let placed = try! #require(layout.notices)
+        #expect(placed.intersects(layout.balloon!) == false)
+        #expect(placed.intersects(layout.input!) == false)
+        #expect(placed.intersects(character) == false)
+        #expect(placed.minX == layout.input!.maxX + gap)
+        #expect(placed.maxY == character.maxY)
+    }
+
+    @Test("右に入らなければ、知らせの束はキャラの左に回る")
+    func noticesAtRightEdge() {
+        let character = CGRect(x: 880, y: 300, width: 100, height: 100)
+        let layout = OverlayLayout.make(
+            visible: screen, character: character, balloon: balloon, input: input, history: nil, notices: CGSize(width: 180, height: 160))
+        let placed = try! #require(layout.notices)
+        #expect(placed.maxX <= character.minX)
+        #expect(placed.minX >= screen.minX)
+        #expect(placed.intersects(layout.balloon!) == false)
+        #expect(placed.intersects(layout.input!) == false)
+    }
+
+    @Test("画面の下の端では、知らせの束を画面の中に収める")
+    func noticesAtBottomEdge() {
+        let character = CGRect(x: 400, y: 0, width: 100, height: 100)
+        let layout = OverlayLayout.make(
+            visible: screen, character: character, balloon: nil, input: nil, history: nil, notices: CGSize(width: 180, height: 160))
+        #expect(layout.notices?.minY == 0)
+        #expect(layout.notices?.minX == 500 + gap)
+    }
+
     @Test("大きさを変えるとき、足もと（下端の中心）を動かさず、画面に収める")
     func resize() {
         let frame = CGRect(x: 400, y: 300, width: 96, height: 104)

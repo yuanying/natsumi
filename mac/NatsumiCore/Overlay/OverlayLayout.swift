@@ -22,8 +22,11 @@ public struct OverlayLayout: Equatable, Sendable {
     public var tailX: CGFloat = 0
     public var input: CGRect?
     public var history: CGRect?
+    public var notices: CGRect?
 
-    public static func make(visible: CGRect, character: CGRect, balloon: CGSize?, input: CGSize?, history: CGSize?) -> OverlayLayout {
+    public static func make(
+        visible: CGRect, character: CGRect, balloon: CGSize?, input: CGSize?, history: CGSize?, notices: CGSize? = nil
+    ) -> OverlayLayout {
         var layout = OverlayLayout()
         var above = character.maxY + gap
         var below = character.minY - gap
@@ -58,7 +61,26 @@ public struct OverlayLayout: Equatable, Sendable {
             let top = min(max(character.maxY, visible.minY + history.height), visible.maxY)
             layout.history = CGRect(x: x, y: top - history.height, width: history.width, height: history.height)
         }
+
+        if let notices {
+            layout.notices = placeNotices(
+                notices, character: character, visible: visible, avoiding: [layout.balloon, layout.input].compactMap { $0 })
+        }
         return layout
+    }
+
+    /// The notice bundle goes beside the character with its top at the character's top: on the right, or on the left
+    /// when it does not fit, and further out past the balloon and the input field when it would cover them.
+    private static func placeNotices(_ size: CGSize, character: CGRect, visible: CGRect, avoiding others: [CGRect]) -> CGRect {
+        let y = min(max(character.maxY - size.height, visible.minY), visible.maxY - size.height)
+        var right = CGRect(x: character.maxX + gap, y: y, width: size.width, height: size.height)
+        while let hit = others.first(where: { $0.intersects(right) }) { right.origin.x = hit.maxX + gap }
+        if right.maxX <= visible.maxX { return right }
+
+        var left = CGRect(x: character.minX - gap - size.width, y: y, width: size.width, height: size.height)
+        while let hit = others.first(where: { $0.intersects(left) }) { left.origin.x = hit.minX - gap - size.width }
+        if left.minX >= visible.minX { return left }
+        return clamp(right, into: visible)
     }
 
     /// The frame at a new size with the same bottom center (the character's feet), kept on the screen.

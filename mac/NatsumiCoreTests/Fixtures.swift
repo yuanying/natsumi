@@ -33,10 +33,13 @@ enum Fixture {
 
     static func snapshot(
         seq: Int, stream: String = stream, requestId: String? = nil, deviceId: String = "device-example",
-        messages: [[String: Any]] = [], pending: [[String: Any]] = [], expression: String = "neutral"
+        messages: [[String: Any]] = [], pending: [[String: Any]] = [], expression: String = "neutral",
+        readThrough: String? = nil, unreadReplyCount: Int = 0, unacknowledged: [String] = []
     ) -> Data {
         envelope("session.snapshot", seq: seq, stream: stream, requestId: requestId, payload: [
             "deviceId": deviceId, "messages": messages, "pendingEvents": pending, "avatar": ["expression": expression],
+            "readThroughMessageId": readThrough.map { $0 as Any } ?? NSNull(), "unreadReplyCount": unreadReplyCount,
+            "unacknowledgedNotificationIds": unacknowledged,
         ])
     }
 
