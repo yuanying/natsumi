@@ -5,7 +5,8 @@ Pi Coding Agent を使う個人アシスタント。現在はサーバー基盤�
 HTTPS/WSS の待ち受けと v1 envelope の入口、Let's Encrypt（ACME HTTP-01）による証明書の自動取得、
 固定 IPv6 で公開するコンテナ構成、Pi SDK の隔離検証ハーネス、単一の思考ループによる Mac との会話
 （端末の登録と同期、表情、表示用の会話の記録）、Markdown の長期記憶と、夜の思考の記録の切り替えを提供しています。
-Slack、通知・スケジューラー、Mac UI、Google/Wiki 連携は後続の実装です。
+Mac アプリは土台（ログイン、会話の同期、デスクトップに常駐するキャラクター、会話欄）ができています。
+Slack、通知・スケジューラー、承認の表示、Google/Wiki 連携は後続の実装です。
 
 Node.js 24.12.0 以降を使用します。通常の検証は外部認証・ネットワーク接続を必要としません
 （初回の npm 依存取得を除く）。Pi は `@earendil-works/pi-coding-agent` の SDK を npm 依存として固定しています。
@@ -199,9 +200,55 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 - `natsumi-net` を再作成すると、natsumi も再起動します。
 - 名前空間にはトークンのアドレスのほかに自動設定のアドレスが残ることがあり、外向きの通信の送信元はそちらになり得ます。
 
+## Mac アプリ
+
+`mac/` に Xcode プロジェクトがあります（[ADR 0010](docs/adr/0010-mac-app-structure.md)）。macOS 15 以降と Xcode 26 を使います。
+署名は ad-hoc で、Apple Developer のチームや証明書は要りません。配布（公証・自動更新）はまだ扱っていません。
+
+```sh
+xcodebuild build -project mac/Natsumi.xcodeproj -scheme Natsumi -destination 'platform=macOS' -derivedDataPath mac/build
+xcodebuild test -project mac/Natsumi.xcodeproj -scheme Natsumi -destination 'platform=macOS' -derivedDataPath mac/build
+```
+
+- scheme `Natsumi` は、アプリ `Natsumi`、ロジックの framework `NatsumiCore`、そのテスト `NatsumiCoreTests` を含みます。
+  テストは外部ネットワークにもサーバーにも接続しません。Keychain を使うテストがあるため、ログイン中のユーザーの GUI のセッション
+  （ターミナル.app など）で実行してください。SSH のセッションからはキーチェーンを開けません。
+- build 結果は `mac/build/`（Git の追跡対象外）にでき、アプリは `mac/build/Build/Products/Debug/Natsumi.app` です。
+
+### 使い方
+
+1. アプリを起動すると、メニューバーにアイコンが、デスクトップにキャラクターが出ます。キャラクターはドラッグで動かせます。
+2. メニューバーの「設定…」で、サーバーの URL（例: `https://natsumi.example.net`）を入れて保存します。
+3. 「GitHub でログイン」で、ブラウザのシートからログインします。セッションのトークンは Keychain にだけ保存されます。
+   期限（12 時間）が切れたり失効したりすると、ログインを求められます。
+4. キャラクターをクリックすると会話欄が開きます。返事の前は「受付中」「考え中」と表示され、natsumi からの知らせには「お知らせ」が付きます。
+
+ad-hoc 署名はビルドのたびに変わるため、ビルドし直したアプリが Keychain のトークンを読むときに、確認のダイアログが出ることがあります。
+
+### アバターを差し替える
+
+キャラクターの絵は、既定では同梱の `mac/Avatars/natsumi/` を使います。自分のアセットを試すときは、次の場所に置きます
+（設定の「アバター」で場所を変えられます）。ここに読めるアセットがあれば、同梱のものより優先します。どちらも読めなければ、仮の絵（絵文字）になります。
+
+```sh
+mkdir -p ~/Library/Application\ Support/natsumi/avatar
+cp <アセットのディレクトリ>/pet.json <アセットのディレクトリ>/spritesheet.webp ~/Library/Application\ Support/natsumi/avatar/
+```
+
+- 形式は Codex のペット（`pet.json` と、その `spritesheetPath` の spritesheet。1 マス 192×208 で 8 列）です。
+- `avatar.json` を置くと、atlas（`atlas`・`animations`）、再生の速さ（`framesPerSecond`）、サーバーの表情から動作への対応表（`expressions`）を変えられます。
+  書き方は同梱の [avatar.json](mac/Avatars/natsumi/avatar.json) を見てください。対応表にない表情は neutral の動作で表示します。
+- 置いた後は、設定の「読み込み直す」で反映します。
+
+## ライセンス
+
+- コードは [MIT License](LICENSE) です。
+- `mac/Avatars/` のアバターのアセットは [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) です。
+  キャラクターの参照画像は Anima で、spritesheet は OpenAI の画像生成で作りました（[詳細](mac/Avatars/natsumi/README.md)）。
+
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json)（証明書ファイル）と [ACME の設定例](config.acme.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。
