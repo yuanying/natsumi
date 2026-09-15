@@ -28,11 +28,14 @@ public struct ConversationState: Equatable, Sendable {
     public private(set) var pendingEvents: [String: EventState] = [:]
     public private(set) var expression: Expression = .neutral
     public private(set) var outbox: [OutgoingMessage] = []
+    /// Counts the snapshots applied, so a view can tell messages that came back in one from ones that just arrived.
+    public private(set) var snapshotGeneration = 0
 
     public init() {}
 
-    /// natsumi is thinking or has messages still to handle.
-    public var isThinking: Bool { expression == .thinking || !pendingEvents.isEmpty }
+    /// natsumi has owner messages still to handle. The face is not used: the model can leave the thinking face after
+    /// it has finished, and the server only puts back a face it set itself.
+    public var isThinking: Bool { !pendingEvents.isEmpty }
 
     /// Messages to send (again) once the connection is synced. The server answers a resent requestId with the same result.
     public var unsent: [OutgoingMessage] { outbox.filter { $0.status == .sending } }
@@ -49,6 +52,7 @@ public struct ConversationState: Equatable, Sendable {
         switch event {
         case .snapshot(let snapshot):
             messages = snapshot.messages
+            snapshotGeneration += 1
             pendingEvents = Dictionary(
                 snapshot.pendingEvents.filter { $0.state.isPending }.map { ($0.eventId, $0.state) },
                 uniquingKeysWith: { _, latest in latest })
