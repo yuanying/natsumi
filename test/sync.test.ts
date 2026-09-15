@@ -325,3 +325,90 @@ test('a lost session file is reported as unavailable and no new session is start
   assert.deepEqual((await readdir(sessions)).filter(name => name.endsWith('.jsonl')), []);
   await again.close();
 }));
+
+test('reading and acknowledging reach every device, are replayed after a reconnect and agree with a new snapshot', () => withFixture(async f => {
+  const { token } = await login(f);
+  const a = await Client.open(f, token);
+  const b = await Client.open(f, token);
+  await a.sync();
+  await b.sync();
+  f.model.auto = context => {
+    const eventId = latestEventId(context);
+    return { calls: [{ name: 'notify_owner', arguments: { text: 'お知らせ' } },
+      { name: 'reply_to_mac', arguments: { event_id: eventId, text: 'はい' } }, { name: 'finish_event', arguments: { event_id: eventId } }] };
+  };
+  await a.sendAndComplete('hello');
+  const said = a.messages.filter(m => m.type === 'conversation.message').map(m => m.payload);
+  const noticeId = said.find(m => m.kind === 'notice')!.messageId as string;
+  const replyId = said.find(m => m.kind === 'reply')!.messageId as string;
+  const ownerId = said.find(m => m.kind === 'message')!.messageId as string;
+
+  let mark = b.messages.length;
+  const read = await b.reply(b.send('conversation.read', { throughMessageId: replyId }), mark);
+  assert.deepEqual([read.type, read.payload], ['command.accepted', { readThroughMessageId: replyId, unreadReplyCount: 0 }]);
+  for (const client of [a, b]) {
+    const event = await client.until(m => m.type === 'conversation.read');
+    assert.deepEqual(event.payload, { readThroughMessageId: replyId, unreadReplyCount: 0 });
+  }
+  // The sender gets its answer first, as with conversation.send.
+  assert.ok(b.messages.find(m => m.type === 'conversation.read')!.seq > read.seq);
+
+  // Device A is away while B acknowledges the notice.
+  const left = a.last;
+  await a.close();
+  mark = b.messages.length;
+  const acked = await b.reply(b.send('notification.ack', { notificationId: noticeId }), mark);
+  assert.equal(acked.type, 'command.accepted');
+  assert.equal(acked.payload.notificationId, noticeId);
+  const { acknowledgedAt } = acked.payload;
+  assert.deepEqual((await b.until(m => m.type === 'notification.acked')).payload, { notificationId: noticeId, acknowledgedAt });
+
+  // A second ack returns the recorded state and broadcasts nothing more.
+  mark = b.messages.length;
+  const again = await b.reply(b.send('notification.ack', { notificationId: noticeId }), mark);
+  assert.deepEqual([again.type, again.payload], ['command.accepted', { notificationId: noticeId, acknowledgedAt }]);
+  assert.equal(b.messages.filter(m => m.type === 'notification.acked').length, 1);
+
+  const back = await Client.open(f, token);
+  back.deviceId = a.deviceId;
+  const resumed = await back.sync({ epoch: left.epoch, streamId: left.streamId, seq: left.seq });
+  assert.equal(resumed.payload.mode, 'resume');
+  assert.deepEqual(back.messages.slice(0, -1).map(m => [m.type, m.payload]), [['notification.acked', { notificationId: noticeId, acknowledgedAt }]]);
+
+  const fresh = await Client.open(f, token);
+  const snapshot = await fresh.sync();
+  assert.equal(snapshot.type, 'session.snapshot');
+  assert.deepEqual([snapshot.payload.readThroughMessageId, snapshot.payload.unreadReplyCount, snapshot.payload.unacknowledgedNotificationIds],
+    [replyId, 0, []]);
+
+  // Invalid targets are refused on the sender's stream only.
+  for (const [type, payload] of [
+    ['conversation.read', {}], ['conversation.read', { throughMessageId: 'message-missing' }],
+    ['notification.ack', { notificationId: replyId }], ['notification.ack', { notificationId: ownerId }], ['notification.ack', { notificationId: 42 }],
+  ] as const) {
+    mark = fresh.messages.length;
+    const refused = await fresh.reply(fresh.send(type, payload), mark);
+    assert.deepEqual([refused.type, refused.payload.code], ['command.rejected', 'invalid-request'], `${type} ${JSON.stringify(payload)}`);
+  }
+  for (const client of [back, b, fresh]) await client.close();
+}));
+
+test('reading and acknowledging need a synced device, like sending', () => withFixture(async f => {
+  const { token } = await login(f);
+  const client = await Client.open(f, token);
+  for (const [type, payload] of [['conversation.read', { throughMessageId: 'message-x' }], ['notification.ack', { notificationId: 'message-x' }]] as const) {
+    const mark = client.messages.length;
+    const early = await client.reply(client.send(type, payload), mark);
+    assert.deepEqual([early.type, early.payload.code], ['command.rejected', 'sync-required'], type);
+  }
+  await client.sync();
+  const own = client.deviceId;
+  client.deviceId = 'device-other';
+  for (const [type, payload] of [['conversation.read', { throughMessageId: 'message-x' }], ['notification.ack', { notificationId: 'message-x' }]] as const) {
+    const mark = client.messages.length;
+    const mismatch = await client.reply(client.send(type, payload), mark);
+    assert.deepEqual([mismatch.type, mismatch.payload.code], ['command.rejected', 'device-mismatch'], type);
+  }
+  client.deviceId = own;
+  await client.close();
+}));

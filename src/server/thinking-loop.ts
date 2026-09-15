@@ -8,6 +8,7 @@ import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome }
 import { MemoryShell } from './memory-shell.ts';
 import { MemoryStore } from './memory-store.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
+import { ReadState, type ReadPosition } from './read-state.ts';
 
 /** Model calls one turn may make before it is stopped and its open events fail (the evaluation stopped at 8). */
 export const DEFAULT_MAX_MODEL_CALLS = 8;
@@ -41,7 +42,7 @@ const BASE_INSTRUCTION = `あなたは natsumi。一人の本人（オーナー�
 - 記憶は会話の写しではありません。要点を 1 件ずつ、短く書きます。
 
 ## 出来事の種類
-- mac_message: 本人との一対一の会話です。
+- mac_message: 本人との一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、本人がまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。本人には何も送りません。`;
 
 const SHELL_INSTRUCTION = '- run_memory_shell で、rg などのコマンドを使って記憶のファイルを探すこともできます（読むだけ）。';
@@ -72,6 +73,17 @@ export type SendOutcome =
   | { kind: 'rejected'; code: 'request-conflict' }
   | { kind: 'unavailable'; code: UnavailableCode };
 
+/** Only a message that does not exist (or, for an acknowledgement, is not a notice) is refused. */
+export type ReadOutcome =
+  | ({ kind: 'accepted' } & ReadPosition)
+  | { kind: 'rejected'; code: 'invalid-request' }
+  | { kind: 'unavailable'; code: UnavailableCode };
+
+export type AcknowledgeOutcome =
+  | { kind: 'accepted'; notificationId: string; acknowledgedAt: string }
+  | { kind: 'rejected'; code: 'invalid-request' }
+  | { kind: 'unavailable'; code: UnavailableCode };
+
 /** A message as the owner sees it. */
 export interface ShownMessage {
   messageId: string;
@@ -92,6 +104,11 @@ export interface LoopSnapshot {
   /** Owner messages not handled yet. */
   pendingEvents: { eventId: string; messageId: string; state: EventState }[];
   avatar: { expression: Expression };
+  /** The read cursor and the replies after it, including those older than `messages`. */
+  readThroughMessageId: string | null;
+  unreadReplyCount: number;
+  /** Every notice the owner has not checked, oldest first, including those older than `messages`. */
+  unacknowledgedNotificationIds: string[];
 }
 
 export interface LoopOptions {
@@ -153,6 +170,7 @@ export class ThinkingLoop {
   private readonly options: LoopOptions;
   private readonly now: () => number;
   private readonly memory: MemoryStore;
+  private readonly readState: ReadState;
   private readonly shell: MemoryShell | undefined;
   private readonly listeners = new Set<(event: LoopClientEvent) => void>();
   private readonly queue: string[] = [];
@@ -175,6 +193,7 @@ export class ThinkingLoop {
     this.options = options;
     this.now = options.now ?? Date.now;
     this.memory = new MemoryStore({ directory: join(options.dataDirectory, 'memory'), timeZone: options.timeZone ?? 'UTC', now: this.now });
+    this.readState = new ReadState(options.db, this.now);
     this.shell = options.memoryShellSocket ? new MemoryShell({ socketPath: options.memoryShellSocket }) : undefined;
   }
 
@@ -244,6 +263,31 @@ export class ThinkingLoop {
   }
 
   /**
+   * Marks natsumi's replies read up to a message, for every device (ADR 0013). A position behind the cursor is ignored
+   * and the current one returned. Only a move is broadcast, after the answer.
+   */
+  markRead(input: { throughMessageId: string; deviceId: string }): ReadOutcome {
+    const unavailable = this.unavailable;
+    if (unavailable) return { kind: 'unavailable', code: unavailable };
+    const result = this.readState.markRead(input.throughMessageId, input.deviceId);
+    if (!result) return { kind: 'rejected', code: 'invalid-request' };
+    const { changed, ...position } = result;
+    if (changed) queueMicrotask(() => this.emit('conversation.read', position));
+    return { kind: 'accepted', ...position };
+  }
+
+  /** Records that the owner checked a notice. Acknowledging it again returns the first record and broadcasts nothing. */
+  acknowledgeNotice(input: { notificationId: string; deviceId: string }): AcknowledgeOutcome {
+    const unavailable = this.unavailable;
+    if (unavailable) return { kind: 'unavailable', code: unavailable };
+    const result = this.readState.acknowledge(input.notificationId, input.deviceId);
+    if (!result) return { kind: 'rejected', code: 'invalid-request' };
+    const acked = { notificationId: input.notificationId, acknowledgedAt: result.acknowledgedAt };
+    if (result.changed) queueMicrotask(() => this.emit('notification.acked', acked));
+    return { kind: 'accepted', ...acked };
+  }
+
+  /**
    * Reviews the day in the current session and switches to a new one that starts from the review's handoff.
    * Resolves once the switch has ended; a switch already waiting or running is joined rather than repeated.
    */
@@ -289,6 +333,8 @@ export class ThinkingLoop {
       messages: rows.map(shown),
       pendingEvents: pending.map(row => ({ eventId: row.event_id, messageId: row.message_id, state: row.state })),
       avatar: { expression: this.avatar.expression },
+      ...this.readState.position(),
+      unacknowledgedNotificationIds: this.readState.unacknowledgedNotificationIds(),
     };
   }
 
@@ -639,7 +685,10 @@ export class ThinkingLoop {
     if (row.kind === 'nightly-review') {
       return { event_id: eventId, type: 'nightly_review', received_at: row.created_at, instructions: REVIEW_INSTRUCTIONS };
     }
-    return { event_id: eventId, type: 'mac_message', received_at: row.message_at, text: row.text };
+    // How many of her notices the owner has not checked, when any: read-only, so she need not send them again.
+    const unacknowledged = this.readState.unacknowledgedNotificationIds().length;
+    return { event_id: eventId, type: 'mac_message', received_at: row.message_at, text: row.text,
+      ...(unacknowledged > 0 ? { unacknowledged_notices: unacknowledged } : {}) };
   }
 
   private host(): LoopToolHost {
