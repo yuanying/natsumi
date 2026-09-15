@@ -1,7 +1,7 @@
 # 0001. Pi を使う単一サーバーとデータの所有権
 
 - Date: 2026-09-14
-- Status: Accepted（会話の正本と SQLite に置く内容は [ADR 0008](0008-single-thinking-loop-and-mac-conversation.md) で置き換え。compaction は ADR 0009 で扱う）
+- Status: Accepted（会話の正本と SQLite に置く内容は [ADR 0008](0008-single-thinking-loop-and-mac-conversation.md) で置き換え。compaction の無効化は [ADR 0009](0009-long-term-memory-and-nightly-session-switch.md) で置き換え、session の割り当てと `memory/` の中身は同 ADR で具体化）
 
 ## Context
 

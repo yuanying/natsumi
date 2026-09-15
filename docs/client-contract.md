@@ -118,6 +118,15 @@ natsumi は一本の思考ループで、本人のメッセージを 1 件ずつ
 `session.snapshot` の `messages` は SQLite の記録から作る。natsumi の思考、内心、ツールの呼び出しは含まれない。
 サーバーを再起動しても同じ履歴が返る。再起動の前に処理中だったメッセージは二度処理せず、返事がなければ failed になる。
 
+natsumi は毎晩決まった時刻に一日を振り返り、思考の記録を新しくする（ADR 0009）。Mac から見える変化は次のとおりである。
+
+- 振り返りの間、`avatar.expression` は sleepy になる。
+- その間に送ったメッセージも受け付けられ（state は queued）、全端末に表示される。表情は thinking にならない。
+  返事は振り返りが終わってから届く。
+- 振り返りそのものは会話に出ない。振り返りに対する `conversation.event.completed` も届かない。
+- 終わると、待っているメッセージがあれば thinking、なければ neutral の `avatar.expression` が届く。
+- 会話の履歴（snapshot）は、振り返りと記録の切り替えで変わらない。
+
 ライブイベントは端末の stream ごとにメモリ内の有限バッファに保つ。
 同一 epoch/streamId かつ必要な seq がその stream のバッファに残っていれば差分を再配信できる。
 epoch/streamId が変わった、その stream の seq が抜けた、受信が遅くバッファを超えた場合は snapshot を要求する。
@@ -156,8 +165,8 @@ ACK は通知 ID で冪等に記録し、古い端末からの遅延 ACK も同�
 1. **基盤**: 設定 parser、初期化、data directory ロック、SQLite migration、専用 Pi 状態領域
    （agentDir・session・auth）、GitHub 認証、TLS 接続、コンテナ永続化。本人以外の拒否と二重起動拒否を試験する。
    `docker compose config --quiet` / `docker compose build` を実装時に実行する。
-2. **会話・記憶・通知**: 単一の思考ループと表示用の会話の記録（ADR 0008、実装済み）、上記同期、Markdown 記憶、
-   スケジューラー、通知 lease。複数端末、切断、プロセス停止、ACK 消失を試験する。
+2. **会話・記憶・通知**: 単一の思考ループと表示用の会話の記録（ADR 0008、実装済み）、上記同期、
+   Markdown 記憶と夜の session の切り替え（ADR 0009、実装済み）、スケジューラー、通知 lease。複数端末、切断、プロセス停止、ACK 消失を試験する。
 3. **外部連携**: Gmail 読み取り、Calendar 提案・承認・実行、Wiki fixture。
    承認前未実行、revision 不一致、二重承認、外部結果不明の照合、既存 Wiki 差分の保護を試験する。
 4. **Mac UI**: SwiftUI/AppKit 常駐、会話、承認表示、通知。Xcode scheme と具体的な
