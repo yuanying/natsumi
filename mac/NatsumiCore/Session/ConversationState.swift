@@ -28,6 +28,8 @@ public struct ConversationState: Equatable, Sendable {
     public private(set) var pendingEvents: [String: EventState] = [:]
     public private(set) var expression: Expression = .neutral
     public private(set) var outbox: [OutgoingMessage] = []
+    /// Counts the snapshots applied, so a view can tell messages that came back in one from ones that just arrived.
+    public private(set) var snapshotGeneration = 0
 
     public init() {}
 
@@ -49,6 +51,7 @@ public struct ConversationState: Equatable, Sendable {
         switch event {
         case .snapshot(let snapshot):
             messages = snapshot.messages
+            snapshotGeneration += 1
             pendingEvents = Dictionary(
                 snapshot.pendingEvents.filter { $0.state.isPending }.map { ($0.eventId, $0.state) },
                 uniquingKeysWith: { _, latest in latest })
