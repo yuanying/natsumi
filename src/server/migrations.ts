@@ -51,4 +51,19 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX client_sessions_by_expiry ON client_sessions (expires_at);
     `,
   },
+  {
+    version: 3,
+    name: 'devices',
+    sql: `
+      -- Devices the server registered for the allowed GitHub account. A device ID names a client's event stream;
+      -- it is never accepted as authentication.
+      CREATE TABLE devices (
+        device_id TEXT PRIMARY KEY,
+        github_user_id INTEGER NOT NULL,
+        client_session_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];
