@@ -12,20 +12,14 @@ final class GitHubLoginFlow: NSObject {
         let attempt = LoginAttempt()
         defer { session = nil }
         let callback: URL = try await withCheckedThrowingContinuation { continuation in
+            // The handler is called off the main thread, so it must not be a closure written here (see LoginCompletion).
+            let completion = LoginCompletion(continuation)
             let session = ASWebAuthenticationSession(
-                url: attempt.startURL(server: server), callback: .customScheme(LoginAttempt.callbackScheme)
-            ) { url, error in
-                if let url {
-                    continuation.resume(returning: url)
-                } else if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
-                    continuation.resume(throwing: LoginError.cancelled)
-                } else {
-                    continuation.resume(throwing: error ?? LoginError.invalidResponse)
-                }
-            }
+                url: attempt.startURL(server: server), callback: .customScheme(LoginAttempt.callbackScheme),
+                completionHandler: completion.handler)
             session.presentationContextProvider = self
             self.session = session
-            if !session.start() { continuation.resume(throwing: LoginError.cancelled) }
+            if !session.start() { completion.finish(.failure(LoginError.cancelled)) }
         }
         let code = try attempt.loginCode(from: callback)
         let (data, response) = try await URLSession.shared.data(
