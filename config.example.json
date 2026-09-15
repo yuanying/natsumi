@@ -23,6 +23,7 @@
   },
   "loop": {
     "timeZone": "Asia/Tokyo",
-    "nightlyRotationAt": "04:00"
+    "nightlyRotationAt": "04:00",
+    "memoryShellSocket": "/run/natsumi-tools/runner.sock"
   }
 }

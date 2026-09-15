@@ -1,7 +1,7 @@
 # 0009. 長期記憶と、夜の session の切り替え
 
 - Date: 2026-09-15
-- Status: Accepted
+- Status: Accepted（記憶を shell で探すツールと、shell を許さないという点は [ADR 0011](0011-memory-shell-in-a-confined-container.md) で追加・置き換え）
 
 ## Context
 

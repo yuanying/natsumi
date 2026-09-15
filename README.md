@@ -142,6 +142,35 @@ volume の代わりに既存のディレクトリを bind mount する場合は�
   （`NATSUMI_TLS_CERT`、`NATSUMI_TLS_KEY`、`NATSUMI_GITHUB_CLIENT_SECRET_FILE` で変更できます）。
   `secrets/` は Git の追跡対象外です。ファイルはホストの権限のままマウントされるため、UID 1000 だけが読めるようにしてください。
 
+### 記憶を shell で探すコンテナ（natsumi-tools）
+
+モデルは `run_memory_shell` で、記憶のファイルを `rg` などのコマンドで探せます。コマンドは natsumi の中ではなく、
+閉じ込めたコンテナ `natsumi-tools` の中で動きます（[ADR 0011](docs/adr/0011-memory-shell-in-a-confined-container.md)）。
+
+- 構成
+  - natsumi は、共有する小さな tmpfs の volume（`natsumi-tools-socket`）にある Unix ソケットで、`natsumi-tools` の実行役（runner）にコマンドを送ります。
+  - natsumi に Docker のソケットは渡しません。
+  - ツールは、設定の `loop.memoryShellSocket`（設定例では `/run/natsumi-tools/runner.sock`）があるときだけ使えます。
+- 入っているもの: `sh`、`cat`、`find`、`grep`、`head`、`ls`、`rg`、`sort`、`tail`、`uniq`、`wc` と runner だけです
+  （[docker/tools-commands.txt](docker/tools-commands.txt)）。ネットワークの道具、パッケージマネージャー、インタプリタ、git はありません。
+- 閉じ込め
+  - ネットワークはありません（`network_mode: none`）。
+  - `natsumi-data` の `memory/` だけを読み取り専用でマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
+  - ルートは読み取り専用で、書けるのは 16 MB の `/tmp` だけです。
+  - 非 root で動き、全 capability を外し、`no-new-privileges` を付けます。
+- 上限
+  - CPU 1、メモリ 256 MB、プロセス数 64
+  - 1 回のコマンドは 10 秒まで
+  - 出力は標準出力・標準エラー出力それぞれ 64 KiB まで（モデルに返すのは標準出力 8000 文字・標準エラー出力 2000 文字まで）
+  - 時間と出力の上限は、`compose.yaml` の `command` で変えられます。
+- UID: 記憶のファイルは所有者だけが読めるので、`natsumi-tools` は natsumi と同じ UID で動かします（既定は 1000）。
+  natsumi を別の UID で動かすときは、`NATSUMI_TOOLS_UID` に同じ値を入れます。
+- 起動の順番: natsumi が初回の起動で `memory/` を作るので、`natsumi-tools` は natsumi が healthy になってから起動します。
+- 閉じ込めの確認: [scripts/check-memory-shell-sandbox.sh](scripts/check-memory-shell-sandbox.sh) が、使い捨ての project で
+  2 つのコンテナを起動し、閉じ込め（ネットワーク、見えるファイル、書き込み、コマンドの一覧、プロセス数と時間の上限、非 root）を
+  runner 経由で確かめます。image 名を変える override を用意して、先に build してから実行します。
+  運用中の環境と同じ image 名で build すると、そのタグを上書きするので注意してください。
+
 ### 固定 IPv6 で公開する
 
 ルーターの RA で IPv6 のプレフィックスが配られる external network に、固定の IPv6 アドレスで直接つなぐ構成を、
@@ -172,7 +201,7 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json)（証明書ファイル）と [ACME の設定例](config.acme.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。

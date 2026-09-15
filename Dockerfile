@@ -17,6 +17,31 @@ RUN apt-get update \
 COPY --chmod=755 docker/ipv6-netns.sh /usr/local/bin/natsumi-ipv6-netns
 ENTRYPOINT ["natsumi-ipv6-netns"]
 
+# The runner of the tools container (ADR 0011), built static so the container needs no interpreter or libc of its own.
+FROM golang:1.27 AS tools-runner
+WORKDIR /src
+COPY runner/ ./
+RUN go test ./... \
+  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/natsumi-tools-runner .
+
+# Only the commands in docker/tools-commands.txt and the libraries they load. Built on the same base to share layers.
+FROM node:24.12.0-bookworm-slim AS tools-rootfs
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ripgrep \
+  && rm -rf /var/lib/apt/lists/*
+COPY docker/tools-commands.txt docker/tools-rootfs.sh /build/
+RUN sh /build/tools-rootfs.sh /build/tools-commands.txt /rootfs
+
+# Where the model's memory shell runs: no package manager, interpreter, network tool or git (compose.yaml: natsumi-tools).
+FROM scratch AS tools
+COPY --from=tools-rootfs /rootfs/ /
+# Outside PATH. Running it by path gives a command nothing sh does not already have.
+COPY --from=tools-runner /out/natsumi-tools-runner /usr/libexec/natsumi-tools-runner
+USER 1000:1000
+WORKDIR /memory
+ENTRYPOINT ["/usr/libexec/natsumi-tools-runner"]
+CMD ["serve"]
+
 FROM node:24.12.0-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app

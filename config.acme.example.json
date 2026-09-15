@@ -23,5 +23,8 @@
     "clientSecretFile": "/run/secrets/natsumi_github_client_secret",
     "callbackUrl": "https://natsumi.example.net/auth/github/callback",
     "allowedUserId": 12345678
+  },
+  "loop": {
+    "memoryShellSocket": "/run/natsumi-tools/runner.sock"
   }
 }
