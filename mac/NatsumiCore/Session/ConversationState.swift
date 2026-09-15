@@ -33,8 +33,9 @@ public struct ConversationState: Equatable, Sendable {
 
     public init() {}
 
-    /// natsumi is thinking or has messages still to handle.
-    public var isThinking: Bool { expression == .thinking || !pendingEvents.isEmpty }
+    /// natsumi has owner messages still to handle. The face is not used: the model can leave the thinking face after
+    /// it has finished, and the server only puts back a face it set itself.
+    public var isThinking: Bool { !pendingEvents.isEmpty }
 
     /// Messages to send (again) once the connection is synced. The server answers a resent requestId with the same result.
     public var unsent: [OutgoingMessage] { outbox.filter { $0.status == .sending } }

@@ -89,18 +89,19 @@ struct BalloonStateTests {
     func dismissThinking() {
         var conversation = ConversationState()
         var balloon = BalloonState()
-        conversation.apply(.expression(.thinking))
+        conversation.apply(.message(owner("m0", event: "e1")))
         balloon.update(with: conversation)
+        #expect(balloon.content == .thinking)
         balloon.dismiss()
         balloon.update(with: conversation)
         #expect(balloon.content == nil)
 
         conversation.apply(.message(reply("m1", to: "e1")))
-        conversation.apply(.expression(.happy))
+        conversation.apply(completed("e1", "m0"))
         balloon.update(with: conversation)
         #expect(balloon.content == .message(reply("m1", to: "e1")))
 
-        conversation.apply(.expression(.thinking))
+        conversation.apply(.message(owner("m2", event: "e2")))
         balloon.update(with: conversation)
         #expect(balloon.content == .thinking)
     }

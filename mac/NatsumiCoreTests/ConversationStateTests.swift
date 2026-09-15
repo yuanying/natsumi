@@ -84,15 +84,19 @@ struct ConversationStateTests {
         #expect(state.isThinking == false)
     }
 
-    @Test("表情のイベントで表情を変える。表情が thinking なら考え中とする")
+    @Test("表情のイベントで表情を変える。考え中は処理待ちのイベントだけで決め、表情では決めない")
     func expression() {
         var state = ConversationState()
         #expect(state.expression == .neutral)
         state.apply(.expression(.thinking))
+        #expect(state.expression == .thinking)
+        // The model may leave the thinking face after it has finished; the server only resets a face it set itself.
+        #expect(state.isThinking == false)
+        state.apply(.message(owner("m1", event: "e1")))
         #expect(state.isThinking)
         state.apply(.expression(.happy))
         #expect(state.expression == .happy)
-        #expect(state.isThinking == false)
+        #expect(state.isThinking)
     }
 
     @Test("返事と知らせを区別できる")
