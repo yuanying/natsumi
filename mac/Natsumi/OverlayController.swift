@@ -24,7 +24,9 @@ final class OverlayPanel: NSPanel {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        if style.contains(.borderless) {
+        // `.borderless` is the empty mask, so `contains(.borderless)` is always true; test for a title bar instead.
+        // A titled panel made clear and then opaque again draws none of its content.
+        if !style.contains(.titled) {
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = false
