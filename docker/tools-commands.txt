@@ -1,0 +1,14 @@
+# The only commands in the natsumi-tools image (ADR 0011), one per line, installed as /bin/<name>.
+# Nothing that reaches a network, installs packages, runs an interpreter, edits files in place or runs git.
+# The run_memory_shell tool describes this list (src/server/memory-shell.ts); a test keeps the two equal.
+sh
+cat
+find
+grep
+head
+ls
+rg
+sort
+tail
+uniq
+wc

@@ -75,6 +75,8 @@ export interface LoopConfig {
   compactionThreshold: number;
   /** Recent context tokens a compaction keeps as they are. */
   compactionKeepRecent: number;
+  /** The Unix socket of the tools container's runner (ADR 0011). Without it the model gets no shell. */
+  memoryShellSocket?: string;
 }
 
 export const LOOP_DEFAULTS: LoopConfig = { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000 };
@@ -280,7 +282,7 @@ function parseGitHub(value: unknown, path: string): GitHubConfig {
 
 function parseLoop(value: unknown, path: string): LoopConfig {
   const loop = object(value, path);
-  onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent']);
+  onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'memoryShellSocket']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -296,7 +298,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     throw new ConfigError(`${path}.compactionKeepRecent`, 'must be an integer of at least 1000');
   }
   if (keep >= threshold) throw new ConfigError(`${path}.compactionKeepRecent`, 'must be smaller than compactionThreshold');
-  return { timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep };
+  const socket = loop.memoryShellSocket === undefined ? undefined : absolutePath(loop.memoryShellSocket, `${path}.memoryShellSocket`);
+  return { timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep, ...(socket ? { memoryShellSocket: socket } : {}) };
 }
 
 /** 127.0.0.0/8, ::1 and localhost. Accepts a URL hostname, where IPv6 is bracketed. */

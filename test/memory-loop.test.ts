@@ -407,6 +407,43 @@ test('a stop during the switch never silently starts a new conversation: it resu
   } finally { await f.cleanup(); }
 });
 
+test('run_memory_shell is offered only with a runner socket, and an unreachable runner does not stop the loop', async () => {
+  const f = await setup();
+  try {
+    // Without a socket the tool is not registered and the instructions do not mention it.
+    const plain = await f.open();
+    const first = f.send(plain.loop, '鍵の番号を探して');
+    const call1 = await f.model.next();
+    assert.doesNotMatch(call1.context.systemPrompt ?? '', /run_memory_shell/);
+    call1.call('run_memory_shell', { command: 'rg 鍵' });
+    call1.finish();
+    const call2 = await f.model.next();
+    const [unregistered] = toolResults(call2.context);
+    assert.equal(unregistered!.isError, true);
+    assert.doesNotMatch(unregistered!.text, /接続できません/);
+    call2.call('finish_event', { event_id: first.eventId });
+    call2.finish();
+    await completed(plain.events, first.eventId);
+    await plain.loop.close();
+
+    // With a socket nobody listens on, the tool answers with the reason and the turn goes on.
+    const shelled = await f.open({ memoryShellSocket: join(f.root, 'missing.sock') });
+    const asked = f.send(shelled.loop, 'もう一度探して');
+    const call3 = await f.model.next();
+    assert.match(call3.context.systemPrompt ?? '', /run_memory_shell/);
+    call3.call('run_memory_shell', { command: 'rg 鍵' });
+    call3.finish();
+    const call4 = await f.model.next();
+    const [unreachable] = toolResults(call4.context);
+    assert.equal(unreachable!.isError, true);
+    assert.match(unreachable!.text, /接続できません/);
+    call4.call('reply_to_mac', { event_id: asked.eventId, text: 'いまは探せませんでした' });
+    call4.call('finish_event', { event_id: asked.eventId });
+    call4.finish();
+    assert.equal((await completed(shelled.events, asked.eventId)).payload.status, 'replied');
+  } finally { await f.cleanup(); }
+});
+
 test('past the context limit the loop compacts between turns and the conversation goes on, also after a restart', async () => {
   const f = await setup();
   try {

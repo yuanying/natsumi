@@ -27,6 +27,12 @@ services:
     volumes:
       - natsumi-data:/data
       - natsumi-pi:/var/lib/natsumi-pi
+      # The runner socket of natsumi-tools. natsumi never gets the Docker socket (ADR 0011).
+      - type: volume
+        source: natsumi-tools-socket
+        target: /run/natsumi-tools
+        volume:
+          nocopy: true
       - type: bind
         source: ${NATSUMI_CONFIG:-./config.example.json}
         target: /etc/natsumi/config.json
@@ -38,9 +44,64 @@ services:
       start_period: 30s
       retries: 3
 
+  # Where the model's memory shell runs (ADR 0011): only the commands in docker/tools-commands.txt, no network,
+  # no secrets, and the data directory's memory/ alone, read-only. natsumi reaches its runner over a Unix socket.
+  natsumi-tools:
+    build:
+      context: .
+      target: tools
+    image: natsumi-tools:local
+    init: true
+    restart: unless-stopped
+    # Must be the UID natsumi runs as: memory files are readable by their owner only.
+    user: "${NATSUMI_TOOLS_UID:-1000}:${NATSUMI_TOOLS_UID:-1000}"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    cpus: 1
+    mem_limit: 256m
+    memswap_limit: 256m
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    # The time limit of one command and the bytes of stdout and of stderr kept from it.
+    command: ["serve", "-timeout", "10s", "-max-output", "65536"]
+    volumes:
+      - type: volume
+        source: natsumi-data
+        target: /memory
+        read_only: true
+        volume:
+          subpath: memory
+          nocopy: true
+      - type: volume
+        source: natsumi-tools-socket
+        target: /run/natsumi-tools
+        volume:
+          nocopy: true
+    # natsumi creates memory/ in the data directory on its first start.
+    depends_on:
+      natsumi:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/libexec/natsumi-tools-runner", "check"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+
 volumes:
   natsumi-data:
   natsumi-pi:
+  # A small tmpfs owned by the tools user, holding only the runner socket.
+  natsumi-tools-socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=64k,uid=${NATSUMI_TOOLS_UID:-1000},gid=${NATSUMI_TOOLS_UID:-1000},mode=0755"
 
 secrets:
   natsumi_tls_cert:

@@ -82,6 +82,13 @@ test('the loop section sets the time zone, the nightly switch and the compaction
   for (const time of ['4:00', '24:00', '04:60', '', true]) rejects({ ...base(), loop: { nightlyRotationAt: time } }, 'loop.nightlyRotationAt', /HH:MM/);
   for (const tokens of [0, 1.5, -1, '60000', 5000]) rejects({ ...base(), loop: { compactionThreshold: tokens } }, 'loop.compactionThreshold');
   rejects({ ...base(), loop: { compactionThreshold: 20000, compactionKeepRecent: 20000 } }, 'loop.compactionKeepRecent', /smaller/);
+});
+
+test('the memory shell is off unless the loop names the runner socket by absolute path', () => {
+  assert.equal('memoryShellSocket' in parseConfig(base()).loop, false);
+  assert.equal(parseConfig({ ...base(), loop: { memoryShellSocket: '/run/natsumi-tools/runner.sock' } }).loop.memoryShellSocket,
+    '/run/natsumi-tools/runner.sock');
+  for (const socket of ['run/runner.sock', '', 42]) rejects({ ...base(), loop: { memoryShellSocket: socket } }, 'loop.memoryShellSocket');
   rejects({ ...base(), loop: { rotateAt: '04:00' } }, 'loop.rotateAt', /unknown/);
 });
 

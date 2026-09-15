@@ -4,7 +4,8 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi-session.ts';
-import { createLoopTools, LOOP_TOOL_NAMES, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
+import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
+import { MemoryShell } from './memory-shell.ts';
 import { MemoryStore } from './memory-store.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 
@@ -42,6 +43,8 @@ const BASE_INSTRUCTION = `あなたは natsumi。一人の本人（オーナー�
 ## 出来事の種類
 - mac_message: 本人との一対一の会話です。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。本人には何も送りません。`;
+
+const SHELL_INSTRUCTION = '- run_memory_shell で、rg などのコマンドを使って記憶のファイルを探すこともできます（読むだけ）。';
 
 const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思考の記録は新しくなり、今日の細かいやりとりは見えなくなります。'
   + '(1) 今日の出来事を振り返り、本人に覚えておいてと言われたこと、本人について今後も役立つこと、本人との約束で、まだ記憶にないものを remember で残してください（recall で重複を確かめられます）。'
@@ -109,6 +112,8 @@ export interface LoopOptions {
   timeZone?: string;
   compactAtTokens?: number;
   keepRecentTokens?: number;
+  /** The tools container's runner socket. The run_memory_shell tool exists only with it (ADR 0011). */
+  memoryShellSocket?: string;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -148,6 +153,7 @@ export class ThinkingLoop {
   private readonly options: LoopOptions;
   private readonly now: () => number;
   private readonly memory: MemoryStore;
+  private readonly shell: MemoryShell | undefined;
   private readonly listeners = new Set<(event: LoopClientEvent) => void>();
   private readonly queue: string[] = [];
   private readonly handling = new Map<string, Handling>();
@@ -169,6 +175,7 @@ export class ThinkingLoop {
     this.options = options;
     this.now = options.now ?? Date.now;
     this.memory = new MemoryStore({ directory: join(options.dataDirectory, 'memory'), timeZone: options.timeZone ?? 'UTC', now: this.now });
+    this.shell = options.memoryShellSocket ? new MemoryShell({ socketPath: options.memoryShellSocket }) : undefined;
   }
 
   /** Opens or creates the Pi session. Problems leave the loop unavailable instead of throwing or replacing history. */
@@ -351,11 +358,12 @@ export class ThinkingLoop {
 
   private async sessionOptions(handoff?: string): Promise<Omit<PiSessionOptions, 'file' | 'expectedSessionId'>> {
     const { dataDirectory, sessionDirectory, agentDirectory, target } = this.options;
+    const tools = createLoopTools(this.host());
     return {
       cwd: dataDirectory, agentDir: agentDirectory, sessionDir: sessionDirectory, modelRuntime: this.modelRuntime!, target,
       systemPrompt: await this.systemPrompt(handoff),
       thinkingLevel: this.options.thinking === 'on' ? 'medium' as const : 'off' as const,
-      tools: { names: LOOP_TOOL_NAMES, definitions: createLoopTools(this.host()) },
+      tools: { names: tools.map(tool => tool.name), definitions: tools },
       keepRecentTokens: this.options.keepRecentTokens ?? DEFAULT_KEEP_RECENT_TOKENS,
     };
   }
@@ -396,7 +404,8 @@ export class ThinkingLoop {
   private async systemPrompt(handoff?: string): Promise<string> {
     let personality = '';
     try { personality = (await readFile(join(this.options.dataDirectory, 'personality.md'), 'utf8')).trim(); } catch { /* none */ }
-    let prompt = personality ? `${BASE_INSTRUCTION}\n\n# 性格・話し方\n\n${personality}` : BASE_INSTRUCTION;
+    const instruction = this.shell ? BASE_INSTRUCTION.replace('\n\n## 出来事の種類', `\n${SHELL_INSTRUCTION}\n\n## 出来事の種類`) : BASE_INSTRUCTION;
+    let prompt = personality ? `${instruction}\n\n# 性格・話し方\n\n${personality}` : instruction;
     if (handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n昨夜の振り返りで、あなた自身が書いたメモです。\n\n${handoff}`;
     return prompt;
   }
@@ -647,6 +656,7 @@ export class ThinkingLoop {
       readMemory: topic => this.memory.read(topic),
       forget: (topic, text) => this.memory.forget(topic, text),
       writeHandoff: (eventId, text) => this.writeHandoff(eventId, text),
+      ...(this.shell ? { runMemoryShell: (command: string) => this.shell!.run(command) } : {}),
     };
   }
 
