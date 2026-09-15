@@ -61,14 +61,22 @@ public struct OverlayLayout: Equatable, Sendable {
         measure: (StackBudget) -> (notices: CGSize?, balloon: CGSize?)
     ) -> OverlayLayout {
         var layout = OverlayLayout()
+        var last: (notices: CGSize?, balloon: CGSize?) = (nil, nil)
         for budget in StackBudget.steps {
-            let sizes = measure(budget)
+            last = measure(budget)
             layout = make(
                 visible: visible, character: character, spacing: spacing,
-                notices: sizes.notices, balloon: sizes.balloon, input: input, history: history)
+                notices: last.notices, balloon: last.balloon, input: input, history: history)
             layout.budget = budget
-            if layout.overflow == 0 { break }
+            if layout.overflow == 0 { return layout }
         }
+        // Still too tall: leave the notices out (the badge still counts them) rather than piling panels on each other.
+        guard last.notices != nil else { return layout }
+        let budget = layout.budget
+        layout = make(
+            visible: visible, character: character, spacing: spacing,
+            notices: nil, balloon: last.balloon, input: input, history: history)
+        layout.budget = budget
         return layout
     }
 
@@ -104,20 +112,32 @@ public struct OverlayLayout: Equatable, Sendable {
                 y: min(max(y, visible.minY), visible.maxY - size.height),
                 width: size.width, height: size.height)
         }
-        // Panels on the speech side stack away from the character.
+        // Panels on the speech side stack away from the character, each at its own distance.
         var edge = flipped ? character.minY : character.maxY
-        func stacked(_ size: CGSize) -> CGRect {
-            let rect = placed(size, y: flipped ? edge - spacing - size.height : edge + spacing)
-            edge = flipped ? rect.minY : rect.maxY
-            return rect
+        var stack: [WritableKeyPath<OverlayLayout, CGRect?>] = []
+        func stacked(_ size: CGSize, into key: WritableKeyPath<OverlayLayout, CGRect?>) {
+            let y = flipped ? edge - spacing - size.height : edge + spacing
+            layout[keyPath: key] = CGRect(
+                x: min(max(character.midX - size.width / 2, visible.minX), visible.maxX - size.width),
+                y: y, width: size.width, height: size.height)
+            edge = flipped ? y : y + size.height
+            stack.append(key)
         }
         // The balloon is always next to the character, so nothing comes between the tail and her.
-        if let balloon { layout.balloon = stacked(balloon) }
-        if let notices { layout.notices = stacked(notices) }
+        if let balloon { stacked(balloon, into: \.balloon) }
+        if let notices { stacked(notices, into: \.notices) }
         if let input {
-            layout.input = chosen.inputBeyond
-                ? stacked(input)
-                : placed(input, y: flipped ? character.maxY + spacing : character.minY - spacing - input.height)
+            if chosen.inputBeyond {
+                stacked(input, into: \.input)
+            } else {
+                layout.input = placed(input, y: flipped ? character.maxY + spacing : character.minY - spacing - input.height)
+            }
+        }
+        // A stack that runs off the screen moves back as a whole, so its panels never pile on each other; it may then
+        // cover the character, which is better than covering itself.
+        let excess = flipped ? visible.minY - edge : edge - visible.maxY
+        if excess > 0 {
+            for key in stack { layout[keyPath: key]?.origin.y += flipped ? excess : -excess }
         }
 
         if let rect = layout.balloon {

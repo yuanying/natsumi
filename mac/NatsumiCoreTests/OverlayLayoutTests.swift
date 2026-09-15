@@ -154,6 +154,32 @@ struct OverlayLayoutTests {
             == CGRect(x: 352, y: 300, width: 192, height: 208))
     }
 
+    @Test("減らしても高さが足りないときは、知らせの束を出さず、一列のパネルどうしを重ねない（画面の中にも入れる）")
+    func noOverlapWhenShort() {
+        let short = CGRect(x: 0, y: 0, width: 1000, height: 300)
+        let tallNotices = CGSize(width: 200, height: 150)
+        let tallBalloon = CGSize(width: 240, height: 150)
+        for y in stride(from: 0, through: 200, by: 25) {
+            let character = CGRect(x: 400, y: CGFloat(y), width: 100, height: 100)
+            for n in [nil, tallNotices] as [CGSize?] {
+                for b in [nil, tallBalloon] as [CGSize?] {
+                    for i in [nil, input] as [CGSize?] {
+                        let layout = OverlayLayout.fit(visible: short, character: character, spacing: spacing, input: i, history: nil) { _ in
+                            (notices: n, balloon: b)
+                        }
+                        let rects = [layout.notices, layout.balloon, layout.input].compactMap { $0 }
+                        for (index, rect) in rects.enumerated() {
+                            #expect(short.contains(rect), "y=\(y) \(rect)")
+                            for other in rects[(index + 1)...] { #expect(rect.intersects(other) == false, "y=\(y) \(rect) \(other)") }
+                        }
+                        #expect(layout.balloon != nil || b == nil, "y=\(y)")
+                        #expect(layout.input != nil || i == nil, "y=\(y)")
+                    }
+                }
+            }
+        }
+    }
+
     @Test("高さが足りなければ、後ろに見せる枚数を減らし、それでも足りなければ吹き出しの行数を減らす")
     func shrinkWhenShort() {
         let short = CGRect(x: 0, y: 0, width: 1000, height: 300)
