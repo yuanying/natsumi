@@ -28,6 +28,20 @@ struct SettingsView: View {
                         .disabled(!model.hasSession)
                 }
             }
+            Section("キャラクター") {
+                LabeledContent("大きさ") {
+                    HStack {
+                        Slider(
+                            value: Binding(
+                                get: { model.characterScale.value },
+                                set: { model.characterScale = CharacterScale($0) }),
+                            in: CharacterScale.range, step: CharacterScale.step)
+                        Text("\(model.characterScale.percent)%")
+                            .monospacedDigit()
+                            .frame(width: 48, alignment: .trailing)
+                    }
+                }
+            }
             Section("アバター") {
                 TextField("アセットのディレクトリ", text: $avatarPath)
                 Text(model.avatarDescription).font(.caption).foregroundStyle(.secondary)

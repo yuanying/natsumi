@@ -8,7 +8,10 @@ struct NatsumiApp: App {
 
     var body: some Scene {
         MenuBarExtra("natsumi", systemImage: "face.smiling") {
-            MenuContent(model: delegate.model, openConversation: { delegate.showConversation() })
+            MenuContent(
+                model: delegate.model,
+                talk: { delegate.overlay?.openInput() },
+                openHistory: { delegate.overlay?.openHistory() })
         }
         Settings {
             SettingsView(model: delegate.model)
@@ -19,8 +22,7 @@ struct NatsumiApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel
-    private var character: CharacterPanelController?
-    private var conversation: ConversationWindowController?
+    private(set) var overlay: OverlayController?
 
     override init() {
         model = AppModel()
@@ -29,26 +31,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         model.launch()
-        conversation = ConversationWindowController(model: model)
-        character = CharacterPanelController(model: model) { [weak self] in self?.toggleConversation() }
-    }
-
-    func toggleConversation() {
-        conversation?.toggle(near: character?.frame)
-    }
-
-    func showConversation() {
-        conversation?.show(near: character?.frame)
+        overlay = OverlayController(model: model)
     }
 }
 
 struct MenuContent: View {
     let model: AppModel
-    let openConversation: () -> Void
+    let talk: () -> Void
+    let openHistory: () -> Void
 
     var body: some View {
         Text(model.statusText)
-        Button("会話を開く", action: openConversation)
+        Button("話しかける", action: talk)
+        Button("履歴を開く", action: openHistory)
         if model.status == .needsLogin {
             Button("GitHub でログイン") { Task { await model.login() } }
         }

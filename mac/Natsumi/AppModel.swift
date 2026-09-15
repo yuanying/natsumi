@@ -19,12 +19,21 @@ final class AppModel {
     }
 
     private(set) var status: Status = .needsServer
-    private(set) var conversation = ConversationState()
+    private(set) var conversation = ConversationState() {
+        didSet { balloon.update(with: conversation) }
+    }
+    private(set) var balloon = BalloonState()
     private(set) var avatar: AvatarArt = .placeholder
     private(set) var hasSession = false
     private(set) var lastError: String?
+    /// Which of the input field and the history are open around the character.
+    var visibility = OverlayVisibility()
+    var characterScale = CharacterScale.default {
+        didSet { overlaySettings.characterScale = characterScale }
+    }
 
     @ObservationIgnored let account = AccountStore(secrets: KeychainSecretStore(), defaults: .standard)
+    @ObservationIgnored private let overlaySettings = OverlaySettings(defaults: .standard)
     @ObservationIgnored private var machine = SessionMachine(deviceId: nil)
     @ObservationIgnored private var socket: WebSocketClient?
     @ObservationIgnored private var socketID: UUID?
@@ -37,6 +46,7 @@ final class AppModel {
     var serverOrigin: String { account.serverAddress?.origin.absoluteString ?? "" }
 
     func launch() {
+        characterScale = overlaySettings.characterScale
         reloadAvatar()
         resume()
     }
@@ -110,6 +120,10 @@ final class AppModel {
     func dismiss(requestId: String) {
         machine.dismiss(requestId: requestId)
         conversation = machine.conversation
+    }
+
+    func dismissBalloon() {
+        balloon.dismiss()
     }
 
     // MARK: - Avatar

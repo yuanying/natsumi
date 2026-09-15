@@ -1,46 +1,15 @@
-import AppKit
 import NatsumiCore
 import SwiftUI
 
-@MainActor
-final class ConversationWindowController {
-    private let window: NSWindow
-
-    init(model: AppModel) {
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 480),
-            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: true)
-        window.title = "natsumi"
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ConversationView(model: model))
-    }
-
-    func toggle(near anchor: NSRect?) {
-        if window.isVisible { window.orderOut(nil) } else { show(near: anchor) }
-    }
-
-    /// Opens beside the character, on whichever side fits the screen.
-    func show(near anchor: NSRect?) {
-        if !window.isVisible, let anchor, let screen = NSScreen.screens.first(where: { $0.frame.intersects(anchor) }) ?? NSScreen.main {
-            let visible = screen.visibleFrame
-            let size = window.frame.size
-            var x = anchor.minX - size.width - 8
-            if x < visible.minX { x = min(anchor.maxX + 8, visible.maxX - size.width) }
-            let top = min(max(anchor.maxY, visible.minY + size.height), visible.maxY)
-            window.setFrameTopLeftPoint(NSPoint(x: x, y: top))
-        }
-        NSApp.activate()
-        window.makeKeyAndOrderFront(nil)
-    }
-}
-
-struct ConversationView: View {
+/// The whole conversation, opened only when the owner wants to look back.
+struct HistoryView: View {
     let model: AppModel
-    @State private var draft = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            statusBar
+            StatusRow(model: model, scale: 1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
@@ -59,46 +28,12 @@ struct ConversationView: View {
                     }
                     .padding(12)
                 }
+                .onAppear { proxy.scrollTo("bottom") }
                 .onChange(of: model.conversation.messages.count) { proxy.scrollTo("bottom") }
                 .onChange(of: model.conversation.outbox.count) { proxy.scrollTo("bottom") }
             }
-            Divider()
-            HStack {
-                TextField("メッセージ", text: $draft)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(send)
-                Button("送信", action: send)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            .padding(12)
         }
-        .frame(minWidth: 280, minHeight: 320)
-    }
-
-    private var statusBar: some View {
-        HStack {
-            Text(model.statusText).font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            switch model.status {
-            case .needsServer:
-                SettingsLink { Text("設定を開く") }.controlSize(.small)
-            case .needsLogin:
-                Button("GitHub でログイン") { Task { await model.login() } }.controlSize(.small)
-            case .replaced, .stopped, .unavailable:
-                Button("接続し直す") { model.resume() }.controlSize(.small)
-            default:
-                EmptyView()
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-    }
-
-    private func send() {
-        let text = draft
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        model.send(text)
-        draft = ""
+        .frame(minWidth: 280, minHeight: 240)
     }
 }
 
