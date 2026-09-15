@@ -121,7 +121,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
       configureSession: options.pi?.configureSession, maxModelCalls: options.pi?.maxModelCalls,
       runTimeoutMs: options.pi?.runTimeoutMs, now, log, timeZone: config.loop.timeZone,
-      compactAtTokens: config.loop.compactionThreshold, keepRecentTokens: config.loop.compactionKeepRecent,
+      compactAtTokens: config.loop.compactionThreshold, keepRecentTokens: config.loop.compactionKeepRecent, memoryShellSocket: config.loop.memoryShellSocket,
     });
 
     // The nightly switch at the configured local time (ADR 0009). A night missed while stopped is caught up at start.

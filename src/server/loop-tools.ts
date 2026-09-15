@@ -1,5 +1,6 @@
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
+import { MEMORY_SHELL_COMMANDS } from './memory-shell.ts';
 
 /** The avatar expressions the Mac can show. The model picks from these only. */
 export const EXPRESSIONS = ['neutral', 'happy', 'laughing', 'surprised', 'thinking', 'worried', 'sad', 'sleepy'] as const;
@@ -21,14 +22,18 @@ export interface LoopToolHost {
   readMemory(topic: string): Outcome;
   forget(topic: string, text: string): Outcome;
   writeHandoff(eventId: string, text: string): Outcome;
+  /** Present only when the tools container's runner is configured (ADR 0011). */
+  runMemoryShell?(command: string): Outcome;
 }
 
 /**
- * The whole allowlist given to Pi (ADR 0004, ADR 0008, ADR 0009). Pi's own read/bash/edit/write stay disabled:
+ * The allowlist given to Pi (ADR 0004, ADR 0008, ADR 0009). Pi's own read/bash/edit/write stay disabled:
  * the memory tools reach only `memory/`, through names the server turns into paths.
  */
 export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'finish_event', 'set_mac_avatar_expression',
   'remember', 'recall', 'read_memory', 'forget', 'write_handoff_note'];
+/** Added to the allowlist with a runner: a shell confined to a read-only copy of `memory/` in its own container (ADR 0011). */
+export const MEMORY_SHELL_TOOL_NAME = 'run_memory_shell';
 
 async function result(outcome: Outcome) {
   const settled = await outcome;
@@ -38,7 +43,18 @@ async function result(outcome: Outcome) {
 }
 
 export function createLoopTools(host: LoopToolHost) {
+  const shell = host.runMemoryShell?.bind(host);
   return [
+    ...(shell ? [defineTool({
+      name: MEMORY_SHELL_TOOL_NAME, label: 'Search memory with a shell',
+      description: '長期記憶のファイル（1 トピック 1 つの Markdown）を shell のコマンドで探す。recall で見つからないとき、'
+        + '正規表現・ファイルの一覧・件数で調べたいときに使う。コマンドは記憶のディレクトリを作業ディレクトリにして sh -c で動く。'
+        + `使えるコマンドは ${MEMORY_SHELL_COMMANDS.join('、')} だけ。記憶は読み取り専用で、ネットワークはない。`
+        + '記憶を書き換えるときは remember と forget を使う。時間と出力の大きさに上限があり、超えると打ち切られる。'
+        + '例: rg -n 鍵 / rg -l 誕生日 / ls / wc -l *.md',
+      parameters: Type.Object({ command: Type.String() }),
+      execute: async (_id, params) => result(shell(params.command)),
+    })] : []),
     defineTool({
       name: 'reply_to_mac', label: 'Reply to the owner',
       description: '本人のメッセージ（mac_message）に返事を送り、本人の Mac に表示する。1 つのメッセージに送れる返事は 1 回だけ。'
