@@ -34,7 +34,7 @@ struct BalloonView: View {
             content(scale: scale)
                 .frame(minWidth: 24 * scale, alignment: .leading)
             Button(action: model.closeBalloon) { Image(systemName: "xmark") }
-                .help(stack == nil ? "閉じる" : "すべて確かめて閉じる")
+                .help(stack == nil ? "閉じる" : "すべて既読にして閉じる")
                 .buttonStyle(.borderless)
                 .font(.system(size: 10 * scale, weight: .bold))
                 .foregroundStyle(Comic.ink)
@@ -84,14 +84,15 @@ struct BalloonView: View {
                 .help(stack.more > 0 ? "クリックで確かめて次へ" : "クリックで確かめて閉じる")
                 let cut = preview.isTruncated || lines < BalloonText.maxLines
                 if cut || stack.more > 0 || model.balloon.isBusy {
+                    // The same footer as the notices: the count first, under the text.
                     HStack(spacing: 8 * scale) {
+                        if stack.more > 0 {
+                            MoreCount(count: stack.more, scale: scale)
+                        }
                         if cut {
                             Button("続きは履歴で", action: openHistory)
                                 .buttonStyle(.link)
                                 .font(Comic.font(11 * scale))
-                        }
-                        if stack.more > 0 {
-                            Text("あと \(stack.more) 件").font(Comic.font(11 * scale, bold: true)).foregroundStyle(Comic.faint)
                         }
                         if model.balloon.isBusy {
                             ProgressView().controlSize(.mini).help("考え中")

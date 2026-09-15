@@ -139,13 +139,24 @@ final class AppModel {
         apply(machine.confirmFrontReply())
     }
 
-    /// The balloon's ×: every unread reply is read; "receiving" and "thinking" are only hidden.
+    /// The balloon's ×: every unread reply is read and the balloon closes (a click on the text reads only the front
+    /// one). "Receiving" and "thinking" are only hidden.
     func closeBalloon() {
         if case .replies = balloon.content {
-            apply(machine.confirmAllReplies())
+            confirmAllReplies()
         } else {
             balloon.dismiss()
         }
+    }
+
+    /// The balloon's × and the menu: every unread reply is read at once.
+    func confirmAllReplies() {
+        apply(machine.confirmAllReplies())
+    }
+
+    /// The notices' × and the menu: every notice is checked at once.
+    func acknowledgeAllNotices() {
+        apply(machine.acknowledgeAllNotices())
     }
 
     /// A click on the front notice card checks the notices on it.

@@ -130,6 +130,13 @@ final class OverlayController: NSObject, NSWindowDelegate {
         menu.addItem(ActionMenuItem("話しかける") { [weak self] in self?.openInput() })
         menu.addItem(ActionMenuItem("履歴を開く") { [weak self] in self?.openHistory() })
         menu.addItem(.separator())
+        let readAll = ActionMenuItem("返事をすべて既読にする") { [model] in model.confirmAllReplies() }
+        readAll.isEnabled = !model.conversation.unreadReplies.isEmpty
+        menu.addItem(readAll)
+        let checkAll = ActionMenuItem("知らせをすべて確認する") { [model] in model.acknowledgeAllNotices() }
+        checkAll.isEnabled = !model.conversation.unacknowledgedNotificationIds.isEmpty
+        menu.addItem(checkAll)
+        menu.addItem(.separator())
         if model.status == .needsLogin {
             menu.addItem(ActionMenuItem("GitHub でログイン") { [model] in Task { await model.login() } })
         }
