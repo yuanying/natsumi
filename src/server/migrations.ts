@@ -135,4 +135,31 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 6,
+    name: 'read-state',
+    sql: `
+      -- How far the owner has read natsumi's replies: one cursor for every device (ADR 0013). It only moves forward.
+      CREATE TABLE read_cursor (
+        owner INTEGER PRIMARY KEY CHECK (owner = 1),
+        message_id TEXT NOT NULL REFERENCES conversation_messages (message_id),
+        -- The device that last moved it.
+        device_id TEXT,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      -- Notices the owner has checked, one by one and apart from the cursor.
+      CREATE TABLE notice_acknowledgements (
+        message_id TEXT PRIMARY KEY REFERENCES conversation_messages (message_id),
+        device_id TEXT,
+        acknowledged_at TEXT NOT NULL
+      ) STRICT;
+
+      -- What already exists counts as read and checked, so an upgrade does not bring back old words as unread.
+      INSERT INTO read_cursor (owner, message_id, device_id, updated_at)
+        SELECT 1, message_id, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM conversation_messages ORDER BY position DESC LIMIT 1;
+      INSERT INTO notice_acknowledgements (message_id, device_id, acknowledged_at)
+        SELECT message_id, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM conversation_messages WHERE kind = 'notice';
+    `,
+  },
 ];

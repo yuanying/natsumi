@@ -17,7 +17,8 @@ export const CLOSE_DEVICE_REPLACED = 4001;
 export const CLOSE_TOO_SLOW = 4002;
 
 /** Commands of the v1 client contract. The ones not handled below receive a safe rejection. */
-const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.interrupt', 'approval.decide', 'notification.ack', 'device.activity']);
+const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.read', 'conversation.interrupt', 'approval.decide',
+  'notification.ack', 'device.activity']);
 
 interface Connection {
   session: VerifiedSession;
@@ -132,15 +133,26 @@ export class ConnectionHub {
     const payload = isObject(envelope.payload) ? envelope.payload : {};
     const reject = (code: string) => out().publish('command.rejected', { code }, id);
 
+    if (type === 'session.sync') return this.sync(ws, connection, deviceId, payload, id);
+    if (type === 'conversation.send' || type === 'conversation.read' || type === 'notification.ack') {
+      if (!connection.stream || !connection.deviceId) return reject('sync-required');
+      if (deviceId !== connection.deviceId) return reject('device-mismatch');
+    }
+    const { stream } = connection;
     switch (type) {
-      case 'session.sync':
-        return this.sync(ws, connection, deviceId, payload, id);
-      case 'conversation.send': {
-        const stream = connection.stream;
-        if (!stream || !connection.deviceId) return reject('sync-required');
-        if (deviceId !== connection.deviceId) return reject('device-mismatch');
+      case 'conversation.send':
         if (id === undefined) return reject('invalid-request');
-        return this.send(stream, connection.deviceId, payload, id);
+        return this.send(stream!, connection.deviceId!, payload, id);
+      case 'conversation.read': {
+        const { throughMessageId } = payload;
+        if (!isId(throughMessageId)) return reject('invalid-request');
+        return answer(stream!, this.options.loop.markRead({ throughMessageId, deviceId: connection.deviceId! }), id);
+      }
+      case 'notification.ack': {
+        // A notification is a notice in the conversation; its ID is the notice's messageId (ADR 0013).
+        const { notificationId } = payload;
+        if (!isId(notificationId)) return reject('invalid-request');
+        return answer(stream!, this.options.loop.acknowledgeNotice({ notificationId, deviceId: connection.deviceId! }), id);
       }
       default:
         // conversation.interrupt among them: a thought in progress is never stopped from outside (ADR 0008).
@@ -201,6 +213,15 @@ export class ConnectionHub {
       stream.publish('command.accepted', { messageId: outcome.messageId, eventId: outcome.eventId, state: outcome.state }, requestId);
     }
   }
+}
+
+const isId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
+
+/** Sends the loop's outcome of a read or an acknowledgement to the device that asked. */
+function answer(stream: EventStream, outcome: { kind: 'accepted' | 'rejected' | 'unavailable'; code?: string }, requestId: string | undefined) {
+  const { kind, ...result } = outcome;
+  if (kind === 'accepted') stream.publish('command.accepted', result, requestId);
+  else stream.publish(kind === 'rejected' ? 'command.rejected' : 'service.unavailable', { code: result.code }, requestId);
 }
 
 function refuse(socket: Duplex, status: number, code: string) {

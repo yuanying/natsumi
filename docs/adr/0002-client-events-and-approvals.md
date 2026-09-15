@@ -1,7 +1,7 @@
 # 0002. 会話・承認・通知のサーバー契約
 
 - Date: 2026-09-14
-- Status: Accepted（会話の配信・busy・snapshot の作り方は [ADR 0008](0008-single-thinking-loop-and-mac-conversation.md) で置き換え、承認の対象に Slack の投稿を加える点は [ADR 0012](0012-slack-and-colleagues.md) で具体化）
+- Status: Accepted（会話の配信・busy・snapshot の作り方は [ADR 0008](0008-single-thinking-loop-and-mac-conversation.md) で置き換え、承認の対象に Slack の投稿を加える点は [ADR 0012](0012-slack-and-colleagues.md) で具体化、通知の ACK を知らせの確認として持つ点とクライアントの通知 ID での重複の抑止は [ADR 0013](0013-read-state-on-the-server.md) で具体化・置き換え）
 
 ## Context
 

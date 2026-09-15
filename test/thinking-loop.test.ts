@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import type { Context } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
@@ -25,7 +26,8 @@ async function until<T>(check: () => T | undefined | false, timeout = 5_000): Pr
   }
 }
 
-async function setup() {
+/** `beforeReadState` runs on a database migrated up to version 5, as an existing server's would be. */
+async function setup(beforeReadState?: (db: DatabaseSync) => void) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-loop-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -35,6 +37,10 @@ async function setup() {
   await mkdir(agentDirectory, { recursive: true });
   await writeFile(join(data, 'personality.md'), `# 性格・話し方\n${PERSONALITY_MARKER}\n`);
   const db = openStateDatabase(join(root, 'state.sqlite'));
+  if (beforeReadState) {
+    migrate(db, MIGRATIONS.filter(migration => migration.version <= 5));
+    beforeReadState(db);
+  }
   migrate(db, MIGRATIONS);
   const model = new ScriptedModel();
   const sessions: AgentSession[] = [];
@@ -404,7 +410,164 @@ test('a model runtime that cannot start leaves the loop unavailable without crea
     const { loop } = await f.open({ runtime: async () => { throw new Error(PRIVATE_DETAIL); } });
     assert.equal(loop.unavailable, 'pi-unavailable');
     assert.deepEqual(loop.send({ requestId: 'request-1', deviceId: 'device-1', text: 'hello' }), { kind: 'unavailable', code: 'pi-unavailable' });
+    assert.deepEqual(loop.markRead({ throughMessageId: 'message-1', deviceId: 'device-1' }), { kind: 'unavailable', code: 'pi-unavailable' });
+    assert.deepEqual(loop.acknowledgeNotice({ notificationId: 'message-1', deviceId: 'device-1' }), { kind: 'unavailable', code: 'pi-unavailable' });
     assert.deepEqual(f.rows(), []);
     assert.deepEqual(await f.sessionFiles(), []);
+  } finally { await f.cleanup(); }
+});
+
+/** A model that answers every event with a notice, a reply, and the end of the event. */
+function noticeAndReply(f: Awaited<ReturnType<typeof setup>>, notices = ['お知らせ']) {
+  f.model.auto = context => {
+    const [eventId] = eventIds(lastUserText(context));
+    return { calls: [...notices.map(text => call('notify_owner', { text })),
+      call('reply_to_mac', { event_id: eventId, text: 'はい' }), call('finish_event', { event_id: eventId })] };
+  };
+}
+const tick = () => new Promise(resolve => setImmediate(resolve));
+const ofType = (events: LoopClientEvent[], type: string) => events.filter(e => e.type === type).map(e => e.payload);
+
+test('the read cursor only moves forward, refuses unknown messages and counts only natsumi replies as unread', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    assert.deepEqual([loop.snapshot().readThroughMessageId, loop.snapshot().unreadReplyCount, loop.snapshot().unacknowledgedNotificationIds], [null, 0, []]);
+    noticeAndReply(f);
+    const first = f.send(loop, '一件目');
+    await completed(events, first.eventId);
+    await loop.idle();
+    const [owner1, notice1, reply1] = loop.snapshot().messages.map(m => m.messageId);
+    assert.deepEqual(loop.snapshot().messages.map(m => m.kind), ['message', 'notice', 'reply']);
+    assert.equal(loop.snapshot().unreadReplyCount, 1);
+
+    assert.deepEqual(loop.markRead({ throughMessageId: 'message-missing', deviceId: 'device-1' }), { kind: 'rejected', code: 'invalid-request' });
+    // Through the owner's own message: the reply after it is still unread.
+    assert.deepEqual(loop.markRead({ throughMessageId: owner1!, deviceId: 'device-1' }),
+      { kind: 'accepted', readThroughMessageId: owner1, unreadReplyCount: 1 });
+    // The event follows the answer, as with conversation.send.
+    assert.deepEqual(ofType(events, 'conversation.read'), []);
+    await tick();
+    assert.deepEqual(ofType(events, 'conversation.read'), [{ readThroughMessageId: owner1, unreadReplyCount: 1 }]);
+
+    assert.deepEqual(loop.markRead({ throughMessageId: reply1!, deviceId: 'device-2' }),
+      { kind: 'accepted', readThroughMessageId: reply1, unreadReplyCount: 0 });
+    await tick();
+    // Passing a notice does not acknowledge it.
+    assert.deepEqual(loop.snapshot().unacknowledgedNotificationIds, [notice1]);
+
+    const second = f.send(loop, '二件目');
+    await completed(events, second.eventId);
+    await loop.idle();
+    // A new owner message and a new reply follow the cursor; only the reply is unread.
+    assert.deepEqual([loop.snapshot().readThroughMessageId, loop.snapshot().unreadReplyCount], [reply1, 1]);
+
+    // A late, smaller position from an old device is ignored and the current one returned; nothing is broadcast.
+    const before = ofType(events, 'conversation.read').length;
+    assert.deepEqual(loop.markRead({ throughMessageId: owner1!, deviceId: 'device-old' }),
+      { kind: 'accepted', readThroughMessageId: reply1, unreadReplyCount: 1 });
+    assert.deepEqual(loop.markRead({ throughMessageId: reply1!, deviceId: 'device-1' }),
+      { kind: 'accepted', readThroughMessageId: reply1, unreadReplyCount: 1 });
+    await tick();
+    assert.equal(ofType(events, 'conversation.read').length, before);
+  } finally { await f.cleanup(); }
+});
+
+test('notices are acknowledged one by one, idempotently and apart from the read cursor, and natsumi sees how many are left', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    noticeAndReply(f, ['知らせ 1', '知らせ 2']);
+    const sent = f.send(loop, '相談');
+    await completed(events, sent.eventId);
+    await loop.idle();
+    const [ownerId, firstNotice, secondNotice, replyId] = loop.snapshot().messages.map(m => m.messageId);
+    assert.deepEqual(loop.snapshot().unacknowledgedNotificationIds, [firstNotice, secondNotice]);
+
+    for (const notificationId of [ownerId!, replyId!, 'message-missing']) {
+      assert.deepEqual(loop.acknowledgeNotice({ notificationId, deviceId: 'device-1' }), { kind: 'rejected', code: 'invalid-request' });
+    }
+    // Out of order: the second one first.
+    const acked = loop.acknowledgeNotice({ notificationId: secondNotice!, deviceId: 'device-1' });
+    assert.equal(acked.kind, 'accepted');
+    const { acknowledgedAt } = acked as { acknowledgedAt: string };
+    assert.equal(Number.isNaN(Date.parse(acknowledgedAt)), false);
+    await tick();
+    assert.deepEqual(ofType(events, 'notification.acked'), [{ notificationId: secondNotice, acknowledgedAt }]);
+    // A second ack, from any device, returns the recorded state and broadcasts nothing.
+    assert.deepEqual(loop.acknowledgeNotice({ notificationId: secondNotice!, deviceId: 'device-2' }),
+      { kind: 'accepted', notificationId: secondNotice, acknowledgedAt });
+    await tick();
+    assert.equal(ofType(events, 'notification.acked').length, 1);
+
+    // The cursor passing every message leaves the first notice unacknowledged.
+    loop.markRead({ throughMessageId: replyId!, deviceId: 'device-1' });
+    assert.deepEqual(loop.snapshot().unacknowledgedNotificationIds, [firstNotice]);
+
+    // natsumi sees the count of notices the owner has not checked in the next event.
+    f.model.takeOver();
+    const next = f.send(loop, '次');
+    const turn = await f.model.next();
+    assert.match(lastUserText(turn.context), /"unacknowledged_notices":1/);
+    assert.match(turn.context.systemPrompt ?? '', /unacknowledged_notices/);
+    turn.call('finish_event', { event_id: next.eventId });
+    turn.finish();
+    await completed(events, next.eventId);
+
+    loop.acknowledgeNotice({ notificationId: firstNotice!, deviceId: 'device-1' });
+    const last = f.send(loop, '最後');
+    const lastTurn = await f.model.next();
+    assert.doesNotMatch(lastUserText(lastTurn.context), /unacknowledged_notices/);
+    lastTurn.call('finish_event', { event_id: last.eventId });
+    lastTurn.finish();
+    await completed(events, last.eventId);
+  } finally { await f.cleanup(); }
+});
+
+test('a snapshot lists unacknowledged notices beyond its newest 500 messages and counts unread replies beyond them', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    noticeAndReply(f);
+    const sent = f.send(loop, '古いやりとり');
+    await completed(events, sent.eventId);
+    await loop.idle();
+    const [, oldNotice] = loop.snapshot().messages.map(m => m.messageId);
+    const insert = f.db.prepare(`INSERT INTO conversation_messages (message_id, position, role, kind, text, event_id, request_id, device_id, created_at)
+      VALUES (?, (SELECT MAX(position) + 1 FROM conversation_messages), 'owner', 'message', 'x', ?, ?, 'device-1', '2026-01-01T00:00:00.000Z')`);
+    for (let i = 0; i < 500; i++) insert.run(`message-filler-${i}`, `event-filler-${i}`, `request-filler-${i}`);
+
+    const snapshot = loop.snapshot();
+    assert.equal(snapshot.messages.length, 500);
+    assert.equal(snapshot.messages.some(m => m.messageId === oldNotice), false);
+    assert.deepEqual(snapshot.unacknowledgedNotificationIds, [oldNotice]);
+    assert.equal(snapshot.unreadReplyCount, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('migration 6 treats the conversation that already exists as read and its notices as acknowledged', async () => {
+  const f = await setup(db => {
+    const insert = db.prepare(`INSERT INTO conversation_messages
+      (message_id, position, role, kind, text, event_id, request_id, device_id, created_at) VALUES (?, ?, ?, ?, 'x', ?, ?, ?, '2026-01-01T00:00:00.000Z')`);
+    insert.run('message-old-1', 1, 'owner', 'message', 'event-old-1', 'request-old-1', 'device-1');
+    insert.run('message-old-2', 2, 'natsumi', 'notice', null, null, null);
+    insert.run('message-old-3', 3, 'natsumi', 'reply', 'event-old-1', null, null);
+    insert.run('message-old-4', 4, 'owner', 'message', 'event-old-4', 'request-old-4', 'device-1');
+  });
+  try {
+    const { loop, events } = await f.open();
+    const snapshot = loop.snapshot();
+    assert.deepEqual([snapshot.readThroughMessageId, snapshot.unreadReplyCount, snapshot.unacknowledgedNotificationIds], ['message-old-4', 0, []]);
+    assert.equal(loop.acknowledgeNotice({ notificationId: 'message-old-2', deviceId: 'device-1' }).kind, 'accepted');
+    await tick();
+    assert.deepEqual(ofType(events, 'notification.acked'), []);
+
+    // Only what comes after is unread.
+    noticeAndReply(f);
+    const sent = f.send(loop, '新しいメッセージ');
+    await completed(events, sent.eventId);
+    await loop.idle();
+    const newNotice = loop.snapshot().messages.find(m => m.kind === 'notice' && m.messageId !== 'message-old-2')!.messageId;
+    assert.deepEqual([loop.snapshot().unreadReplyCount, loop.snapshot().unacknowledgedNotificationIds], [1, [newNotice]]);
   } finally { await f.cleanup(); }
 });
