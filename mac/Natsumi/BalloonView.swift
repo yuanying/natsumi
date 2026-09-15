@@ -9,7 +9,8 @@ final class BalloonPlacement {
     var tailX: CGFloat = 40
 }
 
-/// natsumi's last word in a comic speech balloon, or dots while she is receiving or thinking.
+/// natsumi's unread replies in a comic speech balloon, the oldest in front with the others stacked behind it, or dots
+/// while she is receiving or thinking.
 struct BalloonView: View {
     let model: AppModel
     let placement: BalloonPlacement
@@ -17,28 +18,54 @@ struct BalloonView: View {
 
     static let maxWidth: CGFloat = 260
     static func tailHeight(_ textScale: Double) -> CGFloat { 10 * textScale }
+    /// How far each stacked reply shows behind the front one.
+    static func edgeStep(_ textScale: Double) -> CGFloat { 5 * textScale }
 
     var body: some View {
         let scale = model.characterScale.textScale
-        let isNew = model.balloon.isNew
+        let stack: ReplyStack? = if case .replies(let stack) = model.balloon.content { stack } else { nil }
+        let edges = stack?.behind ?? 0
+        let step = Self.edgeStep(scale)
+        let tailHeight = Self.tailHeight(scale)
         HStack(alignment: .top, spacing: 6 * scale) {
             content(scale: scale)
                 .frame(minWidth: 24 * scale, alignment: .leading)
-            Button(action: model.dismissBalloon) { Image(systemName: "xmark") }
-                .help("閉じる")
+            Button(action: model.closeBalloon) { Image(systemName: "xmark") }
+                .help(stack == nil ? "閉じる" : "すべて確かめて閉じる")
                 .buttonStyle(.borderless)
-            .font(.system(size: 10 * scale))
-            .foregroundStyle(.secondary)
+                .font(.system(size: 10 * scale))
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12 * scale)
         .padding(.vertical, 8 * scale)
-        .padding(placement.tail == .down ? .bottom : .top, Self.tailHeight(scale))
+        .padding(placement.tail == .down ? .bottom : .top, tailHeight)
         .frame(maxWidth: Self.maxWidth * scale, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .background {
-            let shape = BalloonShape(tail: placement.tail, tailX: placement.tailX, tailHeight: Self.tailHeight(scale), radius: 12 * scale)
+            let shape = BalloonShape(tail: placement.tail, tailX: placement.tailX, tailHeight: tailHeight, radius: 12 * scale)
             shape.fill(Color(nsColor: .textBackgroundColor))
-            shape.stroke(isNew ? Color.accentColor : Color.secondary.opacity(0.5), lineWidth: isNew ? 2 : 1)
+            shape.stroke(Color.secondary.opacity(0.5), lineWidth: 1)
+        }
+        // The replies behind show as edges on the side away from the tail.
+        .padding(placement.tail == .down ? .top : .bottom, step * CGFloat(edges))
+        .background {
+            GeometryReader { geometry in
+                let size = geometry.size
+                let boxHeight = size.height - step * CGFloat(edges) - tailHeight
+                ForEach(Array((1...max(edges, 1)).reversed()), id: \.self) { i in
+                    if i <= edges {
+                        let inset = 10 * scale * CGFloat(i)
+                        let y = placement.tail == .down ? step * CGFloat(edges - i) : tailHeight + step * CGFloat(i)
+                        let edge = RoundedRectangle(cornerRadius: 12 * scale)
+                        ZStack {
+                            edge.fill(Color(nsColor: .textBackgroundColor))
+                            edge.stroke(Color.secondary.opacity(0.5), lineWidth: 1)
+                        }
+                        .frame(width: max(size.width - inset * 2, 0), height: max(boxHeight, 0))
+                        .offset(x: inset, y: y)
+                    }
+                }
+            }
         }
     }
 
@@ -49,19 +76,34 @@ struct BalloonView: View {
             Dots(label: "受付中", scale: scale)
         case .thinking:
             Dots(label: "考え中", scale: scale)
-        case .message(let message):
-            let preview = BalloonText.preview(message.text)
+        case .replies(let stack):
+            let preview = BalloonText.preview(stack.front.text)
             VStack(alignment: .leading, spacing: 4 * scale) {
-                if message.isNotice {
-                    Label("お知らせ", systemImage: "bell").font(.system(size: 10 * scale)).foregroundStyle(.secondary)
+                Button(action: model.confirmFrontReply) {
+                    Text(preview.text)
+                        .font(.system(size: 13 * scale))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
-                Text(preview.text)
-                    .font(.system(size: 13 * scale))
-                    .fixedSize(horizontal: false, vertical: true)
-                if preview.isTruncated {
-                    Button("続きは履歴で", action: openHistory)
-                        .buttonStyle(.link)
-                        .font(.system(size: 11 * scale))
+                .buttonStyle(.plain)
+                .help(stack.more > 0 ? "クリックで確かめて次へ" : "クリックで確かめて閉じる")
+                if preview.isTruncated || stack.more > 0 || model.balloon.isBusy {
+                    HStack(spacing: 8 * scale) {
+                        if preview.isTruncated {
+                            Button("続きは履歴で", action: openHistory)
+                                .buttonStyle(.link)
+                                .font(.system(size: 11 * scale))
+                        }
+                        if stack.more > 0 {
+                            Text("あと \(stack.more) 件").font(.system(size: 10 * scale)).foregroundStyle(.secondary)
+                        }
+                        if model.balloon.isBusy {
+                            ProgressView().controlSize(.mini).help("考え中")
+                        }
+                    }
                 }
             }
         case nil:

@@ -35,13 +35,14 @@ final class OverlayPanel: NSPanel {
     }
 }
 
-/// The character and everything around it: the balloon above, the input field below and the history beside it.
-/// The others are child windows of the character's panel, so they move with it while it is dragged.
+/// The character and everything around it: the balloon above, the input field below, the notices and the history
+/// beside it. The others are child windows of the character's panel, so they move with it while it is dragged.
 @MainActor
 final class OverlayController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private let character = OverlayPanel.make()
     private let balloon = OverlayPanel.make()
+    private let notices = OverlayPanel.make()
     private let input = OverlayPanel.make(acceptsKey: true)
     private let history = OverlayPanel.make(style: [.titled, .closable, .resizable], acceptsKey: true)
     private let settings = OverlayPanel.make(style: [.titled, .closable], acceptsKey: true)
@@ -59,9 +60,17 @@ final class OverlayController: NSObject, NSWindowDelegate {
         character.delegate = self
         character.contentView = ClickOrDragHostingView(
             rootView: CharacterView(model: model),
-            onClick: { [weak self] in self?.update { $0.characterClicked() } },
+            onClick: { [weak self] point in
+                guard let self else { return }
+                if self.model.notices.badgeCount > 0, CharacterBadge.frame(for: self.model.characterScale).contains(point) {
+                    self.model.toggleNotices()
+                } else {
+                    self.update { $0.characterClicked() }
+                }
+            },
             menu: { [weak self] in self?.contextMenu() })
         balloon.contentView = FirstMouseHostingView(rootView: BalloonView(model: model, placement: placement, openHistory: openHistory))
+        notices.contentView = FirstMouseHostingView(rootView: NoticeBundleView(model: model, openHistory: openHistory))
         input.contentView = FirstMouseHostingView(rootView: InputView(model: model, openHistory: openHistory) { [weak self] in
             self?.update { $0.escape() }
         })
@@ -138,8 +147,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
     /// Lays the panels out again whenever what they show changes.
     private func observe() {
         withObservationTracking {
-            _ = (model.characterScale, model.balloon, model.visibility, model.status, model.conversation.outbox, model.avatar,
-                 model.inputBoxSize, model.inputTextHeight)
+            _ = (model.characterScale, model.balloon, model.notices, model.visibility, model.status, model.conversation.outbox,
+                 model.avatar, model.inputBoxSize, model.inputTextHeight)
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -169,16 +178,20 @@ final class OverlayController: NSObject, NSWindowDelegate {
         let scale = model.characterScale.textScale
         let balloonSize = model.balloon.content == nil ? nil : fittingSize(
             of: BalloonView(model: model, placement: placement, openHistory: {}), width: BalloonView.maxWidth * scale)
+        let noticesSize = model.notices.isShown
+            ? fittingSize(of: NoticeBundleView(model: model, openHistory: {}), width: NoticeBundleView.maxWidth * scale) : nil
         let inputSize = visibility.isInputOpen
             ? fittingSize(of: InputView(model: model, openHistory: {}, close: {}), width: model.inputBoxSize.width) : nil
         let historyOpening = visibility.isHistoryOpen && !wasHistoryOpen
         let layout = OverlayLayout.make(
             visible: visibleFrame, character: character.frame, balloon: balloonSize, input: inputSize,
-            history: visibility.isHistoryOpen && (placeHistory || historyOpening) ? history.frame.size : nil)
+            history: visibility.isHistoryOpen && (placeHistory || historyOpening) ? history.frame.size : nil,
+            notices: noticesSize)
 
         placement.tail = layout.tail
         placement.tailX = layout.tailX
         place(balloon, at: layout.balloon)
+        place(notices, at: layout.notices)
 
         place(input, at: layout.input)
         if visibility.isInputOpen && !wasInputOpen {
@@ -278,13 +291,14 @@ final class ActionMenuItem: NSMenuItem {
     }
 }
 
-/// A click opens the input field; a drag moves the window; a right click or control-click shows the menu.
+/// A click reports where it landed (origin at the top left); a drag moves the window; a right click or control-click
+/// shows the menu.
 final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
-    private var onClick: @MainActor () -> Void = {}
+    private var onClick: @MainActor (CGPoint) -> Void = { _ in }
     private var menuProvider: @MainActor () -> NSMenu? = { nil }
     private var dragged = false
 
-    init(rootView: Content, onClick: @escaping @MainActor () -> Void, menu: @escaping @MainActor () -> NSMenu?) {
+    init(rootView: Content, onClick: @escaping @MainActor (CGPoint) -> Void, menu: @escaping @MainActor () -> NSMenu?) {
         self.onClick = onClick
         self.menuProvider = menu
         super.init(rootView: rootView)
@@ -326,7 +340,9 @@ final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if !dragged { onClick() }
+        guard !dragged else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        onClick(CGPoint(x: point.x, y: isFlipped ? point.y : bounds.height - point.y))
     }
 }
 
@@ -342,6 +358,24 @@ struct CharacterView: View {
         .overlay(alignment: .bottomTrailing) {
             if model.status != .connected {
                 Circle().fill(.gray).frame(width: 10, height: 10).padding(4).help(model.statusText)
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            let count = model.notices.badgeCount
+            if count > 0 {
+                let badge = CharacterBadge.frame(for: scale)
+                ZStack {
+                    Circle().fill(NoticeColors.badge)
+                    Circle().stroke(Color.black.opacity(0.35), lineWidth: 1)
+                    Text(count > 99 ? "99+" : "\(count)")
+                        .font(.system(size: badge.height * (count > 9 ? 0.45 : 0.6), weight: .bold))
+                        .foregroundStyle(.black)
+                        .minimumScaleFactor(0.5)
+                }
+                .frame(width: badge.width, height: badge.height)
+                .offset(x: badge.minX, y: badge.minY)
+                .opacity(model.notices.isShown ? 1 : 0.85)
+                .help(model.notices.isShown ? "未確認の知らせ \(count) 件（クリックで隠す）" : "未確認の知らせ \(count) 件（クリックで出す）")
             }
         }
     }

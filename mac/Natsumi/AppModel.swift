@@ -20,9 +20,13 @@ final class AppModel {
 
     private(set) var status: Status = .needsServer
     private(set) var conversation = ConversationState() {
-        didSet { balloon.update(with: conversation) }
+        didSet {
+            balloon.update(with: conversation)
+            notices.update(with: conversation)
+        }
     }
     private(set) var balloon = BalloonState()
+    private(set) var notices = NoticeBundleState()
     private(set) var avatar: AvatarArt = .placeholder
     private(set) var hasSession = false
     private(set) var lastError: String?
@@ -130,8 +134,29 @@ final class AppModel {
         conversation = machine.conversation
     }
 
-    func dismissBalloon() {
-        balloon.dismiss()
+    /// A click on the front reply: it is read and the next one comes to the front.
+    func confirmFrontReply() {
+        apply(machine.confirmFrontReply())
+    }
+
+    /// The balloon's ×: every unread reply is read; "receiving" and "thinking" are only hidden.
+    func closeBalloon() {
+        if case .replies = balloon.content {
+            apply(machine.confirmAllReplies())
+        } else {
+            balloon.dismiss()
+        }
+    }
+
+    /// A click on the front notice card checks the notices on it.
+    func acknowledgeFrontNotice() {
+        guard let ids = notices.stack?.frontIds else { return }
+        apply(machine.acknowledge(ids))
+    }
+
+    /// A click on the character's badge hides or shows the notices without checking them.
+    func toggleNotices() {
+        notices.toggle()
     }
 
     // MARK: - Avatar

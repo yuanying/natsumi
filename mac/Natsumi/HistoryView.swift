@@ -14,7 +14,7 @@ struct HistoryView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(model.conversation.messages) { MessageRow(message: $0) }
+                        ForEach(model.conversation.messages) { MessageRow(message: $0, isUnread: model.conversation.isUnread($0)) }
                         ForEach(model.conversation.outbox) { item in
                             OutgoingRow(item: item) { model.dismiss(requestId: item.requestId) }
                         }
@@ -40,27 +40,41 @@ struct HistoryView: View {
 
 private struct MessageRow: View {
     let message: ShownMessage
+    /// An unread reply or a notice not checked yet. Opening the history does not read it.
+    let isUnread: Bool
 
     var body: some View {
         let isOwner = message.role == .owner
-        HStack {
+        HStack(alignment: .top) {
             if isOwner { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 2) {
-                if message.isNotice {
-                    Label("お知らせ", systemImage: "bell").font(.caption2).foregroundStyle(.secondary)
+                if message.isNotice || isUnread {
+                    HStack(spacing: 6) {
+                        if message.isNotice {
+                            Label("お知らせ", systemImage: "bell.fill").font(.caption2.weight(.semibold))
+                        }
+                        if isUnread {
+                            Label(message.isNotice ? "未確認" : "未読", systemImage: "circle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(message.isNotice ? NoticeColors.border : .accentColor)
+                        }
+                    }
                 }
                 Text(message.text).textSelection(.enabled)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(background(isOwner: isOwner), in: RoundedRectangle(cornerRadius: 10))
+            .background {
+                let shape = RoundedRectangle(cornerRadius: 10)
+                if message.isNotice {
+                    shape.fill(NoticeColors.background)
+                    shape.stroke(NoticeColors.border, lineWidth: 1)
+                } else {
+                    shape.fill(isOwner ? Color.accentColor.opacity(0.2) : Color.gray.opacity(0.15))
+                }
+            }
             if !isOwner { Spacer(minLength: 40) }
         }
-    }
-
-    private func background(isOwner: Bool) -> Color {
-        if isOwner { return .accentColor.opacity(0.2) }
-        return message.isNotice ? .yellow.opacity(0.2) : .gray.opacity(0.15)
     }
 }
 
