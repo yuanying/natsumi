@@ -17,3 +17,7 @@ data/
 memory/
 sessions/
 .DS_Store
+mac/build/
+xcuserdata/
+*.xcuserstate
+DerivedData/

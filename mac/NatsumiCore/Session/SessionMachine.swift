@@ -1,0 +1,183 @@
+import Foundation
+
+/// Why a WebSocket connection ended.
+public enum CloseReason: Equatable, Sendable {
+    /// The server closed the socket with this code.
+    case code(Int)
+    /// The upgrade was refused with this HTTP status.
+    case httpStatus(Int)
+    /// The network failed without a close code.
+    case network
+}
+
+/// What the owner of a `SessionMachine` must do.
+public enum SessionEffect: Equatable, Sendable {
+    case connect
+    case disconnect
+    case send(ClientEnvelope)
+    case saveDeviceId(String)
+    case requireLogin
+    case scheduleReconnect(after: TimeInterval)
+}
+
+public enum SessionPhase: Equatable, Sendable {
+    case idle
+    case connecting
+    case syncing
+    case ready
+    case waitingToReconnect
+    case unavailable(String)
+    case loginRequired
+    /// A newer connection of this device took over (close code 4001).
+    case replaced
+    case stopped
+}
+
+/// The connection to the server as a state machine without I/O: device registration, sync and resync, sending with
+/// request IDs, and reconnecting. The caller performs the effects and feeds back what happened.
+public struct SessionMachine {
+    public private(set) var phase: SessionPhase = .idle
+    public private(set) var deviceId: String?
+    public private(set) var conversation = ConversationState()
+
+    private var tracker = StreamTracker()
+    private var syncRequestId: String?
+    private var failures = 0
+    private let makeRequestId: () -> String
+
+    static let maxReconnectDelay: TimeInterval = 30
+
+    public init(deviceId: String?, makeRequestId: @escaping () -> String = { UUID().uuidString }) {
+        self.deviceId = deviceId
+        self.makeRequestId = makeRequestId
+    }
+
+    public mutating func start() -> [SessionEffect] {
+        phase = .connecting
+        return [.connect]
+    }
+
+    public mutating func stop() -> [SessionEffect] {
+        phase = .idle
+        syncRequestId = nil
+        return [.disconnect]
+    }
+
+    public mutating func connected() -> [SessionEffect] {
+        guard phase == .connecting else { return [] }
+        phase = .syncing
+        return [sync(resume: tracker.position)]
+    }
+
+    public mutating func send(text: String) -> [SessionEffect] {
+        let requestId = makeRequestId()
+        conversation.enqueue(text: text, requestId: requestId)
+        guard phase == .ready, let deviceId else { return [] }
+        return [.send(ClientEnvelope(requestId: requestId, deviceId: deviceId, command: .conversationSend(text: text)))]
+    }
+
+    public mutating func dismiss(requestId: String) {
+        conversation.dismiss(requestId: requestId)
+    }
+
+    public mutating func received(_ data: Data) -> [SessionEffect] {
+        switch phase {
+        case .syncing, .ready, .unavailable: break
+        default: return []
+        }
+        guard let envelope = try? ServerEnvelope.decode(data) else { return [] }
+        let isSyncAnswer = envelope.requestId != nil && envelope.requestId == syncRequestId
+
+        switch tracker.accept(envelope) {
+        case .ignore:
+            return []
+        case .resync:
+            // One sync at a time; events after the gap are dropped until its snapshot arrives.
+            guard syncRequestId == nil else { return [] }
+            phase = .syncing
+            return [sync(resume: nil)]
+        case .apply:
+            break
+        }
+        guard let event = envelope.event else { return [] }
+
+        guard isSyncAnswer else {
+            conversation.apply(event, requestId: envelope.requestId)
+            return []
+        }
+        var effects: [SessionEffect] = []
+        switch event {
+        case .snapshot(let snapshot):
+            syncRequestId = nil
+            conversation.apply(event)
+            effects += adopt(snapshot.deviceId)
+            effects += becomeReady()
+        case .accepted(let accepted) where accepted.mode == "resume":
+            syncRequestId = nil
+            if let id = accepted.deviceId { effects += adopt(id) }
+            effects += becomeReady()
+        case .unavailable(let code, let id):
+            syncRequestId = nil
+            if let id { effects += adopt(id) }
+            phase = .unavailable(code)
+        case .rejected:
+            syncRequestId = nil
+            phase = .stopped
+            effects.append(.disconnect)
+        default:
+            conversation.apply(event, requestId: envelope.requestId)
+        }
+        return effects
+    }
+
+    public mutating func closed(_ reason: CloseReason) -> [SessionEffect] {
+        switch phase {
+        case .idle, .loginRequired, .replaced, .stopped: return []
+        default: break
+        }
+        syncRequestId = nil
+        switch reason {
+        case .code(1008), .httpStatus(401):
+            phase = .loginRequired
+            return [.requireLogin]
+        case .code(4001):
+            phase = .replaced
+            return []
+        case .code(1002), .code(1007):
+            phase = .stopped
+            return []
+        default:
+            let delay = min(Self.maxReconnectDelay, pow(2, Double(failures)))
+            failures += 1
+            phase = .waitingToReconnect
+            return [.scheduleReconnect(after: delay)]
+        }
+    }
+
+    public mutating func reconnectTimerFired() -> [SessionEffect] {
+        guard phase == .waitingToReconnect else { return [] }
+        phase = .connecting
+        return [.connect]
+    }
+
+    private mutating func sync(resume: StreamPosition?) -> SessionEffect {
+        let requestId = makeRequestId()
+        syncRequestId = requestId
+        return .send(ClientEnvelope(requestId: requestId, deviceId: deviceId, command: .sessionSync(resume: resume)))
+    }
+
+    private mutating func adopt(_ id: String) -> [SessionEffect] {
+        guard deviceId != id else { return [] }
+        deviceId = id
+        return [.saveDeviceId(id)]
+    }
+
+    private mutating func becomeReady() -> [SessionEffect] {
+        phase = .ready
+        failures = 0
+        guard let deviceId else { return [] }
+        return conversation.unsent.map {
+            .send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: .conversationSend(text: $0.text)))
+        }
+    }
+}

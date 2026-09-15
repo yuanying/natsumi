@@ -1,0 +1,213 @@
+import CoreGraphics
+import Foundation
+import ImageIO
+
+/// One animation: a row of the atlas and how many of its cells are frames.
+public struct AvatarAnimation: Codable, Equatable, Sendable {
+    public let row: Int
+    public let frames: Int
+
+    public init(row: Int, frames: Int) {
+        self.row = row
+        self.frames = frames
+    }
+}
+
+public enum AvatarLoadError: Error, Equatable {
+    /// Neither `avatar.json` nor `pet.json` is in the directory.
+    case missingManifest
+    case invalidManifest
+    case missingImage
+    case imageTooSmall
+    /// An animation outside the atlas, or an expression mapped to an animation that does not exist.
+    case invalidAnimation(String)
+}
+
+/// How to read an avatar directory: a Codex pet (`pet.json` and its spritesheet), optionally refined by `avatar.json`
+/// with the atlas, the animations and the table from server expressions to animations.
+public struct AvatarManifest: Equatable, Sendable {
+    public var spritesheet: String
+    public var columns: Int
+    public var rows: Int
+    public var cellWidth: Int
+    public var cellHeight: Int
+    public var framesPerSecond: Double
+    public var animations: [String: AvatarAnimation]
+    public var expressions: [Expression: String]
+
+    /// The layout of a Codex pet spritesheet and the default expression table.
+    public static let codexPet = AvatarManifest(
+        spritesheet: "spritesheet.webp", columns: 8, rows: 9, cellWidth: 192, cellHeight: 208, framesPerSecond: 6,
+        animations: [
+            "idle": AvatarAnimation(row: 0, frames: 6),
+            "running-right": AvatarAnimation(row: 1, frames: 8),
+            "running-left": AvatarAnimation(row: 2, frames: 8),
+            "waving": AvatarAnimation(row: 3, frames: 4),
+            "jumping": AvatarAnimation(row: 4, frames: 5),
+            "failed": AvatarAnimation(row: 5, frames: 8),
+            "waiting": AvatarAnimation(row: 6, frames: 6),
+            "running": AvatarAnimation(row: 7, frames: 6),
+            "review": AvatarAnimation(row: 8, frames: 6),
+        ],
+        expressions: [
+            .neutral: "idle", .thinking: "review", .happy: "waving", .laughing: "jumping",
+            .surprised: "jumping", .worried: "waiting", .sad: "failed", .sleepy: "idle",
+        ])
+
+    /// Reads `pet.json` and `avatar.json` (either may be missing, not both) over the Codex pet defaults.
+    /// Animations given in `avatar.json` replace the default ones together with the default table.
+    public static func make(pet: Data?, avatar: Data?) throws -> AvatarManifest {
+        guard pet != nil || avatar != nil else { throw AvatarLoadError.missingManifest }
+        var manifest = codexPet
+        let decoder = JSONDecoder()
+        if let pet {
+            guard let file = try? decoder.decode(PetFile.self, from: pet) else { throw AvatarLoadError.invalidManifest }
+            if let path = file.spritesheetPath { manifest.spritesheet = path }
+        }
+        if let avatar {
+            guard let file = try? decoder.decode(AvatarFile.self, from: avatar) else { throw AvatarLoadError.invalidManifest }
+            if let spritesheet = file.spritesheet { manifest.spritesheet = spritesheet }
+            if let atlas = file.atlas {
+                manifest.columns = atlas.columns ?? manifest.columns
+                manifest.rows = atlas.rows ?? manifest.rows
+                manifest.cellWidth = atlas.cellWidth ?? manifest.cellWidth
+                manifest.cellHeight = atlas.cellHeight ?? manifest.cellHeight
+            }
+            if let framesPerSecond = file.framesPerSecond { manifest.framesPerSecond = framesPerSecond }
+            if let animations = file.animations {
+                manifest.animations = animations
+                manifest.expressions = [:]
+            }
+            for (name, animation) in file.expressions ?? [:] {
+                if let expression = Expression(rawValue: name) { manifest.expressions[expression] = animation }
+            }
+        }
+        try manifest.validate()
+        return manifest
+    }
+
+    /// The animation shown for an expression: its own, else neutral's, else `idle`, else the top row.
+    public func animationName(for expression: Expression) -> String {
+        for candidate in [expressions[expression], expressions[.neutral], "idle"] {
+            if let candidate, animations[candidate] != nil { return candidate }
+        }
+        return animations.min { $0.value.row < $1.value.row }?.key ?? "idle"
+    }
+
+    private func validate() throws {
+        let name = spritesheet
+        guard !name.isEmpty, !name.contains("/"), !name.hasPrefix("."),
+              columns > 0, rows > 0, cellWidth > 0, cellHeight > 0, framesPerSecond > 0, !animations.isEmpty
+        else { throw AvatarLoadError.invalidManifest }
+        for (name, animation) in animations.sorted(by: { $0.key < $1.key }) {
+            guard (0..<rows).contains(animation.row), (1...columns).contains(animation.frames) else {
+                throw AvatarLoadError.invalidAnimation(name)
+            }
+        }
+        for expression in Expression.allCases {
+            if let name = expressions[expression], animations[name] == nil { throw AvatarLoadError.invalidAnimation(name) }
+        }
+    }
+
+    private struct PetFile: Decodable {
+        let spritesheetPath: String?
+    }
+
+    private struct AvatarFile: Decodable {
+        struct Atlas: Decodable {
+            let columns: Int?
+            let rows: Int?
+            let cellWidth: Int?
+            let cellHeight: Int?
+        }
+
+        let spritesheet: String?
+        let atlas: Atlas?
+        let framesPerSecond: Double?
+        let animations: [String: AvatarAnimation]?
+        let expressions: [String: String]?
+    }
+}
+
+/// A loaded avatar with its frames cut from the spritesheet.
+public struct AvatarAsset: Equatable, @unchecked Sendable {
+    public let manifest: AvatarManifest
+    public let directory: URL
+    private let frames: [String: [CGImage]]
+
+    init(manifest: AvatarManifest, directory: URL, sheet: CGImage) {
+        self.manifest = manifest
+        self.directory = directory
+        var frames: [String: [CGImage]] = [:]
+        for (name, animation) in manifest.animations {
+            frames[name] = (0..<animation.frames).compactMap { column in
+                sheet.cropping(to: CGRect(
+                    x: column * manifest.cellWidth, y: animation.row * manifest.cellHeight,
+                    width: manifest.cellWidth, height: manifest.cellHeight))
+            }
+        }
+        self.frames = frames
+    }
+
+    public func frames(for expression: Expression) -> [CGImage] {
+        frames[manifest.animationName(for: expression)] ?? []
+    }
+
+    /// The frame to show `elapsed` seconds into the expression's animation, looping.
+    public func frame(for expression: Expression, elapsed: TimeInterval) -> CGImage {
+        let frames = frames(for: expression)
+        let index = Int((max(0, elapsed) * manifest.framesPerSecond + 1e-9).rounded(.down)) % frames.count
+        return frames[index]
+    }
+
+    public static func == (lhs: AvatarAsset, rhs: AvatarAsset) -> Bool {
+        lhs.manifest == rhs.manifest && lhs.directory == rhs.directory
+    }
+}
+
+/// What the character window draws.
+public enum AvatarArt: Equatable, Sendable {
+    case sprite(AvatarAsset)
+    /// No avatar could be loaded; a symbol stands in for each expression.
+    case placeholder
+}
+
+public enum AvatarLoader {
+    public static func load(directory: URL) throws -> AvatarAsset {
+        let pet = try? Data(contentsOf: directory.appendingPathComponent("pet.json"))
+        let avatar = try? Data(contentsOf: directory.appendingPathComponent("avatar.json"))
+        let manifest = try AvatarManifest.make(pet: pet, avatar: avatar)
+        let url = directory.appendingPathComponent(manifest.spritesheet)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let sheet = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else { throw AvatarLoadError.missingImage }
+        guard sheet.width >= manifest.columns * manifest.cellWidth, sheet.height >= manifest.rows * manifest.cellHeight else {
+            throw AvatarLoadError.imageTooSmall
+        }
+        return AvatarAsset(manifest: manifest, directory: directory, sheet: sheet)
+    }
+
+    /// The first candidate directory that loads, or the placeholder.
+    public static func resolve(candidates: [URL]) -> AvatarArt {
+        for directory in candidates {
+            if let asset = try? load(directory: directory) { return .sprite(asset) }
+        }
+        return .placeholder
+    }
+}
+
+/// Stand-in art for when no avatar loads.
+public enum PlaceholderArt {
+    public static func symbol(for expression: Expression) -> String {
+        switch expression {
+        case .neutral: "🙂"
+        case .happy: "😊"
+        case .laughing: "😆"
+        case .surprised: "😮"
+        case .thinking: "🤔"
+        case .worried: "😟"
+        case .sad: "😢"
+        case .sleepy: "😴"
+        }
+    }
+}
