@@ -24,13 +24,9 @@ struct BalloonView: View {
         HStack(alignment: .top, spacing: 6 * scale) {
             content(scale: scale)
                 .frame(minWidth: 24 * scale, alignment: .leading)
-            VStack(spacing: 4 * scale) {
-                Button(action: model.dismissBalloon) { Image(systemName: "xmark") }
-                    .help("閉じる")
-                Button(action: openHistory) { Image(systemName: "clock.arrow.circlepath") }
-                    .help("履歴")
-            }
-            .buttonStyle(.borderless)
+            Button(action: model.dismissBalloon) { Image(systemName: "xmark") }
+                .help("閉じる")
+                .buttonStyle(.borderless)
             .font(.system(size: 10 * scale))
             .foregroundStyle(.secondary)
         }

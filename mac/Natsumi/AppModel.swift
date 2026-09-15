@@ -31,6 +31,13 @@ final class AppModel {
     var characterScale = CharacterScale.default {
         didSet { overlaySettings.characterScale = characterScale }
     }
+    var inputBoxSize = InputBoxSize.default {
+        didSet { overlaySettings.inputBoxSize = inputBoxSize }
+    }
+    /// The height the input field's text takes, reported by the text view.
+    var inputTextHeight: CGFloat = 0
+    /// Opens the settings panel; set by the overlay.
+    @ObservationIgnored var openSettings: () -> Void = {}
 
     @ObservationIgnored let account = AccountStore(secrets: KeychainSecretStore(), defaults: .standard)
     @ObservationIgnored private let overlaySettings = OverlaySettings(defaults: .standard)
@@ -47,6 +54,7 @@ final class AppModel {
 
     func launch() {
         characterScale = overlaySettings.characterScale
+        inputBoxSize = overlaySettings.inputBoxSize
         reloadAvatar()
         resume()
     }

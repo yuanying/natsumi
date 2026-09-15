@@ -2,17 +2,19 @@ import AppKit
 import NatsumiCore
 import SwiftUI
 
-/// The text box under the character. Enter sends, Esc closes.
+/// The text box under the character. Enter sends, Shift+Enter starts a new line, Esc closes, and the grip in the
+/// bottom-right corner changes its size.
 struct InputView: View {
     let model: AppModel
     let openHistory: () -> Void
     let close: () -> Void
     @State private var draft = ""
-
-    static let width: CGFloat = 260
+    @State private var resizeStart: (mouse: NSPoint, size: InputBoxSize)?
 
     var body: some View {
         let scale = model.characterScale.textScale
+        let fontSize = 13 * scale
+        let box = model.inputBoxSize
         VStack(alignment: .leading, spacing: 6 * scale) {
             if model.status != .connected {
                 StatusRow(model: model, scale: scale)
@@ -20,18 +22,57 @@ struct InputView: View {
             ForEach(model.conversation.outbox.filter { $0.status != .sending }) { item in
                 FailedRow(item: item, scale: scale) { model.dismiss(requestId: item.requestId) }
             }
-            HStack(spacing: 6 * scale) {
-                InputField(text: $draft, placeholder: "ナツミに話しかける", fontSize: 13 * scale, onSubmit: send, onCancel: close)
+            HStack(alignment: .bottom, spacing: 6 * scale) {
+                InputTextView(
+                    text: $draft, fontSize: fontSize, onSubmit: send, onCancel: close,
+                    onHeight: { height in if model.inputTextHeight != height { model.inputTextHeight = height } }
+                )
+                .frame(height: box.textHeight(content: model.inputTextHeight, minimum: InputTextView.lineHeight(fontSize: fontSize)))
+                .overlay(alignment: .topLeading) {
+                    if draft.isEmpty {
+                        Text("ナツミに話しかける（Shift+Enter で改行）")
+                            .font(.system(size: fontSize))
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, InputTextView.inset.width + 5)
+                            .padding(.top, InputTextView.inset.height)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.4)))
                 Button(action: openHistory) { Image(systemName: "clock.arrow.circlepath") }
                     .buttonStyle(.borderless)
                     .help("履歴")
             }
         }
         .padding(8 * scale)
-        .frame(width: Self.width * scale)
+        .padding(.bottom, 4)
+        .frame(width: box.width)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10 * scale))
         .overlay(RoundedRectangle(cornerRadius: 10 * scale).stroke(Color.secondary.opacity(0.5)))
+        .overlay(alignment: .bottomTrailing) { grip }
+    }
+
+    /// Dragging right widens the box on both sides (it stays centered under the character); dragging down makes it taller.
+    private var grip: some View {
+        Image(systemName: "arrow.down.right")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(.secondary)
+            .frame(width: 14, height: 14)
+            .contentShape(Rectangle())
+            .help("ドラッグで大きさを変える")
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        let mouse = NSEvent.mouseLocation
+                        let start = resizeStart ?? (mouse, model.inputBoxSize)
+                        resizeStart = start
+                        model.inputBoxSize = InputBoxSize(
+                            width: start.size.width + (mouse.x - start.mouse.x) * 2,
+                            height: start.size.height + (start.mouse.y - mouse.y))
+                    }
+                    .onEnded { _ in resizeStart = nil })
     }
 
     private func send() {
@@ -52,7 +93,7 @@ struct StatusRow: View {
             Spacer()
             switch model.status {
             case .needsServer:
-                SettingsLink { Text("設定を開く") }.controlSize(.small)
+                Button("設定を開く") { model.openSettings() }.controlSize(.small)
             case .needsLogin:
                 Button("GitHub でログイン") { Task { await model.login() } }.controlSize(.small)
             case .replaced, .stopped, .unavailable:
@@ -85,54 +126,85 @@ private struct FailedRow: View {
     }
 }
 
-/// An AppKit text field, so that the Enter that confirms Japanese input is left to the input method.
-struct InputField: NSViewRepresentable {
+/// An AppKit text view, so that the Enter that confirms Japanese input is left to the input method and long text
+/// scrolls inside the box.
+struct InputTextView: NSViewRepresentable {
     static let identifier = NSUserInterfaceItemIdentifier("natsumi.input")
+    static let inset = NSSize(width: 4, height: 4)
 
     @Binding var text: String
-    let placeholder: String
     let fontSize: CGFloat
     let onSubmit: () -> Void
     let onCancel: () -> Void
+    let onHeight: (CGFloat) -> Void
+
+    static func lineHeight(fontSize: CGFloat) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: fontSize)
+        return ceil(NSLayoutManager().defaultLineHeight(for: font) + inset.height * 2)
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField(string: text)
-        field.identifier = Self.identifier
-        field.placeholderString = placeholder
-        field.bezelStyle = .roundedBezel
-        field.cell?.isScrollable = true
-        field.cell?.wraps = false
-        field.delegate = context.coordinator
-        return field
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        let textView = scroll.documentView as! NSTextView
+        textView.identifier = Self.identifier
+        textView.delegate = context.coordinator
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.textContainerInset = Self.inset
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.font = .systemFont(ofSize: fontSize)
+        textView.string = text
+        return scroll
     }
 
-    func updateNSView(_ field: NSTextField, context: Context) {
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
-        if field.font?.pointSize != fontSize { field.font = .systemFont(ofSize: fontSize) }
-        if let editor = field.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
-        if field.stringValue != text { field.stringValue = text }
+        guard let textView = scroll.documentView as? NSTextView else { return }
+        if textView.font?.pointSize != fontSize { textView.font = .systemFont(ofSize: fontSize) }
+        if !textView.hasMarkedText(), textView.string != text { textView.string = text }
+        context.coordinator.reportHeight(of: textView)
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: InputField
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: InputTextView
 
-        init(_ parent: InputField) {
+        init(_ parent: InputTextView) {
             self.parent = parent
         }
 
-        func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            parent.text = field.stringValue
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+            reportHeight(of: textView)
         }
 
-        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        func reportHeight(of textView: NSTextView) {
+            guard let layout = textView.layoutManager, let container = textView.textContainer else { return }
+            layout.ensureLayout(for: container)
+            let height = ceil(layout.usedRect(for: container).height + textView.textContainerInset.height * 2)
+            let report = parent.onHeight
+            // Reported after the view update, which must not change state it reads.
+            DispatchQueue.main.async { report(height) }
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
             // While text is being composed, Enter and Esc belong to the input method.
             guard !textView.hasMarkedText() else { return false }
             switch selector {
             case #selector(NSResponder.insertNewline(_:)):
+                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                    return true
+                }
                 parent.text = textView.string
                 parent.onSubmit()
                 return true

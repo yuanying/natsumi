@@ -34,6 +34,7 @@ struct HistoryView: View {
             }
         }
         .frame(minWidth: 280, minHeight: 240)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 

@@ -13,9 +13,6 @@ struct NatsumiApp: App {
                 talk: { delegate.overlay?.openInput() },
                 openHistory: { delegate.overlay?.openHistory() })
         }
-        Settings {
-            SettingsView(model: delegate.model)
-        }
     }
 }
 
@@ -47,7 +44,7 @@ struct MenuContent: View {
         if model.status == .needsLogin {
             Button("GitHub でログイン") { Task { await model.login() } }
         }
-        SettingsLink { Text("設定…") }
+        Button("設定…") { model.openSettings() }
             .keyboardShortcut(",")
         Button("ログアウト") { Task { await model.logout() } }
             .disabled(!model.hasSession)
