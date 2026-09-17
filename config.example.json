@@ -24,6 +24,10 @@
   "loop": {
     "timeZone": "Asia/Tokyo",
     "nightlyRotationAt": "04:00",
+    "awakeHours": { "start": "08:00", "end": "23:00" },
+    "pingIntervalMinutes": 30,
+    "selfCheck": { "minDelayMinutes": 5, "maxDelayDays": 7, "maxPending": 5, "maxPerDay": 20 },
+    "expressionResetMinutes": 3,
     "memoryShellSocket": "/run/natsumi-tools/runner.sock"
   }
 }

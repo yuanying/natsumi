@@ -1,7 +1,7 @@
 # 0013. 本人が確かめたことをサーバーで持つ
 
 - Date: 2026-09-15
-- Status: Accepted
+- Status: Accepted（未確認の知らせの件数を合図にも添えることと、念押しの扱いは [ADR 0014](0014-self-checks-and-pings.md) で追加・具体化）
 
 ## Context
 
