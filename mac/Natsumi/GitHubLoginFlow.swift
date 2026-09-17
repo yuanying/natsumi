@@ -28,7 +28,7 @@ final class GitHubLoginFlow: NSObject {
     }
 }
 
-extension GitHubLoginFlow: @preconcurrency ASWebAuthenticationPresentationContextProviding {
+extension GitHubLoginFlow: ASWebAuthenticationPresentationContextProviding {
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible } ?? ASPresentationAnchor()
     }
