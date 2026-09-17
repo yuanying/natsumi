@@ -3,7 +3,7 @@ import type { Migration } from './state-db.ts';
 /**
  * natsumi-owned state in `.natsumi/state.sqlite`. The conversation shown to the owner lives here; the thinking loop's
  * own record (every event, thought and tool call) lives only in the Pi session JSONL (ADR 0008).
- * Append new migrations; never edit a released one. Approvals, schedules and notifications are added
+ * Append new migrations; never edit a released one. Approvals and other schedules are added
  * by the changes that implement them.
  */
 export const MIGRATIONS: readonly Migration[] = [
@@ -160,6 +160,29 @@ export const MIGRATIONS: readonly Migration[] = [
         SELECT 1, message_id, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM conversation_messages ORDER BY position DESC LIMIT 1;
       INSERT INTO notice_acknowledgements (message_id, device_id, acknowledged_at)
         SELECT message_id, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM conversation_messages WHERE kind = 'notice';
+    `,
+  },
+  {
+    version: 7,
+    name: 'self-checks',
+    sql: `
+      -- Checks natsumi booked for herself (ADR 0014). due_at is the absolute time the server resolved the booking to.
+      -- A delivered check names the event that carried it; a cancelled one stays so it still counts for its day.
+      CREATE TABLE self_checks (
+        check_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        -- The reason normalized, to fold the same reason into one pending booking.
+        reason_key TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'delivered', 'cancelled')),
+        event_id TEXT REFERENCES loop_events (event_id),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK ((state = 'delivered') = (event_id IS NOT NULL))
+      ) STRICT;
+      CREATE INDEX self_checks_by_due ON self_checks (state, due_at);
+      CREATE INDEX self_checks_by_creation ON self_checks (created_at);
+      CREATE UNIQUE INDEX self_checks_one_pending_reason ON self_checks (reason_key) WHERE state = 'pending';
     `,
   },
 ];

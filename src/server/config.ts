@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
+import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES, DEFAULT_SELF_CHECK_LIMITS,
+  type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
 
 /** A startup-stopping config problem. `path` names the setting (for example `pi.authPath`); values are never echoed. */
 export class ConfigError extends Error {
@@ -77,9 +79,24 @@ export interface LoopConfig {
   compactionKeepRecent: number;
   /** The Unix socket of the tools container's runner (ADR 0011). Without it the model gets no shell. */
   memoryShellSocket?: string;
+  /** Local hours natsumi is up. Pings and self-checks come only inside them (ADR 0014). */
+  awakeHours: AwakeHours;
+  /** Quiet minutes before a ping, or false for no pings. */
+  pingIntervalMinutes: number | false;
+  /** Limits on the checks natsumi books for herself. */
+  selfCheck: SelfCheckLimits;
+  /** Minutes an expression other than thinking stays before returning to neutral. */
+  expressionResetMinutes: number;
 }
 
-export const LOOP_DEFAULTS: LoopConfig = { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000 };
+export const LOOP_DEFAULTS: LoopConfig = {
+  timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
+  awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES, selfCheck: DEFAULT_SELF_CHECK_LIMITS,
+  expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
+};
+
+/** The shortest ping interval, so a typo cannot make natsumi think all day. */
+const MIN_PING_INTERVAL_MINUTES = 5;
 
 export interface ServerConfig {
   pi: PiConfig;
@@ -282,7 +299,8 @@ function parseGitHub(value: unknown, path: string): GitHubConfig {
 
 function parseLoop(value: unknown, path: string): LoopConfig {
   const loop = object(value, path);
-  onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'memoryShellSocket']);
+  onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'memoryShellSocket',
+    'awakeHours', 'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -299,7 +317,50 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   }
   if (keep >= threshold) throw new ConfigError(`${path}.compactionKeepRecent`, 'must be smaller than compactionThreshold');
   const socket = loop.memoryShellSocket === undefined ? undefined : absolutePath(loop.memoryShellSocket, `${path}.memoryShellSocket`);
-  return { timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep, ...(socket ? { memoryShellSocket: socket } : {}) };
+  const ping = loop.pingIntervalMinutes ?? LOOP_DEFAULTS.pingIntervalMinutes;
+  if (ping !== false && !positiveInteger(ping, MIN_PING_INTERVAL_MINUTES)) {
+    throw new ConfigError(`${path}.pingIntervalMinutes`, `must be an integer of at least ${MIN_PING_INTERVAL_MINUTES}, or false`);
+  }
+  const reset = loop.expressionResetMinutes ?? LOOP_DEFAULTS.expressionResetMinutes;
+  if (!positiveInteger(reset, 1)) throw new ConfigError(`${path}.expressionResetMinutes`, 'must be a positive integer');
+  return {
+    timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep, ...(socket ? { memoryShellSocket: socket } : {}),
+    awakeHours: parseAwakeHours(loop.awakeHours ?? LOOP_DEFAULTS.awakeHours, `${path}.awakeHours`),
+    pingIntervalMinutes: ping as number | false,
+    selfCheck: parseSelfCheck(loop.selfCheck ?? {}, `${path}.selfCheck`),
+    expressionResetMinutes: reset as number,
+  };
+}
+
+function parseAwakeHours(value: unknown, path: string): AwakeHours {
+  const hours = object(value, path);
+  onlyKeys(hours, path, ['start', 'end']);
+  for (const key of ['start', 'end']) {
+    const time = hours[key];
+    if (typeof time !== 'string' || !TIME_OF_DAY.test(time)) throw new ConfigError(`${path}.${key}`, 'must be a 24-hour HH:MM time');
+  }
+  if (hours.start === hours.end) throw new ConfigError(`${path}.end`, 'must differ from start');
+  return { start: hours.start as string, end: hours.end as string };
+}
+
+function parseSelfCheck(value: unknown, path: string): SelfCheckLimits {
+  const limits = object(value, path);
+  const keys = Object.keys(DEFAULT_SELF_CHECK_LIMITS) as (keyof SelfCheckLimits)[];
+  onlyKeys(limits, path, keys);
+  const parsed = { ...DEFAULT_SELF_CHECK_LIMITS };
+  for (const key of keys) {
+    const limit = limits[key] ?? DEFAULT_SELF_CHECK_LIMITS[key];
+    if (!positiveInteger(limit, 1)) throw new ConfigError(`${path}.${key}`, 'must be a positive integer');
+    parsed[key] = limit as number;
+  }
+  if (parsed.minDelayMinutes >= parsed.maxDelayDays * 1440) {
+    throw new ConfigError(`${path}.minDelayMinutes`, 'must be shorter than maxDelayDays');
+  }
+  return parsed;
+}
+
+function positiveInteger(value: unknown, least: number): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= least;
 }
 
 /** 127.0.0.0/8, ::1 and localhost. Accepts a URL hostname, where IPv6 is bracketed. */

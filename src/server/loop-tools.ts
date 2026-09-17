@@ -22,16 +22,19 @@ export interface LoopToolHost {
   readMemory(topic: string): Outcome;
   forget(topic: string, text: string): Outcome;
   writeHandoff(eventId: string, text: string): Outcome;
+  scheduleSelfCheck(reason: string, when: { inMinutes?: number; at?: string }): Outcome;
+  listSelfChecks(): Outcome;
+  cancelSelfCheck(checkId: string): Outcome;
   /** Present only when the tools container's runner is configured (ADR 0011). */
   runMemoryShell?(command: string): Outcome;
 }
 
 /**
- * The allowlist given to Pi (ADR 0004, ADR 0008, ADR 0009). Pi's own read/bash/edit/write stay disabled:
+ * The allowlist given to Pi (ADR 0004, ADR 0008, ADR 0009, ADR 0014). Pi's own read/bash/edit/write stay disabled:
  * the memory tools reach only `memory/`, through names the server turns into paths.
  */
 export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'finish_event', 'set_mac_avatar_expression',
-  'remember', 'recall', 'read_memory', 'forget', 'write_handoff_note'];
+  'remember', 'recall', 'read_memory', 'forget', 'write_handoff_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check'];
 /** Added to the allowlist with a runner: a shell confined to a read-only copy of `memory/` in its own container (ADR 0011). */
 export const MEMORY_SHELL_TOOL_NAME = 'run_memory_shell';
 
@@ -113,6 +116,28 @@ export function createLoopTools(host: LoopToolHost) {
       description: '夜の振り返り（nightly_review）でだけ使う。明日の新しい思考の記録に引き継ぐメモを書く。何度か呼ぶと最後のものが使われる。',
       parameters: Type.Object({ event_id: Type.String(), text: Type.String() }),
       execute: async (_id, params) => result(host.writeHandoff(params.event_id, params.text)),
+    }),
+    defineTool({
+      name: 'schedule_self_check', label: 'Book a self-check',
+      description: '後で自分からもう一度確かめるための予約をする。時刻が来ると、reason を添えた self_check のイベントが届く。'
+        + 'in_minutes（今から何分後か）と at（本人のタイムゾーンの "HH:MM" か "YYYY-MM-DD HH:MM"）のどちらか一方だけを指定する。'
+        + '近すぎる先・遠すぎる先・件数には上限があり、同じ理由の予約は 1 件にまとまる。夜に来た予約は朝に届く。',
+      parameters: Type.Object({ reason: Type.String(), in_minutes: Type.Optional(Type.Number()), at: Type.Optional(Type.String()) }),
+      execute: async (_id, params) => result(host.scheduleSelfCheck(params.reason, {
+        ...(params.in_minutes === undefined ? {} : { inMinutes: params.in_minutes }), ...(params.at === undefined ? {} : { at: params.at }),
+      })),
+    }),
+    defineTool({
+      name: 'list_self_checks', label: 'List self-checks',
+      description: 'まだ届いていない自分の予約（schedule_self_check）を、check_id・時刻・理由で一覧する。',
+      parameters: Type.Object({}),
+      execute: async () => result(host.listSelfChecks()),
+    }),
+    defineTool({
+      name: 'cancel_self_check', label: 'Cancel a self-check',
+      description: 'まだ届いていない自分の予約を、check_id を指定して取り消す。',
+      parameters: Type.Object({ check_id: Type.String() }),
+      execute: async (_id, params) => result(host.cancelSelfCheck(params.check_id)),
     }),
   ];
 }

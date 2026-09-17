@@ -21,6 +21,12 @@ const github = () => ({
   callbackUrl: 'https://natsumi.example.test/auth/github/callback',
   allowedUserId: 4242001,
 });
+const SCHEDULE_DEFAULTS = {
+  awakeHours: { start: '08:00', end: '23:00' },
+  pingIntervalMinutes: 30,
+  selfCheck: { minDelayMinutes: 5, maxDelayDays: 7, maxPending: 5, maxPerDay: 20 },
+  expressionResetMinutes: 3,
+};
 const base = () => ({ pi: pi(), publicOrigin: 'https://natsumi.example.test', listen: listen(), github: github() });
 
 function rejects(raw: unknown, path: string, reason?: RegExp) {
@@ -43,7 +49,7 @@ test('a valid config becomes a typed server config', () => {
       callbackUrl: 'https://natsumi.example.test/auth/github/callback',
       allowedUserId: 4242001,
     },
-    loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000 },
+    loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000, ...SCHEDULE_DEFAULTS },
   });
   const { clientSecretEnv: _, ...rest } = github();
   assert.deepEqual(parseConfig({ ...base(), github: { ...rest, clientSecretFile: '/run/secrets/github-client-secret' } }).github.clientSecret,
@@ -73,15 +79,41 @@ test('thinking is on unless the config switches it off', () => {
 });
 
 test('the loop section sets the time zone, the nightly switch and the compaction limit, each with a default', () => {
-  const loop = { timeZone: 'Asia/Tokyo', nightlyRotationAt: '03:30', compactionThreshold: 80000, compactionKeepRecent: 10000 };
+  const loop = { timeZone: 'Asia/Tokyo', nightlyRotationAt: '03:30', compactionThreshold: 80000, compactionKeepRecent: 10000, ...SCHEDULE_DEFAULTS };
   assert.deepEqual(parseConfig({ ...base(), loop }).loop, loop);
   assert.deepEqual(parseConfig({ ...base(), loop: { timeZone: 'Asia/Tokyo' } }).loop,
-    { timeZone: 'Asia/Tokyo', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000 });
+    { timeZone: 'Asia/Tokyo', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000, ...SCHEDULE_DEFAULTS });
   assert.equal(parseConfig({ ...base(), loop: { nightlyRotationAt: false } }).loop.nightlyRotationAt, false);
   rejects({ ...base(), loop: { timeZone: 'Mars/Olympus' } }, 'loop.timeZone', /time zone/);
   for (const time of ['4:00', '24:00', '04:60', '', true]) rejects({ ...base(), loop: { nightlyRotationAt: time } }, 'loop.nightlyRotationAt', /HH:MM/);
   for (const tokens of [0, 1.5, -1, '60000', 5000]) rejects({ ...base(), loop: { compactionThreshold: tokens } }, 'loop.compactionThreshold');
   rejects({ ...base(), loop: { compactionThreshold: 20000, compactionKeepRecent: 20000 } }, 'loop.compactionKeepRecent', /smaller/);
+});
+
+test('the loop section sets the awake hours, the ping, the self-check limits and the expression reset, each with a default', () => {
+  const schedule = {
+    awakeHours: { start: '22:00', end: '06:30' },
+    pingIntervalMinutes: 45,
+    selfCheck: { minDelayMinutes: 10, maxDelayDays: 3, maxPending: 2, maxPerDay: 8 },
+    expressionResetMinutes: 1,
+  };
+  assert.deepEqual(parseConfig({ ...base(), loop: schedule }).loop, { ...parseConfig(base()).loop, ...schedule });
+  assert.equal(parseConfig({ ...base(), loop: { pingIntervalMinutes: false } }).loop.pingIntervalMinutes, false);
+  // Limits left out keep their defaults.
+  assert.deepEqual(parseConfig({ ...base(), loop: { selfCheck: { maxPerDay: 3 } } }).loop.selfCheck,
+    { ...SCHEDULE_DEFAULTS.selfCheck, maxPerDay: 3 });
+  for (const time of ['8:00', '24:00', 800, undefined]) {
+    rejects({ ...base(), loop: { awakeHours: { start: time, end: '23:00' } } }, 'loop.awakeHours.start', /HH:MM/);
+  }
+  rejects({ ...base(), loop: { awakeHours: { start: '08:00', end: '08:00' } } }, 'loop.awakeHours.end', /differ/);
+  rejects({ ...base(), loop: { awakeHours: { start: '08:00', end: '23:00', timeZone: 'UTC' } } }, 'loop.awakeHours.timeZone', /unknown/);
+  for (const minutes of [0, 4, 1.5, '30', true]) rejects({ ...base(), loop: { pingIntervalMinutes: minutes } }, 'loop.pingIntervalMinutes');
+  for (const minutes of [0, -1, 2.5, '3']) rejects({ ...base(), loop: { expressionResetMinutes: minutes } }, 'loop.expressionResetMinutes');
+  for (const key of ['minDelayMinutes', 'maxDelayDays', 'maxPending', 'maxPerDay']) {
+    for (const value of [0, -1, 1.5, '5']) rejects({ ...base(), loop: { selfCheck: { [key]: value } } }, `loop.selfCheck.${key}`);
+  }
+  rejects({ ...base(), loop: { selfCheck: { minDelayMinutes: 1440 * 7, maxDelayDays: 7 } } }, 'loop.selfCheck.minDelayMinutes', /shorter/);
+  rejects({ ...base(), loop: { selfCheck: { perHour: 3 } } }, 'loop.selfCheck.perHour', /unknown/);
 });
 
 test('the memory shell is off unless the loop names the runner socket by absolute path', () => {
