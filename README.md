@@ -212,7 +212,7 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 
 ## Mac アプリ
 
-`mac/` に Xcode プロジェクトがあります（[ADR 0010](docs/adr/0010-mac-app-structure.md)）。macOS 15 以降と Xcode 26 を使います。
+`mac/` に Xcode プロジェクトがあります（[ADR 0010](docs/adr/0010-mac-app-structure.md)）。macOS 15 以降と Xcode 27 を使います。
 署名は ad-hoc で、Apple Developer のチームや証明書は要りません。配布（公証・自動更新）はまだ扱っていません。
 
 ```sh
