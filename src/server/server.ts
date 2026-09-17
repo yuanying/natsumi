@@ -17,6 +17,7 @@ import { SessionStore } from './sessions.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
 import { nextOccurrence, previousOccurrence } from './nightly.ts';
+import { Scheduler } from './scheduler.ts';
 import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
 
 const SESSION_SWEEP_MS = 30_000;
@@ -94,6 +95,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let checking: Promise<void> | undefined;
   let renewal: NodeJS.Timeout | undefined;
   let rotation: NodeJS.Timeout | undefined;
+  let scheduler: Scheduler | undefined;
   let closed = false;
   const timers: NodeJS.Timeout[] = [];
   const closeAll = async () => {
@@ -101,6 +103,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     timers.forEach(clearInterval);
     clearTimeout(renewal);
     clearTimeout(rotation);
+    scheduler?.stop();
     certificates?.close();
     await checking?.catch(() => {});
     try {
@@ -122,6 +125,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       configureSession: options.pi?.configureSession, maxModelCalls: options.pi?.maxModelCalls,
       runTimeoutMs: options.pi?.runTimeoutMs, now, log, timeZone: config.loop.timeZone,
       compactAtTokens: config.loop.compactionThreshold, keepRecentTokens: config.loop.compactionKeepRecent, memoryShellSocket: config.loop.memoryShellSocket,
+      awakeHours: config.loop.awakeHours, selfCheckLimits: config.loop.selfCheck,
     });
 
     // The nightly switch at the configured local time (ADR 0009). A night missed while stopped is caught up at start.
@@ -141,6 +145,15 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       const started = thinkingLoop.sessionStartedAt();
       if (started !== undefined && started < previousOccurrence(now(), nightlyAt, config.loop.timeZone)) void rotate();
       scheduleRotation();
+    }
+
+    // Self-checks natsumi booked, pings in quiet moments and expressions returning to neutral (ADR 0014).
+    if (!thinkingLoop.unavailable) {
+      scheduler = new Scheduler({
+        loop: thinkingLoop, now, log, timeZone: config.loop.timeZone, awakeHours: config.loop.awakeHours,
+        pingIntervalMinutes: config.loop.pingIntervalMinutes, expressionResetMinutes: config.loop.expressionResetMinutes,
+      });
+      scheduler.start();
     }
 
     const sessions = new SessionStore(db, now);

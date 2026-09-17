@@ -9,6 +9,8 @@ import { MemoryShell } from './memory-shell.ts';
 import { MemoryStore } from './memory-store.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { ReadState, type ReadPosition } from './read-state.ts';
+import { localDateTime } from './nightly.ts';
+import { DEFAULT_AWAKE_HOURS, DEFAULT_SELF_CHECK_LIMITS, SelfChecks, type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
 
 /** Model calls one turn may make before it is stopped and its open events fail (the evaluation stopped at 8). */
 export const DEFAULT_MAX_MODEL_CALLS = 8;
@@ -31,7 +33,8 @@ const BASE_INSTRUCTION = `あなたは natsumi。一人の本人（オーナー�
 - 外に何かを伝えるには、必ずツールを使います。ツールを呼ばなければ、何もしなかったのと同じです。
   - 本人のメッセージへの返事: reply_to_mac（1 つのメッセージに 1 回だけ）
   - 本人への相談・知らせ: notify_owner
-  - アバターの表情: set_mac_avatar_expression
+  - アバターの表情: set_mac_avatar_expression（しばらくすると neutral に戻ります）
+  - 後で自分から確かめる予約: schedule_self_check（一覧は list_self_checks、取り消しは cancel_self_check）
 - 出来事への対応を終えたら、finish_event を呼びます。何もしないと決めたときも呼びます。
 - 何もしなかったことや内心は、本人に報告しません。
 - 本人には日本語で書きます。
@@ -43,6 +46,8 @@ const BASE_INSTRUCTION = `あなたは natsumi。一人の本人（オーナー�
 
 ## 出来事の種類
 - mac_message: 本人との一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、本人がまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。
+- ping: 静かな時間が続いたときの「何かしたいことは？」の合図です。local_time は本人のタイムゾーンの今の時刻です。本人に伝えたいことや、確かめたいことがあれば動きます。なければ finish_event だけを呼びます。unacknowledged_notices の意味は mac_message と同じです。
+- self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの reason と予定の時刻（scheduled_for）があります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。本人には何も送りません。`;
 
 const SHELL_INSTRUCTION = '- run_memory_shell で、rg などのコマンドを使って記憶のファイルを探すこともできます（読むだけ）。';
@@ -131,6 +136,9 @@ export interface LoopOptions {
   keepRecentTokens?: number;
   /** The tools container's runner socket. The run_memory_shell tool exists only with it (ADR 0011). */
   memoryShellSocket?: string;
+  /** The hours natsumi is up, in `timeZone`: a self-check booked outside them waits for the morning (ADR 0014). */
+  awakeHours?: AwakeHours;
+  selfCheckLimits?: SelfCheckLimits;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -187,7 +195,12 @@ export class ThinkingLoop {
   private closing: Promise<void> | undefined;
   /** After a failed compaction, the context size it waits to exceed before trying again. */
   private compactionRetryAbove: number | undefined;
-  private avatar: { expression: Expression; by: 'server' | 'model' } = { expression: 'neutral', by: 'server' };
+  private avatar: { expression: Expression; by: 'server' | 'model'; changedAt: number };
+  private readonly selfChecks: SelfChecks;
+  /** When something last arrived or was last handled: the quiet interval before a ping counts from here (ADR 0014). */
+  private activityAt: number;
+  /** A nightly switch is under way; natsumi sleeps through it. */
+  private rotating = false;
 
   private constructor(options: LoopOptions) {
     this.options = options;
@@ -195,6 +208,10 @@ export class ThinkingLoop {
     this.memory = new MemoryStore({ directory: join(options.dataDirectory, 'memory'), timeZone: options.timeZone ?? 'UTC', now: this.now });
     this.readState = new ReadState(options.db, this.now);
     this.shell = options.memoryShellSocket ? new MemoryShell({ socketPath: options.memoryShellSocket }) : undefined;
+    this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: options.timeZone ?? 'UTC',
+      limits: options.selfCheckLimits ?? DEFAULT_SELF_CHECK_LIMITS, awakeHours: options.awakeHours ?? DEFAULT_AWAKE_HOURS });
+    this.activityAt = this.now();
+    this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };
   }
 
   /** Opens or creates the Pi session. Problems leave the loop unavailable instead of throwing or replacing history. */
@@ -239,6 +256,7 @@ export class ThinkingLoop {
       return message;
     });
 
+    this.activityAt = this.now();
     let state: EventState = 'queued';
     const session = this.session!;
     const reviewing = this.turn?.kind === 'review' || this.isRotationQueuedFirst();
@@ -299,10 +317,7 @@ export class ThinkingLoop {
       .get() as { event_id: string } | undefined;
     let eventId = pending?.event_id;
     if (!eventId) {
-      eventId = `event-${randomUUID()}`;
-      const now = this.iso();
-      db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
-        VALUES (?, 'nightly-review', NULL, 'queued', ?, ?)`).run(eventId, now, now);
+      eventId = this.insertEvent('nightly-review');
       this.queue.push(eventId);
     }
     const id = eventId;
@@ -336,6 +351,49 @@ export class ThinkingLoop {
       ...this.readState.position(),
       unacknowledgedNotificationIds: this.readState.unacknowledgedNotificationIds(),
     };
+  }
+
+  /** No turn is running and nothing is waiting: the scheduler may raise an event. */
+  get quiet(): boolean {
+    return !this.running && this.queue.length === 0 && !this.closing && !this.unavailableCode && this.session !== undefined;
+  }
+
+  get lastActivityAt(): number { return this.activityAt; }
+
+  /**
+   * Hands every due self-check to the loop as one event, however many there are and however late (ADR 0014).
+   * The checks are marked delivered together with the event, so none is handed over twice.
+   */
+  deliverDueSelfChecks(): boolean {
+    if (!this.quiet) return false;
+    const due = this.selfChecks.due();
+    if (due.length === 0) return false;
+    const eventId = this.transaction(() => {
+      const id = this.insertEvent('self-check');
+      this.selfChecks.deliver(due.map(check => check.checkId), id);
+      return id;
+    });
+    this.queue.push(eventId);
+    this.pump();
+    return true;
+  }
+
+  /** Hands the loop a ping: the "anything you want to do?" of a quiet moment (ADR 0014). */
+  ping(): boolean {
+    if (!this.quiet) return false;
+    this.queue.push(this.insertEvent('ping'));
+    this.pump();
+    return true;
+  }
+
+  /**
+   * Returns the avatar to neutral once an expression has been shown for `afterMs`. Thinking is released when the
+   * handling ends instead, and natsumi stays asleep through the nightly switch.
+   */
+  relaxExpression(afterMs: number): void {
+    const { expression, changedAt } = this.avatar;
+    if (expression === 'neutral' || expression === 'thinking' || this.rotating) return;
+    if (this.now() - changedAt >= afterMs) this.setAvatar('neutral', 'server');
   }
 
   /** Resolves when no turn is running and nothing is queued. */
@@ -492,6 +550,7 @@ export class ThinkingLoop {
     const work = kind === 'nightly-review' ? this.runRotation(eventId) : this.runTurn([eventId], 'events').then(() => this.maintain());
     this.running = work.finally(() => {
       this.running = undefined;
+      this.activityAt = this.now();
       this.pump();
     });
   }
@@ -551,7 +610,8 @@ export class ThinkingLoop {
     }
     this.handling.clear();
     this.turn = undefined;
-    if (this.avatar.by === 'server' && this.avatar.expression === 'thinking' && this.queue.length === 0) this.setAvatar('neutral', 'server');
+    // Thinking ends with the handling, whoever set it (ADR 0014); other expressions return to neutral with time.
+    if (this.avatar.expression === 'thinking' && this.queue.length === 0) this.setAvatar('neutral', 'server');
     return { ...turn, ...(failure ? { failure } : {}) };
   }
 
@@ -572,6 +632,7 @@ export class ThinkingLoop {
       this.setEventState(eventId, 'no-reply');
       return finish({ result: 'skipped', reason: 'empty-session' });
     }
+    this.rotating = true;
     const conversation = this.conversation()!;
     const rotationId = `rotation-${randomUUID()}`;
     const now = this.iso();
@@ -613,6 +674,7 @@ export class ThinkingLoop {
       this.log(`thinking loop: switched to a new session (the old one is kept as ${relative(sessionDirectory, session.sessionFile!)})`);
       return { result: 'switched' };
     })();
+    this.rotating = false;
     if (this.avatar.by === 'server' && this.avatar.expression === 'sleepy') this.setAvatar(this.queue.length > 0 ? 'thinking' : 'neutral', 'server');
     finish(outcome);
   }
@@ -685,10 +747,19 @@ export class ThinkingLoop {
     if (row.kind === 'nightly-review') {
       return { event_id: eventId, type: 'nightly_review', received_at: row.created_at, instructions: REVIEW_INSTRUCTIONS };
     }
+    const timeZone = this.options.timeZone ?? 'UTC';
+    const raisedAt = Date.parse(row.created_at);
+    if (row.kind === 'self-check') {
+      return { event_id: eventId, type: 'self_check', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone),
+        checks: this.selfChecks.carriedBy(eventId, raisedAt) };
+    }
     // How many of her notices the owner has not checked, when any: read-only, so she need not send them again.
     const unacknowledged = this.readState.unacknowledgedNotificationIds().length;
-    return { event_id: eventId, type: 'mac_message', received_at: row.message_at, text: row.text,
-      ...(unacknowledged > 0 ? { unacknowledged_notices: unacknowledged } : {}) };
+    const notices = unacknowledged > 0 ? { unacknowledged_notices: unacknowledged } : {};
+    if (row.kind === 'ping') {
+      return { event_id: eventId, type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices };
+    }
+    return { event_id: eventId, type: 'mac_message', received_at: row.message_at, text: row.text, ...notices };
   }
 
   private host(): LoopToolHost {
@@ -705,6 +776,9 @@ export class ThinkingLoop {
       readMemory: topic => this.memory.read(topic),
       forget: (topic, text) => this.memory.forget(topic, text),
       writeHandoff: (eventId, text) => this.writeHandoff(eventId, text),
+      scheduleSelfCheck: (reason, when) => this.selfChecks.schedule(reason, when),
+      listSelfChecks: () => this.selfChecks.list(),
+      cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
       ...(this.shell ? { runMemoryShell: (command: string) => this.shell!.run(command) } : {}),
     };
   }
@@ -777,6 +851,15 @@ export class ThinkingLoop {
     return { ok: true, text: '引き継ぎのメモを保存しました。明日の新しい思考の記録は、このメモから始まります。書き直すなら、もう一度呼んでください。' };
   }
 
+  /** A loop event without an owner message, queued but not yet handed to the queue. */
+  private insertEvent(kind: 'nightly-review' | 'ping' | 'self-check'): string {
+    const eventId = `event-${randomUUID()}`;
+    const now = this.iso();
+    this.options.db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
+      VALUES (?, ?, NULL, 'queued', ?, ?)`).run(eventId, kind, now, now);
+    return eventId;
+  }
+
   private insertMessage(message: { role: ShownMessage['role']; kind: ShownMessage['kind']; text: string; eventId?: string;
     about?: string[]; requestId?: string; deviceId?: string }): MessageRow {
     const { db } = this.options;
@@ -804,7 +887,7 @@ export class ThinkingLoop {
   }
 
   private setAvatar(expression: Expression, by: 'server' | 'model') {
-    this.avatar = { expression, by };
+    this.avatar = { expression, by, changedAt: this.now() };
     this.emit('avatar.expression', { expression });
   }
 

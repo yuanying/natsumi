@@ -118,7 +118,8 @@ natsumi は一本の思考ループで、本人のメッセージを 1 件ずつ
 3. natsumi が返事を確定すると、全文の `conversation.message`（kind: reply）が一度だけ届く。1 つのメッセージへの返事は最大 1 回である。
    相談や知らせは kind: notice で届く。途中の文字列は流れない。
 4. 処理が終わると `conversation.event.completed` が届く。返事なしで終わることもある（no-reply）。
-   表情がサーバーの出した thinking のままなら、neutral の `avatar.expression` が続く。
+   表情が thinking のままなら（natsumi が自分で付けたものも含む）、ほかに待っているメッセージがなければ neutral の `avatar.expression` が続く。
+5. thinking 以外の表情は、最後に変わってから一定の時間（サーバーの設定、既定 3 分）で neutral に戻り、そのときも `avatar.expression` が届く（ADR 0014）。
 
 `session.snapshot` の `messages` は SQLite の記録から作る。natsumi の思考、内心、ツールの呼び出しは含まれない。
 サーバーを再起動しても同じ履歴が返る。再起動の前に処理中だったメッセージは二度処理せず、返事がなければ failed になる。

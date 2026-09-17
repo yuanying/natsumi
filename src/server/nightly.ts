@@ -1,6 +1,6 @@
 /**
- * Wall-clock times in the owner's time zone, for the nightly session switch (ADR 0009). A later scheduler can take
- * these over; nothing here keeps state.
+ * Wall-clock times in the owner's time zone, for the nightly session switch (ADR 0009) and the scheduler (ADR 0014).
+ * Nothing here keeps state.
  */
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
@@ -29,7 +29,7 @@ function offset(ms: number, timeZone: string): number {
 }
 
 /** The instant a local date and time happens. Day overflow (such as day 0) rolls into the neighbouring month. */
-function instant(year: number, month: number, day: number, hour: number, minute: number, timeZone: string): number {
+export function instant(year: number, month: number, day: number, hour: number, minute: number, timeZone: string): number {
   const wall = Date.UTC(year, month - 1, day, hour, minute);
   const first = wall - offset(wall, timeZone);
   return wall - offset(first, timeZone);
@@ -68,4 +68,28 @@ export function nextOccurrence(now: number, at: string, timeZone: string): numbe
 export function localDate(ms: number, timeZone: string): string {
   const t = local(ms, timeZone);
   return `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`;
+}
+
+/** `YYYY-MM-DD HH:MM` in the time zone. */
+export function localDateTime(ms: number, timeZone: string): string {
+  const t = local(ms, timeZone);
+  return `${localDate(ms, timeZone)} ${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')}`;
+}
+
+/** Minutes since local midnight. */
+export function minutesOfDay(ms: number, timeZone: string): number {
+  const t = local(ms, timeZone);
+  return t.hour * 60 + t.minute;
+}
+
+/** Minutes since midnight of an `HH:MM` time of day. */
+export function clockMinutes(at: string): number {
+  const [hour, minute] = clock(at);
+  return hour * 60 + minute;
+}
+
+/** The local calendar date of an instant, as numbers. */
+export function localParts(ms: number, timeZone: string): { year: number; month: number; day: number } {
+  const t = local(ms, timeZone);
+  return { year: t.year, month: t.month, day: t.day };
 }
