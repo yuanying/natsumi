@@ -9,7 +9,8 @@ import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/pi-session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
-import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
+import { THINKING_LINE_MAX_CHARS, THINKING_MIN_INTERVAL_MS, ThinkingLoop,
+  type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { PRIVATE_DETAIL, ScriptedModel } from './support/scripted-model.ts';
 
@@ -136,7 +137,9 @@ test('an owner message is shown at once with the thinking expression and gets on
     assert.deepEqual(snapshot.pendingEvents, []);
     // The server's thinking expression is released once the event is done.
     assert.equal(snapshot.avatar.expression, 'neutral');
-    const shown = JSON.stringify([snapshot, events]);
+    // The line she was writing was shown while she wrote it (ADR 0017), and is in nothing that is kept.
+    assert.deepEqual(thinkingLines(events), ['private thinking about the reply', '']);
+    const shown = JSON.stringify([snapshot, events.filter(e => e.type !== 'conversation.thinking')]);
     for (const hidden of ['private thinking', '内心', 'reply_to_mac', 'finish_event', f.rows()[0]!.pi_session_id as string]) {
       assert.equal(shown.includes(hidden), false, hidden);
     }
@@ -569,5 +572,146 @@ test('migration 6 treats the conversation that already exists as read and its no
     await loop.idle();
     const newNotice = loop.snapshot().messages.find(m => m.kind === 'notice' && m.messageId !== 'message-old-2')!.messageId;
     assert.deepEqual([loop.snapshot().unreadReplyCount, loop.snapshot().unacknowledgedNotificationIds], [1, [newNotice]]);
+  } finally { await f.cleanup(); }
+});
+
+// MARK: - The line natsumi is writing (ADR 0017)
+
+/** The lines of `conversation.thinking`, in order. */
+const thinkingLines = (events: LoopClientEvent[]) =>
+  events.filter(e => e.type === 'conversation.thinking').map(e => e.payload.line as string);
+
+test('the line natsumi is thinking reaches the owner while she answers, thinned out and cut to a length', async () => {
+  const f = await setup();
+  let clock = Date.parse('2026-01-01T09:00:00Z');
+  try {
+    const { loop, events } = await f.open({ now: () => clock });
+    const sent = f.send(loop, '相談したいことがある');
+    const reply = await f.model.next();
+
+    reply.think('まず要点を');
+    await until(() => thinkingLines(events).length >= 1);
+    assert.deepEqual(thinkingLines(events), ['まず要点を']);
+    // Every line is ephemeral: it is never kept and never numbered on a stream.
+    assert.equal(events.find(e => e.type === 'conversation.thinking')!.ephemeral, true);
+
+    // Within the interval the line grows without being sent again.
+    clock += THINKING_MIN_INTERVAL_MS;
+    reply.think('整理する');
+    await until(() => thinkingLines(events).length >= 2);
+    assert.deepEqual(thinkingLines(events), ['まず要点を', 'まず要点を整理する']);
+
+    // The same interval again: these are thinned out, and only the line the thinking ended on is sent.
+    reply.think('。それから');
+    reply.think('\n次に返事の形を決める');
+    reply.delta('（内心）決めた');
+    reply.call('reply_to_mac', { event_id: sent.eventId, text: 'はい、考えました' });
+    reply.call('finish_event', { event_id: sent.eventId });
+    reply.finish();
+
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
+    await loop.idle();
+    // The empty line at the end says the thinking is over, whatever the Mac made of the completion.
+    assert.deepEqual(thinkingLines(events), ['まず要点を', 'まず要点を整理する', '次に返事の形を決める', '']);
+
+    // It is a passing sight only: nothing of it is recorded, in the snapshot or in the history.
+    const snapshot = loop.snapshot();
+    assert.deepEqual(snapshot.messages.map(m => m.text), ['相談したいことがある', 'はい、考えました']);
+    assert.equal(JSON.stringify(snapshot).includes('次に返事の形'), false);
+    const stored = f.db.prepare('SELECT text FROM conversation_messages').all() as { text: string }[];
+    assert.equal(stored.some(row => row.text.includes('要点')), false);
+  } finally { await f.cleanup(); }
+});
+
+test('a line longer than the limit keeps its newest end, and the owner never sees a tool call', async () => {
+  const f = await setup();
+  let clock = Date.parse('2026-01-01T09:00:00Z');
+  try {
+    const { loop, events } = await f.open({ now: () => clock });
+    const sent = f.send(loop, 'ながい思考');
+    const reply = await f.model.next();
+    reply.think(`${'あ'.repeat(200)}おわり`);
+    await until(() => thinkingLines(events).length >= 1);
+    const line = thinkingLines(events)[0]!;
+    assert.equal([...line].length, THINKING_LINE_MAX_CHARS);
+    assert.ok(line.startsWith('…'));
+    assert.ok(line.endsWith('おわり'));
+
+    clock += THINKING_MIN_INTERVAL_MS;
+    reply.call('recall', { query: 'SYNTHETIC-TOOL-ARGUMENT-8841' });
+    reply.finish();
+    const second = await f.model.next();
+    second.call('finish_event', { event_id: sent.eventId });
+    second.finish();
+    await completed(events, sent.eventId);
+    await loop.idle();
+    // Only the thinking text is streamed: what a tool was called with or answered is not.
+    assert.equal(JSON.stringify(events).includes('SYNTHETIC-TOOL-ARGUMENT-8841'), false);
+  } finally { await f.cleanup(); }
+});
+
+test('the last line stays across model calls in one turn and is cleared when the turn ends', async () => {
+  const f = await setup();
+  let clock = Date.parse('2026-01-01T09:00:00Z');
+  try {
+    const { loop, events } = await f.open({ now: () => clock });
+    const sent = f.send(loop, 'ツールを使って考えて');
+    const first = await f.model.next();
+    first.think('記憶を確かめよう');
+    await until(() => thinkingLines(events).length >= 1);
+    first.call('recall', { query: '買い物' });
+    first.finish();
+
+    const second = await f.model.next();
+    // The boundary between model calls sends nothing: the line she wrote last is still what she is on.
+    assert.deepEqual(thinkingLines(events), ['記憶を確かめよう']);
+    clock += THINKING_MIN_INTERVAL_MS;
+    second.think('分かった、返事にしよう');
+    await until(() => thinkingLines(events).length >= 2);
+    second.call('reply_to_mac', { event_id: sent.eventId, text: '確かめました' });
+    second.call('finish_event', { event_id: sent.eventId });
+    second.finish();
+
+    await completed(events, sent.eventId);
+    await loop.idle();
+    assert.deepEqual(thinkingLines(events), ['記憶を確かめよう', '分かった、返事にしよう', '']);
+  } finally { await f.cleanup(); }
+});
+
+test('nothing is streamed with thinking off, in the nightly review, or for a turn the owner is not waiting on', async () => {
+  const f = await setup();
+  try {
+    const off = await f.open({ thinking: 'off' });
+    const sent = f.send(off.loop, 'こんばんは');
+    const reply = await f.model.next();
+    reply.think('この思考は流れない');
+    reply.call('reply_to_mac', { event_id: sent.eventId, text: 'こんばんは' });
+    reply.call('finish_event', { event_id: sent.eventId });
+    reply.finish();
+    await completed(off.events, sent.eventId);
+    await off.loop.idle();
+    assert.deepEqual(thinkingLines(off.events), []);
+    await off.loop.close();
+
+    const on = await f.open();
+    f.model.takeOver();
+    // A ping is natsumi's own business: the Mac shows no balloon for it, so no line is sent either.
+    assert.equal(on.loop.ping(), true);
+    const ping = await f.model.next();
+    ping.think('本人は何も待っていない');
+    ping.finish();
+    await on.loop.idle();
+    assert.deepEqual(thinkingLines(on.events), []);
+
+    // The nightly review does not appear in the conversation at all (ADR 0009).
+    f.model.auto = context => {
+      const eventId = eventIds(lastUserText(context))[0]!;
+      return { thinking: '今日を振り返る', calls: [
+        call('write_handoff_note', { event_id: eventId, text: '明日の引き継ぎ' }),
+        call('finish_event', { event_id: eventId }),
+      ] };
+    };
+    assert.equal((await on.loop.rotate()).result, 'switched');
+    assert.deepEqual(thinkingLines(on.events), []);
   } finally { await f.cleanup(); }
 });

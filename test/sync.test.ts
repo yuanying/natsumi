@@ -20,7 +20,9 @@ async function withFixture(fn: (f: Fixture) => Promise<void>, options: FixtureOp
 
 /** A WebSocket client that keeps every message it received, in order. */
 class Client {
+  /** The numbered stream. The line of thinking is of the moment and is not part of it (ADR 0017). */
   readonly messages: Envelope[] = [];
+  readonly thinking: Envelope[] = [];
   readonly raw: string[] = [];
   readonly closed: Promise<number>;
   deviceId: string | undefined;
@@ -29,7 +31,12 @@ class Client {
 
   private constructor(ws: WebSocket) {
     this.ws = ws;
-    ws.on('message', data => { const text = String(data); this.raw.push(text); this.messages.push(JSON.parse(text) as Envelope); });
+    ws.on('message', data => {
+      const text = String(data);
+      this.raw.push(text);
+      const envelope = JSON.parse(text) as Envelope;
+      (envelope.type === 'conversation.thinking' ? this.thinking : this.messages).push(envelope);
+    });
     this.closed = new Promise(resolve => ws.once('close', code => resolve(code)));
   }
 
@@ -157,12 +164,27 @@ test('two devices see the owner message, the thinking expression and the one rep
   assert.equal(b.messages.some(m => m.type === 'command.accepted'), false);
   assert.deepEqual(shared(a), shared(b));
 
+  // The line she was writing reached both devices while she wrote it, taking no number and leaving no trace on the
+  // numbered stream (ADR 0017).
+  for (const client of [a, b]) {
+    assert.deepEqual(client.thinking.map(m => m.payload.line), ['hidden-thought-4417', '']);
+    assert.equal(new Set(client.thinking.map(m => m.streamId)).size, 1);
+    assert.equal(client.thinking[0]!.streamId, client.messages[0]!.streamId);
+    // It carries the number the stream was at, so a client that does not know the type reads no gap into it.
+    assert.ok(client.messages.some(m => m.seq === client.thinking[0]!.seq));
+  }
+
   const row = conversationRow(f);
   for (const text of [...a.raw, ...b.raw]) {
-    for (const hidden of [row.pi_session_id, row.pi_session_file, f.root, 'hidden-thought', '内心', 'reply_to_mac', '<events>']) {
+    for (const hidden of [row.pi_session_id, row.pi_session_file, f.root, '内心', 'reply_to_mac', '<events>']) {
       assert.equal(text.includes(hidden), false, hidden);
     }
   }
+  // Nothing of the thinking is kept: a device that syncs afresh sees only the conversation.
+  const late = await Client.open(f, token);
+  const snapshot = await late.sync();
+  assert.equal(JSON.stringify(snapshot.payload).includes('hidden-thought'), false);
+  await late.close();
   await a.close();
   await b.close();
 }));

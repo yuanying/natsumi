@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi-session.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { MemoryShell } from './memory-shell.ts';
@@ -24,6 +24,10 @@ export const DEFAULT_COMPACT_AT_TOKENS = 60_000;
 export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 /** The newest messages a snapshot carries. */
 export const SNAPSHOT_MESSAGE_LIMIT = 500;
+/** The longest the line of thinking sent to the Mac may be; a longer one keeps its newest end (ADR 0017). */
+export const THINKING_LINE_MAX_CHARS = 120;
+/** The least time between two lines of thinking. What is written in between is thinned out. */
+export const THINKING_MIN_INTERVAL_MS = 250;
 
 const BASE_INSTRUCTION = `あなたは natsumi。一人の本人（オーナー）専属の秘書で、本人の Mac のデスクトップにアバターとして常駐しています。
 
@@ -71,7 +75,12 @@ export type RotationOutcome =
   | { result: 'failed'; reason: string };
 
 /** An event for clients. `conversation.message`, `avatar.expression` and `conversation.event.completed`. */
-export interface LoopClientEvent { type: string; payload: Record<string, any> }
+export interface LoopClientEvent {
+  type: string;
+  payload: Record<string, any>;
+  /** Of the moment: sent to whoever is connected, never numbered on a stream and never kept for replay (ADR 0017). */
+  ephemeral?: boolean;
+}
 
 export type SendOutcome =
   | { kind: 'accepted'; messageId: string; eventId: string; state: EventState }
@@ -201,6 +210,10 @@ export class ThinkingLoop {
   private activityAt: number;
   /** A nightly switch is under way; natsumi sleeps through it. */
   private rotating = false;
+  /** The line of thinking being written, the one last sent, and when it went (ADR 0017). */
+  private readonly thinking = { line: '', sent: '', at: 0 };
+  /** Stops watching the Pi session the loop is attached to. */
+  private unwatch: (() => void) | undefined;
 
   private constructor(options: LoopOptions) {
     this.options = options;
@@ -410,6 +423,8 @@ export class ThinkingLoop {
         await this.session.abort();
         await this.running;
       }
+      this.unwatch?.();
+      this.unwatch = undefined;
       this.session?.dispose();
       for (const resolve of this.idleWaiters.splice(0)) resolve();
       for (const [eventId, waiters] of this.rotationWaiters) {
@@ -475,6 +490,9 @@ export class ThinkingLoop {
   private attach(session: AgentSession) {
     this.session = session;
     this.options.configureSession?.(session);
+    this.unwatch?.();
+    // The thinking in progress is read off the session, never out of the record it writes.
+    this.unwatch = session.subscribe(event => this.watchThinking(event));
     // Every steered message waiting at a boundary goes in together.
     session.setSteeringMode('all');
     session.agent.shouldStopAfterTurn = context => this.shouldStop(context);
@@ -585,6 +603,7 @@ export class ThinkingLoop {
     } catch {
       // Judged below from what Pi recorded; the error text never leaves the server.
     } finally { clearTimeout(timer); }
+    this.endThinking();
 
     // Steering Pi did not deliver goes back to the front of the queue.
     for (const text of session.clearQueue().steering.reverse()) {
@@ -886,16 +905,77 @@ export class ThinkingLoop {
     }
   }
 
+  /**
+   * The line natsumi is writing, as Pi streams it (ADR 0017). Only the thinking text is read: what a tool was
+   * called with or answered is never sent. Nothing here is recorded; it is a sight of the moment for the owner's
+   * own devices, and the turn's end clears it.
+   */
+  private watchThinking(event: AgentSessionEvent) {
+    if (event.type !== 'message_update') return;
+    const inner = event.assistantMessageEvent;
+    if (inner.type === 'thinking_start') { this.thinking.line = ''; return; }
+    if (inner.type === 'thinking_delta') {
+      const newline = inner.delta.lastIndexOf('\n');
+      // Only the newest line is shown; what came before it is behind her already.
+      this.thinking.line = newline >= 0 ? inner.delta.slice(newline + 1) : this.thinking.line + inner.delta;
+      this.publishThinking(false);
+      return;
+    }
+    // The end of a block of thinking: the line it stopped on goes out whatever the interval says.
+    if (inner.type === 'thinking_end') this.publishThinking(true);
+  }
+
+  /** Whether the owner is waiting on this turn. Only then is there a balloon to put a line in. */
+  private streamsThinking(): boolean {
+    if (this.options.thinking !== 'on') return false;
+    if (this.turn?.kind !== 'events') return false;
+    return [...this.handling.values()].some(handling => handling.messageId !== undefined);
+  }
+
+  private publishThinking(force: boolean) {
+    if (!this.streamsThinking()) return;
+    const line = thinkingLine(this.thinking.line);
+    // An empty line is the space between two lines, not the end of the thinking: the one before it stays up.
+    if (line === '' || line === this.thinking.sent) return;
+    const now = this.now();
+    if (!force && now - this.thinking.at < THINKING_MIN_INTERVAL_MS) return;
+    this.thinking.sent = line;
+    this.thinking.at = now;
+    this.emit('conversation.thinking', { line }, true);
+  }
+
+  /** Says the thinking is over, so the Mac goes back to the blinking dots without waiting for anything else. */
+  private endThinking() {
+    this.thinking.line = '';
+    if (this.thinking.sent === '') return;
+    this.thinking.sent = '';
+    this.thinking.at = this.now();
+    this.emit('conversation.thinking', { line: '' }, true);
+  }
+
   private setAvatar(expression: Expression, by: 'server' | 'model') {
     this.avatar = { expression, by, changedAt: this.now() };
     this.emit('avatar.expression', { expression });
   }
 
-  private emit(type: string, payload: object) {
+  private emit(type: string, payload: object, ephemeral = false) {
     for (const listener of this.listeners) {
-      try { listener({ type, payload: payload as Record<string, unknown> }); } catch { /* one listener cannot stop the others */ }
+      try {
+        listener({ type, payload: payload as Record<string, unknown>, ...(ephemeral ? { ephemeral } : {}) });
+      } catch { /* one listener cannot stop the others */ }
     }
   }
+}
+
+/**
+ * One line of thinking as the Mac is given it: trimmed, and cut to `THINKING_LINE_MAX_CHARS`. A line that has grown
+ * past the limit keeps its newest end, because that is where she is writing.
+ */
+export function thinkingLine(raw: string): string {
+  const trimmed = raw.trim();
+  const characters = [...trimmed];
+  if (characters.length <= THINKING_LINE_MAX_CHARS) return trimmed;
+  return `…${characters.slice(-(THINKING_LINE_MAX_CHARS - 1)).join('')}`;
 }
 
 /** Events handed to Pi: one JSON line per event inside `<events>`, as in the loop evaluation. */
