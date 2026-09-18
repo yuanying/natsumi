@@ -15,6 +15,10 @@ final class RootComponent: Component {
     private let overlaySettings = OverlaySettings(defaults: .standard)
     private let loginFlow = GitHubLoginFlow()
 
+    /// The two cards' panels, named so that a report can say which one it came from.
+    fileprivate var balloonPanel: NSPanel { balloon.panel }
+    fileprivate var noticesPanel: NSPanel { notices.panel }
+
     private var character: CharacterComponent!
     private let balloon = BalloonComponent()
     private let notices = NoticeBundleComponent()
@@ -48,6 +52,9 @@ final class RootComponent: Component {
     /// The width the layout last asked each card's panel for. Its height comes from the drawing; its width is at
     /// least this, so that the drawing is never cut off at the sides while it is still re-setting itself.
     private var cardWidths: [ObjectIdentifier: CGFloat] = [:]
+    /// Sizes the cards' drawings have reported, waiting for the next turn of the run loop.
+    private var reportedCardSizes: [KeyPath<RootComponent, NSPanel>: CGSize] = [:]
+    private var settlingCards = false
 
     private static let avatarDirectoryKey = "avatarDirectory"
     private static let characterFrameName = "natsumi.character"
@@ -60,14 +67,8 @@ final class RootComponent: Component {
             pointerMoved: { [weak self] in self?.pointerMoved() })
         for child in [character as Component, balloon, notices, input, history, settings] { adopt(child) }
 
-        balloon.onSize = { [weak self] size in
-            guard let self else { return }
-            self.cardResized(self.balloon.panel, to: size)
-        }
-        notices.onSize = { [weak self] size in
-            guard let self else { return }
-            self.cardResized(self.notices.panel, to: size)
-        }
+        balloon.onSize = { [weak self] size in self?.cardReported(size, for: \.balloonPanel) }
+        notices.onSize = { [weak self] size in self?.cardReported(size, for: \.noticesPanel) }
         menuBar.send = sink
         character.panel.delegate = windows
         history.panel.delegate = windows
@@ -178,20 +179,41 @@ final class RootComponent: Component {
         wasHistoryOpen = props.history != nil
     }
 
-    /// A card's drawing has reached a new size on its way to the one it is animating towards. The panel takes that
-    /// size, and the column is put back together around it (ADR 0016).
+    /// A card's drawing has reached a new size on its way to the one it is animating towards.
     ///
-    /// The width is held at the widest of what the drawing wants and what the layout asked for: while a card is
+    /// The size is taken now and acted on in the next turn of the run loop. This report arrives from inside the
+    /// drawing's own layout, and moving a window from there raises an exception in AppKit part way through laying
+    /// the view tree out. Reports that arrive before that turn comes round are simply the later ones.
+    private func cardReported(_ size: CGSize, for card: KeyPath<RootComponent, NSPanel>) {
+        reportedCardSizes[card] = size
+        guard !settlingCards else { return }
+        settlingCards = true
+        Task { @MainActor [weak self] in
+            self?.settlingCards = false
+            self?.settleCards()
+        }
+    }
+
+    /// Gives each card's panel the size its drawing has reached and puts the column back together around them.
+    ///
+    /// A panel's width is the widest of what its drawing wants and what the layout asked for: while a card is
     /// narrowing, the drawing is the wide one for a moment, and a panel narrower than its drawing would cut the
     /// words off at the sides.
-    private func cardResized(_ panel: NSPanel, to size: CGSize) {
-        guard panel.isVisible, !isRunningCharacter, size != .zero else { return }
-        let width = max(size.width, cardWidths[ObjectIdentifier(panel)] ?? size.width)
-        let wanted = CGSize(width: width, height: size.height)
-        if panel.frame.size != wanted {
+    private func settleCards() {
+        guard !isRunningCharacter else { return }
+        let sizes = reportedCardSizes
+        reportedCardSizes.removeAll()
+        var moved = false
+        for (card, size) in sizes {
+            let panel = self[keyPath: card]
+            guard panel.isVisible, size != .zero else { continue }
+            let width = max(size.width, cardWidths[ObjectIdentifier(panel)] ?? size.width)
+            let wanted = CGSize(width: width, height: size.height)
+            guard panel.frame.size != wanted else { continue }
             panel.setFrame(CGRect(origin: panel.frame.origin, size: wanted), display: true)
+            moved = true
         }
-        placeColumn()
+        if moved { placeColumn() }
     }
 
     /// Puts the column back together from the sizes the panels have right now, rather than the ones the layout
