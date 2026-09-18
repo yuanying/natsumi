@@ -135,10 +135,12 @@ final class RootComponent: Component {
 
     /// Derives the drawing parameters, lays the column out with the most of the stacks that fits, and hands every
     /// component its own parameters.
+    ///
+    /// Drawing and placing are two jobs. While she is running, only the drawing is done: the panels are her child
+    /// windows and travel with her, so laying the column out again would fight the animation — but she is running,
+    /// and that is a drawing parameter that has to reach her view or the running art is never shown.
     private func refresh(placeHistory: Bool = false) {
-        // While she is running, the panels are her child windows and travel with her; the column is laid out again
-        // when she arrives.
-        guard !isRunningCharacter else { return }
+        guard !isRunningCharacter else { return render(UIProps.root(mediator.state, placement: placement)) }
         let state = mediator.state
         fitCharacter(state)
         placement.width = state.inputBoxSize.width
@@ -173,23 +175,26 @@ final class RootComponent: Component {
         props = UIProps.root(state, placement: placement)
 
         animated {
-            if props != appliedProps {
-                appliedProps = props
-                character.render(props.character)
-                balloon.render(props.balloon)
-                notices.render(props.notices)
-                input.render(props.input)
-                history.render(props.history)
-                settings.render(props.settings)
-                menuBar.props = props.menu
-            }
-
+            render(props)
             place(balloon.panel, at: layout.balloon)
             place(notices.panel, at: layout.notices)
             place(input.panel, at: layout.input)
         }
         placeHistoryWindow(props.history != nil, frame: layout.history)
         wasHistoryOpen = props.history != nil
+    }
+
+    /// Hands every component its own drawing parameters, when they are not the ones it already has.
+    private func render(_ props: RootProps) {
+        guard props != appliedProps else { return }
+        appliedProps = props
+        character.render(props.character)
+        balloon.render(props.balloon)
+        notices.render(props.notices)
+        input.render(props.input)
+        history.render(props.history)
+        settings.render(props.settings)
+        menuBar.props = props.menu
     }
 
     /// Runs the drawing and the placing together over one time and one curve, when this pass is one the owner should

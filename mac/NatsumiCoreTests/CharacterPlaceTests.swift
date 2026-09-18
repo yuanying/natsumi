@@ -145,6 +145,16 @@ struct CharacterPlaceTests {
         #expect(moves(mediator.handle(.pointerCameNear(at: CGPoint(x: 100, y: 100)))).isEmpty)
     }
 
+    @Test("走っている間の動作は、描画パラメータとしてキャラクターに届く")
+    func motionIsADrawingParameter() {
+        var mediator = self.mediator()
+        #expect(UIProps.root(mediator.state, placement: ColumnPlacement()).character.motion == .still)
+        _ = mediator.handle(.pointerCameNear(at: CGPoint(x: 450, y: 350)))
+        #expect(UIProps.root(mediator.state, placement: ColumnPlacement()).character.motion == .running(.right))
+        _ = mediator.handle(.characterMoveFinished)
+        #expect(UIProps.root(mediator.state, placement: ColumnPlacement()).character.motion == .still)
+    }
+
     // MARK: - Where she goes
 
     @Test("どく先は、ポインタから遠ざかる向きへ少しだけ。画面の端までは行かない")
