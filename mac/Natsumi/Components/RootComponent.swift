@@ -150,8 +150,12 @@ final class RootComponent: Component {
         let inputSize = props.input.map { fittingSize(of: input.probe($0), width: placement.width) }
         let historyOpening = props.history != nil && !wasHistoryOpen
 
+        // The column is laid out around her own place, not around where she is standing to make room for it.
+        // Working from where she stands would ask for the same room over again and walk her off the screen.
+        let aside = state.columnOffset
+        let home = character.panel.frame.offsetBy(dx: 0, dy: -aside)
         let layout = OverlayLayout.fit(
-            visible: visibleFrame, character: character.panel.frame,
+            visible: visibleFrame, character: home,
             spacing: OverlayLayout.spacing(for: state.characterScale), input: inputSize,
             history: props.history != nil && (placeHistory || historyOpening) ? history.panel.frame.size : nil,
             steps: UIProps.budgetSteps(state)
@@ -162,7 +166,7 @@ final class RootComponent: Component {
                 notices: stacked.notices.map { fittingSize(of: notices.probe($0), width: placement.width) },
                 balloon: stacked.balloon.map { fittingSize(of: balloon.probe($0), width: placement.width) })
         }
-        if layout.characterOffset != 0, !askingForRoom {
+        if layout.characterOffset != aside, !askingForRoom {
             // The column does not fit where she stands. She is asked to make room first; the ladder only comes into
             // it when she cannot move far enough (ADR 0016). What she does about it is hers to decide.
             askingForRoom = true
@@ -178,11 +182,12 @@ final class RootComponent: Component {
 
         animated {
             render(props)
-            place(balloon.panel, at: layout.balloon)
-            place(notices.panel, at: layout.notices)
-            place(input.panel, at: layout.input)
+            // The rects were worked out at her own place, so they travel with her the same way she did.
+            place(balloon.panel, at: layout.balloon?.offsetBy(dx: 0, dy: aside))
+            place(notices.panel, at: layout.notices?.offsetBy(dx: 0, dy: aside))
+            place(input.panel, at: layout.input?.offsetBy(dx: 0, dy: aside))
         }
-        placeHistoryWindow(props.history != nil, frame: layout.history)
+        placeHistoryWindow(props.history != nil, frame: layout.history?.offsetBy(dx: 0, dy: aside))
         wasHistoryOpen = props.history != nil
     }
 

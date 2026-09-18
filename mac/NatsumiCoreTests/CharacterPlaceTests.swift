@@ -123,6 +123,21 @@ struct CharacterPlaceTests {
         #expect(mediator.state.motion == .running(.right))
     }
 
+    @Test("列が余裕を要らなくなったら、キャラクターは元の場所へ走って戻る")
+    func comesBackWhenTheColumnIsDone() {
+        var mediator = self.mediator()
+        #expect(moves(mediator.handle(.columnNeedsRoom(offset: -80))) == [CGPoint(x: 400, y: 220)])
+        _ = mediator.handle(.characterFrameChanged(character.offsetBy(dx: 0, dy: -80), visible: screen))
+        // 場所を空けている間は、そこを定位置として覚えない。
+        #expect(mediator.handle(.characterMoveFinished).contains(.saveCharacterPlace) == false)
+
+        // 同じ余裕を二度は求めない（求め続けると、開くたびに下がっていく）。
+        #expect(moves(mediator.handle(.columnNeedsRoom(offset: -80))).isEmpty)
+
+        // 畳んで余裕が要らなくなったら、元の場所へ。
+        #expect(moves(mediator.handle(.columnNeedsRoom(offset: 0))) == [character.origin])
+    }
+
     @Test("ドラッグしている間は、一列のために動かない")
     func noRoomWhileDragging() {
         var mediator = self.mediator()
