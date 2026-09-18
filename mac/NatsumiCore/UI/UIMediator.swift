@@ -129,24 +129,39 @@ public struct UIMediator {
             return []
 
         case .balloonTextClicked:
-            return apply(state.session.confirmFrontReply())
+            // Opening a reply reads nothing: only the × tells the server anything.
+            guard let front = UIProps.replyStack(state.conversation)?.front else { return [] }
+            open(.reply(front.messageId))
+            return []
 
         case .balloonCloseClicked:
-            // The × reads every unread reply; on "受付中" and "考え中" it only hides them.
-            guard UIProps.replyStack(state.conversation) == nil else {
-                return apply(state.session.confirmAllReplies())
+            // The × reads the reply at the front and brings the next one forward; on "受付中" and "考え中" there is
+            // nothing to read, so it only hides them.
+            guard UIProps.replyStack(state.conversation) != nil else {
+                state.dismissedIndicator = UIProps.indicator(state.conversation)
+                return []
             }
-            state.dismissedIndicator = UIProps.indicator(state.conversation)
-            return []
+            return apply(state.session.confirmFrontReply())
 
         case .readAllRepliesRequested:
             return apply(state.session.confirmAllReplies())
 
         case .noticeTextClicked:
+            guard let stack = UIProps.noticeStack(state.conversation) else { return [] }
+            switch stack.front {
+            case .notice(let message):
+                open(.notice(message.messageId))
+                return []
+            case .older(let ids):
+                // The card has no text to open, so a click on it still checks the notices it stands for.
+                return apply(state.session.acknowledge(ids))
+            }
+
+        case .noticeCloseClicked:
             guard let ids = UIProps.noticeStack(state.conversation)?.frontIds else { return [] }
             return apply(state.session.acknowledge(ids))
 
-        case .noticeCloseClicked, .acknowledgeAllNoticesRequested:
+        case .acknowledgeAllNoticesRequested:
             return apply(state.session.acknowledgeAllNotices())
 
         // MARK: Login, logout and the server
@@ -224,6 +239,11 @@ public struct UIMediator {
 
     // MARK: - The pieces the decisions are made of
 
+    /// Opens a card to its whole text, or folds it when it is the one already open. Only one is open at a time.
+    private mutating func open(_ card: ExpandedCard) {
+        state.expanded = state.expanded == card ? nil : card
+    }
+
     /// Drops the connection and asks whether there is still a session to come back with.
     private mutating func resume() -> [UIEffect] {
         _ = state.session.stop()
@@ -279,6 +299,19 @@ public struct UIMediator {
     private mutating func settle() {
         let candidate = UIProps.replyStack(state.conversation) == nil ? UIProps.indicator(state.conversation) : nil
         if candidate != state.dismissedIndicator { state.dismissedIndicator = nil }
+
+        // A card that is no longer at the front folds by itself; what is open is always what is shown.
+        switch state.expanded {
+        case .reply(let id):
+            if UIProps.replyStack(state.conversation)?.front.messageId != id { state.expanded = nil }
+        case .notice(let id):
+            if case .notice(let front) = UIProps.noticeStack(state.conversation)?.front, front.messageId == id {
+            } else {
+                state.expanded = nil
+            }
+        case nil:
+            break
+        }
 
         let ids = state.conversation.unacknowledgedNotificationIds
         if ids.contains(where: { !state.seenNoticeIds.contains($0) }) { state.noticesHidden = false }

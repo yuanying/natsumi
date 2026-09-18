@@ -17,7 +17,7 @@ struct NoticeBundleView: View {
             let shape = RoundedRectangle(cornerRadius: Comic.radius(scale))
             HStack(alignment: .top, spacing: 8 * scale) {
                 content(props)
-                CloseButton(help: "すべて確認して閉じる", scale: scale) { close(.noticeCloseClicked) }
+                CloseButton(help: props.closeHelp, scale: scale) { close(.noticeCloseClicked) }
             }
             .padding(.horizontal, 14 * scale)
             .padding(.vertical, 10 * scale)

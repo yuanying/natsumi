@@ -32,8 +32,12 @@ struct UIMediatorTests {
         return mediator
     }
 
+    /// The drawing parameters as the root derives them when the whole column fits: the first step of the ladder the
+    /// state asks for.
     private func props(_ mediator: UIMediator) -> RootProps {
-        UIProps.root(mediator.state, placement: ColumnPlacement())
+        var placement = ColumnPlacement()
+        placement.budget = UIProps.budgetSteps(mediator.state)[0]
+        return UIProps.root(mediator.state, placement: placement)
     }
 
     private func sent(_ effects: [UIEffect]) -> [ClientEnvelope] {
@@ -111,22 +115,60 @@ struct UIMediatorTests {
         #expect(props(mediator).balloon?.body == .receiving)
     }
 
-    @Test("本文のクリックは前の返事だけを、× はすべての返事を既読にする")
+    @Test("本文のクリックは全文を出すだけで、× が 1 件ずつ既読にして次を前に出す")
     func readReplies() {
         var mediator = synced(
             messages: [Fixture.message("r1"), Fixture.message("r2")], readThrough: nil, unread: 2)
         #expect(props(mediator).balloon?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 1,
-            help: "クリックで確かめて次へ")))
+            text: "こんにちは", lineLimit: BalloonText.maxLines, isExpanded: false, showsHistoryLink: false, more: 1,
+            help: "クリックで全文を出す")))
+        #expect(props(mediator).balloon?.closeHelp == "この返事を既読にして次へ")
 
-        let one = mediator.handle(.balloonTextClicked)
+        // Expanding tells the server nothing: only the × reads.
+        let expanded = mediator.handle(.balloonTextClicked)
+        #expect(sent(expanded).isEmpty)
+        #expect(props(mediator).balloon?.body == .reply(ReplyProps(
+            text: "こんにちは", lineLimit: BalloonText.expandedMaxLines, isExpanded: true, showsHistoryLink: false,
+            more: 1, help: "クリックで畳む")))
+
+        let one = mediator.handle(.balloonCloseClicked)
         #expect(sent(one).count == 1)
         #expect(props(mediator).balloon?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
-            help: "クリックで確かめて閉じる")))
+            text: "こんにちは", lineLimit: BalloonText.maxLines, isExpanded: false, showsHistoryLink: false, more: 0,
+            help: "クリックで全文を出す")))
+        #expect(props(mediator).balloon?.closeHelp == "この返事を既読にして閉じる")
 
         _ = mediator.handle(.balloonCloseClicked)
         #expect(props(mediator).balloon == nil)
+    }
+
+    @Test("前に出ている返事が変わると、拡大は畳む")
+    func expandedFoldsWithTheFrontReply() {
+        var mediator = synced(
+            messages: [Fixture.message("r1"), Fixture.message("r2")], readThrough: nil, unread: 2)
+        _ = mediator.handle(.balloonTextClicked)
+        #expect(props(mediator).balloon?.body.isExpanded == true)
+        _ = mediator.handle(.balloonCloseClicked)
+        #expect(props(mediator).balloon?.body.isExpanded == false)
+    }
+
+    @Test("拡大しているのは一度に 1 件で、別の本文を開くと前のは畳む")
+    func onlyOneExpanded() {
+        var notice = Fixture.message("n1", kind: "notice", text: "架空のお知らせ")
+        notice["about"] = ["e1"]
+        var mediator = synced(
+            messages: [Fixture.message("r1"), notice], readThrough: nil, unread: 1, unacknowledged: ["n1"])
+        _ = mediator.handle(.balloonTextClicked)
+        #expect(props(mediator).balloon?.body.isExpanded == true)
+        #expect(props(mediator).notices?.isExpanded == false)
+
+        _ = mediator.handle(.noticeTextClicked)
+        #expect(props(mediator).balloon?.body.isExpanded == false)
+        #expect(props(mediator).notices?.isExpanded == true)
+
+        // The same body again folds it.
+        _ = mediator.handle(.noticeTextClicked)
+        #expect(props(mediator).notices?.isExpanded == false)
     }
 
     @Test("閉じた「考え中」は、吹き出しの中身が変わるまで出さない")
@@ -168,16 +210,42 @@ struct UIMediatorTests {
         #expect(props(mediator).character.badge?.count == 2)
     }
 
-    @Test("知らせの本文のクリックは前のカードだけ、× はすべてを確かめる")
+    @Test("知らせの本文のクリックは全文を出すだけで、× が 1 件ずつ確かめる")
     func acknowledgeNotices() {
         var first = Fixture.message("n1", kind: "notice", text: "架空のお知らせ")
         first["about"] = ["e1"]
         var second = Fixture.message("n2", kind: "notice", text: "もう一つの架空のお知らせ")
         second["about"] = ["e2"]
         var mediator = synced(messages: [first, second], unacknowledged: ["n1", "n2"])
-        #expect(sent(mediator.handle(.noticeTextClicked)).count == 1)
-        #expect(props(mediator).character.badge?.count == 1)
+        #expect(props(mediator).notices?.closeHelp == "この知らせを確認して次へ")
+        #expect(sent(mediator.handle(.noticeTextClicked)).isEmpty)
+        #expect(props(mediator).character.badge?.count == 2)
+
         #expect(sent(mediator.handle(.noticeCloseClicked)).count == 1)
+        #expect(props(mediator).character.badge?.count == 1)
+        #expect(props(mediator).notices?.closeHelp == "この知らせを確認して閉じる")
+        #expect(sent(mediator.handle(.noticeCloseClicked)).count == 1)
+        #expect(props(mediator).notices == nil)
+        #expect(props(mediator).character.badge == nil)
+    }
+
+    @Test("本文の無い「前の知らせ」の 1 枚だけは、クリックでまとめて確かめる")
+    func olderNoticesAreCheckedByClicking() {
+        var mediator = synced(messages: [Fixture.message("r1")], unacknowledged: ["n0", "n1"])
+        #expect(props(mediator).notices?.help == "クリックでまとめて確かめる")
+        // One command per notice, as the contract has it; the card stands for both.
+        #expect(sent(mediator.handle(.noticeTextClicked)).count == 2)
+        #expect(props(mediator).notices == nil)
+    }
+
+    @Test("メニューの「すべて確認する」だけが、束をまとめて確かめる")
+    func acknowledgeAllFromTheMenu() {
+        var first = Fixture.message("n1", kind: "notice", text: "架空のお知らせ")
+        first["about"] = ["e1"]
+        var second = Fixture.message("n2", kind: "notice", text: "もう一つの架空のお知らせ")
+        second["about"] = ["e2"]
+        var mediator = synced(messages: [first, second], unacknowledged: ["n1", "n2"])
+        #expect(sent(mediator.handle(.acknowledgeAllNoticesRequested)).count == 2)
         #expect(props(mediator).notices == nil)
         #expect(props(mediator).character.badge == nil)
     }

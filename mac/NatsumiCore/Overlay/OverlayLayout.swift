@@ -23,6 +23,17 @@ public struct StackBudget: Equatable, Sendable {
     public static let steps: [StackBudget] = [
         full, StackBudget(behind: 0, lines: BalloonText.maxLines), StackBudget(behind: 0, lines: 2), StackBudget(behind: 0, lines: 1),
     ]
+    /// The ladder while a card is open: it starts at the whole text and comes down to the same last steps, so an
+    /// opened card that cannot fit ends up no worse than a closed one.
+    public static let expandedSteps: [StackBudget] = [
+        StackBudget(behind: ReplyStack.maxBehind, lines: BalloonText.expandedMaxLines),
+        StackBudget(behind: 0, lines: BalloonText.expandedMaxLines),
+        StackBudget(behind: 0, lines: 24),
+        StackBudget(behind: 0, lines: 12),
+        StackBudget(behind: 0, lines: BalloonText.maxLines),
+        StackBudget(behind: 0, lines: 2),
+        StackBudget(behind: 0, lines: 1),
+    ]
 }
 
 /// Where the panels around the character go, in screen coordinates (origin at the bottom left).

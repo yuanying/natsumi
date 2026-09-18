@@ -29,6 +29,12 @@ public enum ConnectionStatus: Equatable, Sendable {
     }
 }
 
+/// The card whose whole text is shown. Only one is open at a time: opening another folds the one before.
+public enum ExpandedCard: Equatable, Sendable {
+    case reply(String)
+    case notice(String)
+}
+
 /// Where the grip was taken hold of, so that a drag is measured from there.
 struct GripAnchor: Equatable {
     var mouse: CGPoint
@@ -63,6 +69,8 @@ public struct UIState {
     public internal(set) var avatarDirectory = ""
     public internal(set) var defaultAvatarDirectory = ""
 
+    /// The card the owner opened to read in full. It folds by itself when that card is no longer at the front.
+    public internal(set) var expanded: ExpandedCard?
     /// The indicator the owner closed. It stays closed until the balloon would say something else.
     var dismissedIndicator: BalloonIndicator?
     /// The badge hid the bundle. Hiding checks nothing, and a notice not seen before brings it back.

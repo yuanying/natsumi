@@ -56,9 +56,9 @@ struct PropsTests {
         #expect(UIProps.replyStack(state) == ReplyStack(front: reply("r3", to: "e1"), count: 4))
         let props = balloon(state)
         #expect(props?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 3, help: "クリックで確かめて次へ")))
+            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 3, help: "クリックで全文を出す")))
         #expect(props?.edges == ReplyStack.maxBehind)
-        #expect(props?.closeHelp == "すべて既読にして閉じる")
+        #expect(props?.closeHelp == "この返事を既読にして次へ")
         #expect(props?.isBusy == false)
     }
 
@@ -76,7 +76,7 @@ struct PropsTests {
         let state = conversation([reply("r5"), reply("r6")], readThrough: "r0", unread: 5)
         #expect(UIProps.replyStack(state) == ReplyStack(front: reply("r5"), count: 5))
         #expect(balloon(state)?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 4, help: "クリックで確かめて次へ")))
+            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 4, help: "クリックで全文を出す")))
     }
 
     @Test("高さが足りないときは、重ねる枚数と行数を減らし、続きを履歴へ送る")
@@ -87,7 +87,7 @@ struct PropsTests {
         let props = balloon(state, placement: placement)
         #expect(props?.edges == 0)
         #expect(props?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: 2, showsHistoryLink: true, more: 2, help: "クリックで確かめて次へ")))
+            text: "こんにちは", lineLimit: 2, showsHistoryLink: true, more: 2, help: "クリックで全文を出す")))
     }
 
     @Test("長い発言は切って、続きは履歴で読めることを示す")
@@ -96,7 +96,53 @@ struct PropsTests {
         let state = conversation([reply("r1", text: long)], readThrough: nil, unread: 1)
         #expect(balloon(state)?.body == .reply(ReplyProps(
             text: String(repeating: "あ", count: BalloonText.maxCharacters) + "…", lineLimit: BalloonText.maxLines,
-            showsHistoryLink: true, more: 0, help: "クリックで確かめて閉じる")))
+            showsHistoryLink: true, more: 0, help: "クリックで全文を出す")))
+    }
+
+    @Test("拡大した返事は全文を出し、切られていなければ履歴へは誘導しない")
+    func expandedReply() {
+        let long = String(repeating: "あ", count: BalloonText.maxCharacters + 10)
+        let state = conversation([reply("r1", text: long)], readThrough: nil, unread: 1)
+        var placement = ColumnPlacement()
+        placement.budget = StackBudget.expandedSteps[0]
+        let props = UIProps.balloon(
+            state, dismissed: nil, expanded: .reply("r1"), placement: placement, scale: .default)
+        #expect(props?.body == .reply(ReplyProps(
+            text: long, lineLimit: BalloonText.expandedMaxLines, isExpanded: true, showsHistoryLink: false, more: 0,
+            help: "クリックで畳む")))
+    }
+
+    @Test("拡大しても画面に入らないときは、そこで切って「続きは履歴で」を出したままにする")
+    func expandedReplyStillCut() {
+        let many = (1...(BalloonText.expandedMaxLines + 5)).map { "行\($0)" }.joined(separator: "\n")
+        let state = conversation([reply("r1", text: many)], readThrough: nil, unread: 1)
+        var placement = ColumnPlacement()
+        placement.budget = StackBudget(behind: 0, lines: 12)
+        let props = UIProps.balloon(
+            state, dismissed: nil, expanded: .reply("r1"), placement: placement, scale: .default)
+        #expect(props?.body == .reply(ReplyProps(
+            text: many, lineLimit: 12, isExpanded: true, showsHistoryLink: true, more: 0, help: "クリックで畳む")))
+    }
+
+    @Test("拡大していない側のカードは、切った本文と 5 行までのまま")
+    func othersKeepThePreview() {
+        let long = String(repeating: "あ", count: BalloonText.maxCharacters + 10)
+        let state = conversation([reply("r1"), notice("n1", text: long)], readThrough: nil, unread: 1, notices: ["n1"])
+        var placement = ColumnPlacement()
+        placement.budget = StackBudget.expandedSteps[0]
+        let props = UIProps.notices(
+            state, hidden: false, expanded: .reply("r1"), placement: placement, scale: .default)
+        #expect(props?.isExpanded == false)
+        #expect(props?.lineLimit == BalloonText.maxLines)
+        #expect(props?.text == String(repeating: "あ", count: BalloonText.maxCharacters) + "…")
+        #expect(props?.showsHistoryLink == true)
+    }
+
+    @Test("拡大したときの行数の梯子は、上から下へ狭くなる")
+    func expandedLadder() {
+        #expect(StackBudget.expandedSteps.first?.lines == BalloonText.expandedMaxLines)
+        #expect(StackBudget.expandedSteps.last == StackBudget.steps.last)
+        #expect(StackBudget.expandedSteps.map(\.lines) == StackBudget.expandedSteps.map(\.lines).sorted(by: >))
     }
 
     @Test("返事の未読が無く処理待ちがあるときだけ考え中を出し、未読があれば未読を出して処理中の印を付ける")
@@ -168,7 +214,7 @@ struct PropsTests {
         let props = notices(state)
         #expect(props == NoticeBundleProps(
             text: "架空のお知らせ", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 3,
-            help: "クリックで確かめて次へ", edges: NoticeStack.maxBehind, edgesUpward: true,
+            help: "クリックで全文を出す", closeHelp: "この知らせを確認して次へ", edges: NoticeStack.maxBehind, edgesUpward: true,
             width: ColumnPlacement().width, textScale: CharacterScale.default.textScale))
     }
 
@@ -182,6 +228,9 @@ struct PropsTests {
         #expect(props?.text == "前の知らせが 2 件あります（本文は履歴より前のため出せません）")
         #expect(props?.showsHistoryLink == false)
         #expect(props?.help == "クリックでまとめて確かめる")
+        // The card has no body to open, so its × means the same as a click on it.
+        #expect(props?.closeHelp == "まとめて確認して次へ")
+        #expect(props?.isExpanded == false)
     }
 
     @Test("隠している間は束を出さないが、印は件数を出し続ける")

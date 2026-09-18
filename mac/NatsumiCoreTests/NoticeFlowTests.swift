@@ -60,7 +60,7 @@ struct NoticeFlowTests {
         receive("conversation.message", Fixture.message("m2", text: "架空の返事", replyTo: "e1"))
         #expect(props(m).balloon?.body == .reply(ReplyProps(
             text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
-            help: "クリックで確かめて閉じる")))
+            help: "クリックで全文を出す")))
         #expect(props(m).balloon?.isBusy == true)
         receive("conversation.event.completed", ["eventId": "e1", "messageId": "m1", "status": "replied"])
         if resetExpression { receive("avatar.expression", ["expression": "neutral"]) }
@@ -85,7 +85,7 @@ struct NoticeFlowTests {
         #expect(props(m).character.expression == .thinking)
         #expect(props(m).balloon?.body == .reply(ReplyProps(
             text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
-            help: "クリックで確かめて閉じる")))
+            help: "クリックで全文を出す")))
         #expect(props(m).balloon?.isBusy == false)
         #expect(props(m).notices?.text == "架空のお知らせ")
         #expect(props(m).notices?.more == 0)
@@ -96,7 +96,7 @@ struct NoticeFlowTests {
         let m = exchange(resetExpression: true)
         #expect(props(m).balloon?.body == .reply(ReplyProps(
             text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
-            help: "クリックで確かめて閉じる")))
+            help: "クリックで全文を出す")))
         #expect(props(m).character.badge?.count == 1)
     }
 
@@ -114,7 +114,7 @@ struct NoticeFlowTests {
         #expect(m.state.conversation.messages.map(\.messageId) == ["m00", "m1", "n1", "m2"])
         #expect(props(m).balloon?.body == .reply(ReplyProps(
             text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
-            help: "クリックで確かめて閉じる")))
+            help: "クリックで全文を出す")))
         #expect(props(m).notices?.text == "架空のお知らせ")
     }
 }

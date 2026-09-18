@@ -5,6 +5,9 @@ import Foundation
 public struct BalloonText: Equatable, Sendable {
     public static let maxCharacters = 120
     public static let maxLines = 5
+    /// The most an opened card shows. Beyond this the column cannot fit on any screen, and the rest stays in the
+    /// history; the layout reduces it further when the screen is smaller.
+    public static let expandedMaxLines = 40
 
     public let text: String
     public let isTruncated: Bool
@@ -12,6 +15,17 @@ public struct BalloonText: Equatable, Sendable {
     public init(text: String, isTruncated: Bool) {
         self.text = text
         self.isTruncated = isTruncated
+    }
+
+    /// The whole text, trimmed; nothing is cut here. How many lines of it are shown is the layout's to decide.
+    public static func whole(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The lines the text is written in. A long line wraps into more than one on the screen, so this is the least
+    /// the card needs, not the most.
+    public static func lineCount(_ text: String) -> Int {
+        whole(text).split(separator: "\n", omittingEmptySubsequences: false).count
     }
 
     public static func preview(_ text: String) -> BalloonText {
