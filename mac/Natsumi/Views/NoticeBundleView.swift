@@ -23,7 +23,8 @@ struct NoticeBundleView: View {
             .padding(.vertical, 10 * scale)
             .frame(maxWidth: max(props.width - step * CGFloat(props.edges) - ink * 2, 80), alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
-            // Cut to the card's own outline, not to the window's square corner (see `BalloonView`).
+            // Drawn to the height the layout gave the panel, and cut to the card's own outline (see `BalloonView`).
+            .frame(height: props.panelHeight.map { $0 - step * CGFloat(props.edges) - ink * 2 }, alignment: .top)
             .clipShape(shape)
             .background {
                 StackedEdges(

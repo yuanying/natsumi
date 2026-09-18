@@ -145,6 +145,9 @@ final class RootComponent: Component {
         let state = mediator.state
         fitCharacter(state)
         placement.width = state.inputBoxSize.width
+        // Measuring is what settles these, so they are not in play while it happens.
+        placement.balloonHeight = nil
+        placement.noticesHeight = nil
         var props = UIProps.root(state, placement: placement)
         let inputSize = props.input.map { fittingSize(of: input.probe($0), width: $0.boxSize.width) }
         let historyOpening = props.history != nil && !wasHistoryOpen
@@ -165,6 +168,8 @@ final class RootComponent: Component {
         placement.budget = layout.budget
         placement.tail = layout.tail
         placement.tailX = layout.tailX
+        placement.balloonHeight = layout.balloon?.height
+        placement.noticesHeight = layout.notices?.height
         props = UIProps.root(state, placement: placement)
 
         render(props)

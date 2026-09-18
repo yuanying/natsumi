@@ -12,6 +12,11 @@ public struct ColumnPlacement: Equatable, Sendable {
     public var width: CGFloat
     /// What an opened card may widen to. Cards that are not open, and the input field, keep to `width`.
     public var expandedWidth: CGFloat
+    /// The height the layout gave each card's panel. A card draws its box at exactly this height, so that opening
+    /// and folding animate the one number the panel will end up at and arrive there together with it. nil while the
+    /// cards are being measured, which is what settles these heights in the first place.
+    public var balloonHeight: CGFloat?
+    public var noticesHeight: CGFloat?
 
     public init(
         tail: BalloonTail = .down, tailX: CGFloat = 40, budget: StackBudget = .full,
@@ -131,11 +136,13 @@ public struct BalloonProps: Equatable, Sendable {
     public var tailX: CGFloat
     public var width: CGFloat
     public var textScale: Double
+    /// The height of the panel this is drawn in; the box is drawn to it. nil means the height of what it says.
+    public var panelHeight: CGFloat?
     public var closeHelp: String
 
     public init(
         body: Body, isBusy: Bool, edges: Int, tail: BalloonTail, tailX: CGFloat, width: CGFloat, textScale: Double,
-        closeHelp: String
+        panelHeight: CGFloat? = nil, closeHelp: String
     ) {
         self.body = body
         self.isBusy = isBusy
@@ -144,6 +151,7 @@ public struct BalloonProps: Equatable, Sendable {
         self.tailX = tailX
         self.width = width
         self.textScale = textScale
+        self.panelHeight = panelHeight
         self.closeHelp = closeHelp
     }
 }
@@ -163,10 +171,13 @@ public struct NoticeBundleProps: Equatable, Sendable {
     public var edgesUpward: Bool
     public var width: CGFloat
     public var textScale: Double
+    /// The height of the panel this is drawn in; the card is drawn to it. See `BalloonProps.panelHeight`.
+    public var panelHeight: CGFloat?
 
     public init(
         text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, more: Int, help: String,
-        closeHelp: String, edges: Int, edgesUpward: Bool, width: CGFloat, textScale: Double
+        closeHelp: String, edges: Int, edgesUpward: Bool, width: CGFloat, textScale: Double,
+        panelHeight: CGFloat? = nil
     ) {
         self.text = text
         self.lineLimit = lineLimit
@@ -179,6 +190,7 @@ public struct NoticeBundleProps: Equatable, Sendable {
         self.edgesUpward = edgesUpward
         self.width = width
         self.textScale = textScale
+        self.panelHeight = panelHeight
     }
 }
 
@@ -403,7 +415,8 @@ public enum UIProps {
         func props(body: BalloonProps.Body, isBusy: Bool, edges: Int, width: CGFloat, closeHelp: String) -> BalloonProps {
             BalloonProps(
                 body: body, isBusy: isBusy, edges: edges, tail: placement.tail, tailX: placement.tailX,
-                width: width, textScale: scale.textScale, closeHelp: closeHelp)
+                width: width, textScale: scale.textScale, panelHeight: placement.balloonHeight,
+                closeHelp: closeHelp)
         }
         if let stack = replyStack(conversation) {
             let isExpanded = expanded == .reply(stack.front.messageId)
@@ -474,7 +487,8 @@ public enum UIProps {
             text: text, lineLimit: lineLimit, isExpanded: isExpanded, showsHistoryLink: showsHistoryLink,
             more: stack.more, help: help, closeHelp: closeHelp,
             edges: min(stack.behind, placement.budget.behind), edgesUpward: placement.tail == .down,
-            width: isExpanded ? placement.expandedWidth : placement.width, textScale: scale.textScale)
+            width: isExpanded ? placement.expandedWidth : placement.width, textScale: scale.textScale,
+            panelHeight: placement.noticesHeight)
     }
 
     /// The ladder the column is laid out with. An opened card asks for many more lines than a closed one.
