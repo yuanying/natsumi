@@ -1,7 +1,7 @@
 # 0010. Mac アプリの構成
 
 - Date: 2026-09-15
-- Status: Accepted
+- Status: Accepted（「UI」の節の作り方は [ADR 0015](0015-mac-ui-passive-view-tree.md) で置き換え。画面に出るものの仕様はそのまま）
 
 ## Context
 
