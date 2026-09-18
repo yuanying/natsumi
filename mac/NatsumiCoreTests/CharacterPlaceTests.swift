@@ -27,6 +27,16 @@ struct CharacterPlaceTests {
 
     // MARK: - Which way she faces
 
+    @Test("走る時間は距離で決まる。同じ足どりなので、短い移動でも走る絵が見える")
+    func runDuration() {
+        let here = CGPoint(x: 0, y: 0)
+        #expect(CharacterRun.duration(from: here, to: CGPoint(x: 220, y: 0)) == 1)
+        #expect(CharacterRun.duration(from: here, to: CGPoint(x: 5, y: 0)) == CharacterRun.shortest)
+        #expect(CharacterRun.duration(from: here, to: CGPoint(x: 5000, y: 0)) == CharacterRun.longest)
+        // 開く・畳むのは走りではないので、距離では決まらない。
+        #expect(CardAnimation.duration == 0.25)
+    }
+
     @Test("走る向きは横の動きで決まり、ほぼ真上・真下のときは直前の向きを保つ")
     func facing() {
         let here = CGPoint(x: 100, y: 100)
@@ -102,11 +112,11 @@ struct CharacterPlaceTests {
 
     // MARK: - Getting out of the pointer's way
 
-    @Test("ポインタが近づいたら画面の端へ走ってどき、離れたら元の場所へ走って戻る")
+    @Test("ポインタが近づいたら少しどき、離れたら元の場所へ走って戻る")
     func dodge() {
         var mediator = self.mediator()
         let away = mediator.handle(.pointerCameNear(at: CGPoint(x: 450, y: 350)))
-        #expect(moves(away) == [CGPoint(x: 900, y: 300)])
+        #expect(moves(away) == [CGPoint(x: 400 + PointerDodge.hop(for: character.size).width, y: 300)])
         #expect(mediator.state.motion == .running(.right))
         // While she is out of the way, the pointer is watched around the place she comes back to, so that she does
         // not set off again as soon as she lands.
@@ -114,7 +124,7 @@ struct CharacterPlaceTests {
         // Her own place is not overwritten while she is away.
         #expect(mediator.handle(.characterMoveFinished).contains(.saveCharacterPlace) == false)
 
-        _ = mediator.handle(.characterFrameChanged(CGRect(x: 900, y: 300, width: 100, height: 100), visible: screen))
+        _ = mediator.handle(.characterFrameChanged(character.offsetBy(dx: 156, dy: 0), visible: screen))
         let back = mediator.handle(.pointerWentAway)
         #expect(moves(back) == [character.origin])
         #expect(mediator.state.motion == .running(.left))
@@ -128,32 +138,50 @@ struct CharacterPlaceTests {
         #expect(mediator.handle(.characterClicked).contains(.watchPointer(near: character)))
     }
 
-    @Test("どく先がポインタから十分に離れないときは、どかない")
+    @Test("どこへどいてもポインタの前から退けないときは、どかない")
     func noRoomToDodge() {
-        let narrow = CGRect(x: 0, y: 0, width: 200, height: 800)
-        var mediator = self.mediator(at: CGRect(x: 50, y: 300, width: 100, height: 100), visible: narrow)
-        #expect(moves(mediator.handle(.pointerCameNear(at: CGPoint(x: 100, y: 350)))).isEmpty)
+        let tiny = CGRect(x: 0, y: 0, width: 200, height: 200)
+        var mediator = self.mediator(at: CGRect(x: 50, y: 50, width: 100, height: 100), visible: tiny)
+        #expect(moves(mediator.handle(.pointerCameNear(at: CGPoint(x: 100, y: 100)))).isEmpty)
     }
 
     // MARK: - Where she goes
 
-    @Test("どく先は画面の端。すでに端にいるなら、端に沿ってポインタから遠ざかる")
+    @Test("どく先は、ポインタから遠ざかる向きへ少しだけ。画面の端までは行かない")
     func dodgeTarget() {
+        let hop = PointerDodge.hop(for: character.size)
+        #expect(hop.width == character.width + PointerDodge.margin * 2)
         #expect(PointerDodge.target(character: character, pointer: CGPoint(x: 450, y: 350), visible: screen)
-            == CGPoint(x: 900, y: 300))
+            == CGPoint(x: 400 + hop.width, y: 300))
         #expect(PointerDodge.target(character: character, pointer: CGPoint(x: 700, y: 350), visible: screen)
-            == CGPoint(x: 0, y: 300))
+            == CGPoint(x: 400 - hop.width, y: 300))
+    }
 
-        let atLeftEdge = CGRect(x: 0, y: 300, width: 100, height: 100)
-        #expect(PointerDodge.target(character: atLeftEdge, pointer: CGPoint(x: 50, y: 250), visible: screen)
-            == CGPoint(x: 0, y: 700))
-        #expect(PointerDodge.target(character: atLeftEdge, pointer: CGPoint(x: 50, y: 600), visible: screen)
-            == CGPoint(x: 0, y: 0))
+    @Test("その向きに画面が足りなければ反対へ、横がどちらも駄目なら上下へどく")
+    func dodgeTheOtherWay() {
+        let hop = PointerDodge.hop(for: character.size)
+        // 左の端にいて、ポインタが右寄りに乗っている。左へは行けないので右へ。
+        let atLeft = CGRect(x: 0, y: 300, width: 100, height: 100)
+        #expect(PointerDodge.target(character: atLeft, pointer: CGPoint(x: 60, y: 350), visible: screen)
+            == CGPoint(x: hop.width, y: 300))
+
+        // 右の端にいて、ポインタがすぐ左にいる。右に画面は無く、左へ跳ぶとポインタのほうへ寄るので、上へ。
+        let atRight = CGRect(x: 900, y: 300, width: 100, height: 100)
+        #expect(PointerDodge.target(character: atRight, pointer: CGPoint(x: 880, y: 350), visible: screen)
+            == CGPoint(x: 900, y: 300 + hop.height))
+
+        // 横に余地の無い細い画面では、上下へ。
+        let narrow = CGRect(x: 0, y: 0, width: 200, height: 800)
+        let inNarrow = CGRect(x: 50, y: 300, width: 100, height: 100)
+        #expect(PointerDodge.target(character: inNarrow, pointer: CGPoint(x: 100, y: 350), visible: narrow)
+            == CGPoint(x: 50, y: 300 + hop.height))
     }
 
     @Test("近い・離れたの境は別にし、戻ってすぐまた逃げることのないようにする")
     func hysteresis() {
         #expect(PointerDodge.awayMargin > PointerDodge.margin)
+        // 近づいた瞬間には逃げない。素早く押しに行けば、話しかけるほうが先に間に合う長さにする。
+        #expect(PointerDodge.linger >= 1)
         #expect(PointerDodge.isNear(CGPoint(x: 510, y: 350), of: character, textScale: 1))
         #expect(PointerDodge.isNear(CGPoint(x: 560, y: 350), of: character, textScale: 1) == false)
         // The same point is not yet "away": she stays where she is until the pointer is well clear.

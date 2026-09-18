@@ -197,9 +197,9 @@ final class RootComponent: Component {
     private func animated(_ body: () -> Void) {
         guard animatingLayout else { return body() }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = CharacterRun.duration
+            context.duration = CardAnimation.duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            withAnimation(.easeInOut(duration: CharacterRun.duration)) { body() }
+            withAnimation(.easeInOut(duration: CardAnimation.duration)) { body() }
         }
     }
 
@@ -232,7 +232,8 @@ final class RootComponent: Component {
         }
         isRunningCharacter = true
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = CharacterRun.duration
+            // The time comes from how far she has to go, so the running art plays at the same footfall either way.
+            context.duration = CharacterRun.duration(from: panel.frame.origin, to: origin)
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(frame, display: true)
         }, completionHandler: { [weak self] in

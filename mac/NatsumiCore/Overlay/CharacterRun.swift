@@ -14,14 +14,30 @@ public enum CharacterMotion: Equatable, Sendable {
     case running(RunDirection)
 }
 
+/// Opening and folding a card. The panel's frame and what is drawn in it move over this time and this curve, so
+/// that the outline never runs ahead of the words. It is not a run and does not depend on any distance.
+public enum CardAnimation {
+    public static let duration: TimeInterval = 0.25
+}
+
 /// How the character moves from one place to another.
 public enum CharacterRun {
-    /// How long a run takes. The panels grow and shrink over the same time and with the same curve, so that nothing
-    /// in the column drifts apart from her while she goes.
-    public static let duration: TimeInterval = 0.25
+    /// How fast she runs, in points a second. The time comes from the distance so that every move has the same
+    /// footfall: a short step aside takes long enough for the running art to be seen, and a long run across the
+    /// screen does not crawl.
+    public static let speed: CGFloat = 220
+    /// However short or long the way is, a run lasts between these.
+    public static let shortest: TimeInterval = 0.5
+    public static let longest: TimeInterval = 1.3
     /// A sideways movement smaller than this does not turn her round: straight up and straight down keep the way she
     /// was already facing, rather than flipping her on a pixel of sideways noise.
     public static let sidewaysThreshold: CGFloat = 2
+
+    public static func duration(from: CGPoint, to: CGPoint) -> TimeInterval {
+        let dx = to.x - from.x, dy = to.y - from.y
+        let distance = (dx * dx + dy * dy).squareRoot()
+        return min(max(TimeInterval(distance / speed), shortest), longest)
+    }
 
     public static func facing(from: CGPoint, to: CGPoint, keeping last: RunDirection) -> RunDirection {
         let dx = to.x - from.x
@@ -41,17 +57,22 @@ public enum PointerDodge {
     /// How far the pointer has to get before she comes back. It is wider than `margin` on purpose: with one
     /// threshold she would leave and return over and over.
     public static let awayMargin: CGFloat = 96
-    /// How long the pointer has to stay near before she goes. A click that lands sooner still reaches her.
-    public static let linger: TimeInterval = 0.4
+    /// How long the pointer has to stay near before she goes. A click that lands sooner still reaches her, so this
+    /// is long enough to go to her and press deliberately.
+    public static let linger: TimeInterval = 1
     /// How long the pointer has to stay clear before she comes back.
     public static let settle: TimeInterval = 0.7
     /// The pointer is looked at no more often than this. Mouse moves arrive far faster than anything here needs.
     public static let sampleInterval: TimeInterval = 0.04
-    /// How far the place she goes to has to be from the pointer. Anywhere closer is not worth the run, and running
-    /// to a place the pointer is already at is how a to-and-fro starts.
-    public static let clearance: CGFloat = 96
-    /// How close to the side of the screen counts as being against it.
-    public static let edgeTolerance: CGFloat = 2
+    /// How far the place she goes to has to end up from the pointer. She only has to be out of its way, not far
+    /// off; running to a place the pointer is already at is how a to-and-fro starts.
+    public static let clearance: CGFloat = 60
+
+    /// How far she steps aside: her own size and the margin on either side of it, so she clears the pointer and no
+    /// more. Going to the edge of the screen puts her further away than anything asks for.
+    public static func hop(for size: CGSize) -> CGSize {
+        CGSize(width: size.width + margin * 2, height: size.height + margin * 2)
+    }
 
     public static func isNear(_ pointer: CGPoint, of rect: CGRect, textScale: Double) -> Bool {
         rect.insetBy(dx: -margin * textScale, dy: -margin * textScale).contains(pointer)
@@ -61,27 +82,25 @@ public enum PointerDodge {
         !rect.insetBy(dx: -awayMargin * textScale, dy: -awayMargin * textScale).contains(pointer)
     }
 
-    /// Where she goes to leave the pointer room: the side of the screen that is furthest from it, or, when she is
-    /// against a side already, along that side away from the pointer. nil when nowhere is far enough to be worth it.
+    /// Where she steps aside to: one hop away from the pointer, sideways first. When the screen runs out that way
+    /// she tries the other side, and then up or down. nil when nowhere gets her out of the pointer's way, which is
+    /// also what keeps her from a pointless run on a small screen.
     public static func target(character: CGRect, pointer: CGPoint, visible: CGRect) -> CGPoint? {
-        let againstASide = character.minX - visible.minX <= edgeTolerance
-            || visible.maxX - character.maxX <= edgeTolerance
-        let candidates: [CGPoint] = againstASide
-            ? [
-                CGPoint(x: character.minX, y: visible.minY),
-                CGPoint(x: character.minX, y: visible.maxY - character.height),
-            ]
-            : [
-                CGPoint(x: visible.minX, y: character.minY),
-                CGPoint(x: visible.maxX - character.width, y: character.minY),
-            ]
-        func room(_ origin: CGPoint) -> CGFloat {
-            distance(from: pointer, to: CGRect(origin: origin, size: character.size))
+        let hop = hop(for: character.size)
+        let sideways: CGFloat = pointer.x <= character.midX ? 1 : -1
+        let upwards: CGFloat = pointer.y <= character.midY ? 1 : -1
+        let candidates = [
+            CGPoint(x: character.minX + hop.width * sideways, y: character.minY),
+            CGPoint(x: character.minX - hop.width * sideways, y: character.minY),
+            CGPoint(x: character.minX, y: character.minY + hop.height * upwards),
+            CGPoint(x: character.minX, y: character.minY - hop.height * upwards),
+        ]
+        for origin in candidates {
+            let placed = OverlayLayout.clamp(CGRect(origin: origin, size: character.size), into: visible)
+            guard placed.origin != character.origin, distance(from: pointer, to: placed) >= clearance else { continue }
+            return placed.origin
         }
-        guard let best = candidates.max(by: { room($0) < room($1) }), room(best) >= clearance,
-              best != character.origin
-        else { return nil }
-        return best
+        return nil
     }
 
     /// How far a point is from a rectangle; 0 when it is inside it.
