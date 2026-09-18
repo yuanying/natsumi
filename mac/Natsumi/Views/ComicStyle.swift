@@ -32,6 +32,22 @@ enum Comic {
     }
 }
 
+/// Holds a panel's drawing against the side the character is on.
+///
+/// A panel's frame is animated when a card opens or folds, but what is drawn in it is swapped over in one go: laid
+/// out in the middle of a frame that is still the old size, the card would jump to somewhere it never belongs and
+/// the animation would not be seen. Held against the character's side, it stays where it will end up and the frame
+/// rolls away from it. The drawing itself is not resized while it moves, so the words are never re-set mid-flight.
+struct AnchoredToCharacter<Content: View>: View {
+    /// The character is below this panel, so the drawing sits at its bottom.
+    let below: Bool
+    let content: Content
+
+    var body: some View {
+        content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: below ? .bottom : .top)
+    }
+}
+
 /// Cards behind the front one, offset away from the character, each with the same outline.
 struct StackedEdges<S: Shape>: View {
     let count: Int

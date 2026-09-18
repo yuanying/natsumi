@@ -10,7 +10,7 @@ final class NoticeBundleComponent: Component {
     private let close = Component(name: "notices.close")
     private let historyLink = Component(name: "notices.historyLink")
     private var applied: NoticeBundleProps?
-    private var hosting: FirstMouseHostingView<NoticeBundleView>!
+    private var hosting: FirstMouseHostingView<AnchoredToCharacter<NoticeBundleView>>!
 
     init() {
         super.init(name: "notices")
@@ -21,8 +21,10 @@ final class NoticeBundleComponent: Component {
         panel.contentView = hosting
     }
 
-    func view(_ props: NoticeBundleProps?) -> NoticeBundleView {
-        NoticeBundleView(props: props, card: card.sink, close: close.sink, historyLink: historyLink.sink)
+    func view(_ props: NoticeBundleProps?) -> AnchoredToCharacter<NoticeBundleView> {
+        AnchoredToCharacter(
+            below: props?.edgesUpward != false,
+            content: NoticeBundleView(props: props, card: card.sink, close: close.sink, historyLink: historyLink.sink))
     }
 
     /// The same drawing, for measuring only.
