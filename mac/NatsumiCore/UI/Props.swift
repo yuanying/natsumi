@@ -341,8 +341,7 @@ public enum UIProps {
         var placement = placement
         placement.width = state.inputBoxSize.width
         // An opened card takes the room at the sides as well as the room above or below (ADR 0016).
-        placement.expandedWidth = OverlayLayout.expandedWidth(
-            placement.width, character: state.characterFrame, visible: state.visibleFrame)
+        placement.expandedWidth = OverlayLayout.expandedWidth(placement.width, visible: state.visibleFrame)
         let conversation = state.conversation
         return RootProps(
             character: character(state, stack: noticeStack(conversation)),

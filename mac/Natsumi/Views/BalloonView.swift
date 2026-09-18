@@ -114,12 +114,18 @@ private struct Dots: View {
     }
 }
 
-/// A rounded box with a tail pointing at the character.
+/// A rounded box with a tail pointing at the character. The tail's position animates with the box, so that a
+/// card pushed sideways while it opens keeps pointing at her all the way.
 struct BalloonShape: Shape {
     var tail: BalloonTail
     var tailX: CGFloat
     var tailHeight: CGFloat
     var radius: CGFloat
+
+    var animatableData: CGFloat {
+        get { tailX }
+        set { tailX = newValue }
+    }
 
     func path(in rect: CGRect) -> Path {
         // SwiftUI's y grows downward: a balloon above the character has its tail at the bottom.

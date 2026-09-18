@@ -103,16 +103,19 @@ struct PropsTests {
     func expandedIsWider() {
         let screen = CGRect(x: 0, y: 0, width: 1710, height: 950)
         let column = CGFloat(InputBoxSize.default.width)
-        let middle = CGRect(x: 800, y: 90, width: 192, height: 208)
-        let wide = OverlayLayout.expandedWidth(column, character: middle, visible: screen)
+        let wide = OverlayLayout.expandedWidth(column, visible: screen)
         #expect(wide == column * OverlayLayout.expandedWidthFactor)
         // 画面が狭ければ、そこで止まる。
         let narrow = CGRect(x: 0, y: 0, width: 400, height: 900)
-        #expect(OverlayLayout.expandedWidth(column, character: CGRect(x: 104, y: 0, width: 192, height: 208), visible: narrow)
-            == 400 - OverlayLayout.expandedSideMargin * 2)
-        // 画面の端にいるときは、列の位置が動かない分までしか広がらない。
+        #expect(OverlayLayout.expandedWidth(column, visible: narrow) == 400 - OverlayLayout.expandedSideMargin * 2)
+        // 画面の端にいても同じだけ広がる。はみ出す分は配置が内側にずらし、しっぽはキャラクターの中心を指したままになる。
         let atEdge = CGRect(x: 1493, y: 90, width: 192, height: 208)
-        #expect(OverlayLayout.expandedWidth(column, character: atEdge, visible: screen) == column)
+        #expect(OverlayLayout.expandedWidth(column, visible: screen) == wide)
+        let layout = OverlayLayout.make(
+            visible: screen, character: atEdge, spacing: 8, notices: nil, balloon: CGSize(width: wide, height: 120),
+            input: nil, history: nil)
+        #expect(layout.balloon?.maxX == screen.maxX)
+        #expect(layout.balloon.map { $0.minX + layout.tailX } == atEdge.midX)
 
         var placement = ColumnPlacement()
         placement.budget = StackBudget.expandedSteps[0]
