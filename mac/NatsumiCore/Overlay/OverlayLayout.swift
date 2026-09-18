@@ -65,6 +65,18 @@ public struct OverlayLayout: Equatable, Sendable {
     public var overflow: CGFloat = 0
     public var budget = StackBudget.full
 
+    /// How much wider an opened card may be than the rest of the column. Beyond this a line of text is too long to
+    /// read comfortably, whatever room the screen has.
+    public static let expandedWidthFactor: CGFloat = 2
+    /// What an opened card leaves at the sides of the screen.
+    public static let expandedSideMargin: CGFloat = 24
+
+    /// How wide an opened card may be: as wide as there is room for, up to the factor, and never narrower than the
+    /// rest of the column.
+    public static func expandedWidth(_ width: CGFloat, visible: CGRect) -> CGFloat {
+        min(width * expandedWidthFactor, max(width, visible.width - expandedSideMargin * 2))
+    }
+
     /// The gap between the character and the panels and between the panels, growing with the character.
     public static func spacing(for scale: CharacterScale) -> CGFloat {
         8 * scale.textScale

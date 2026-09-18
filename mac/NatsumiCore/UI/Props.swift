@@ -8,17 +8,20 @@ public struct ColumnPlacement: Equatable, Sendable {
     /// The tail's position from the balloon's left side.
     public var tailX: CGFloat
     public var budget: StackBudget
-    /// The input field's width, which every panel in the column keeps to.
+    /// The input field's width, which the column keeps to.
     public var width: CGFloat
+    /// What an opened card may widen to. Cards that are not open, and the input field, keep to `width`.
+    public var expandedWidth: CGFloat
 
     public init(
         tail: BalloonTail = .down, tailX: CGFloat = 40, budget: StackBudget = .full,
-        width: CGFloat = InputBoxSize.default.width
+        width: CGFloat = InputBoxSize.default.width, expandedWidth: CGFloat = InputBoxSize.default.width
     ) {
         self.tail = tail
         self.tailX = tailX
         self.budget = budget
         self.width = width
+        self.expandedWidth = expandedWidth
     }
 }
 
@@ -325,6 +328,8 @@ public enum UIProps {
     public static func root(_ state: UIState, placement: ColumnPlacement) -> RootProps {
         var placement = placement
         placement.width = state.inputBoxSize.width
+        // An opened card takes the room at the sides as well as the room above or below (ADR 0016).
+        placement.expandedWidth = OverlayLayout.expandedWidth(placement.width, visible: state.visibleFrame)
         let conversation = state.conversation
         return RootProps(
             character: character(state, stack: noticeStack(conversation)),
@@ -395,10 +400,10 @@ public enum UIProps {
         placement: ColumnPlacement, scale: CharacterScale
     ) -> BalloonProps? {
         let indicator = indicator(conversation)
-        func props(body: BalloonProps.Body, isBusy: Bool, edges: Int, closeHelp: String) -> BalloonProps {
+        func props(body: BalloonProps.Body, isBusy: Bool, edges: Int, width: CGFloat, closeHelp: String) -> BalloonProps {
             BalloonProps(
                 body: body, isBusy: isBusy, edges: edges, tail: placement.tail, tailX: placement.tailX,
-                width: placement.width, textScale: scale.textScale, closeHelp: closeHelp)
+                width: width, textScale: scale.textScale, closeHelp: closeHelp)
         }
         if let stack = replyStack(conversation) {
             let isExpanded = expanded == .reply(stack.front.messageId)
@@ -409,11 +414,13 @@ public enum UIProps {
                 help: isExpanded ? "クリックで畳む" : "クリックで全文を出す")
             return props(
                 body: .reply(reply), isBusy: indicator != nil, edges: min(stack.behind, placement.budget.behind),
+                width: isExpanded ? placement.expandedWidth : placement.width,
                 closeHelp: stack.more > 0 ? "この返事を既読にして次へ" : "この返事を既読にして閉じる")
         }
         guard let indicator, indicator != dismissed else { return nil }
         return props(
-            body: indicator == .receiving ? .receiving : .thinking, isBusy: false, edges: 0, closeHelp: "閉じる")
+            body: indicator == .receiving ? .receiving : .thinking, isBusy: false, edges: 0,
+            width: placement.width, closeHelp: "閉じる")
     }
 
     /// What a card puts on the screen: the preview, or the whole text when the owner opened it, and whether the
@@ -467,7 +474,7 @@ public enum UIProps {
             text: text, lineLimit: lineLimit, isExpanded: isExpanded, showsHistoryLink: showsHistoryLink,
             more: stack.more, help: help, closeHelp: closeHelp,
             edges: min(stack.behind, placement.budget.behind), edgesUpward: placement.tail == .down,
-            width: placement.width, textScale: scale.textScale)
+            width: isExpanded ? placement.expandedWidth : placement.width, textScale: scale.textScale)
     }
 
     /// The ladder the column is laid out with. An opened card asks for many more lines than a closed one.

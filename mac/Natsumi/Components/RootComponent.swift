@@ -145,7 +145,7 @@ final class RootComponent: Component {
         fitCharacter(state)
         placement.width = state.inputBoxSize.width
         var props = UIProps.root(state, placement: placement)
-        let inputSize = props.input.map { fittingSize(of: input.probe($0), width: placement.width) }
+        let inputSize = props.input.map { fittingSize(of: input.probe($0), width: $0.boxSize.width) }
         let historyOpening = props.history != nil && !wasHistoryOpen
 
         let layout = OverlayLayout.fit(
@@ -156,9 +156,10 @@ final class RootComponent: Component {
         ) { budget in
             placement.budget = budget
             let stacked = UIProps.root(state, placement: placement)
+            // Each panel is measured at its own width: an opened card is wider than the rest of the column.
             return (
-                notices: stacked.notices.map { fittingSize(of: notices.probe($0), width: placement.width) },
-                balloon: stacked.balloon.map { fittingSize(of: balloon.probe($0), width: placement.width) })
+                notices: stacked.notices.map { fittingSize(of: notices.probe($0), width: $0.width) },
+                balloon: stacked.balloon.map { fittingSize(of: balloon.probe($0), width: $0.width) })
         }
         placement.budget = layout.budget
         placement.tail = layout.tail

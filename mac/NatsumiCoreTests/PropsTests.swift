@@ -99,6 +99,33 @@ struct PropsTests {
             showsHistoryLink: true, more: 0, help: "クリックで全文を出す")))
     }
 
+    @Test("開いたカードは横にも広がり、閉じているカードと入力欄は今までの幅のまま")
+    func expandedIsWider() {
+        let screen = CGRect(x: 0, y: 0, width: 1710, height: 950)
+        let column = CGFloat(InputBoxSize.default.width)
+        let wide = OverlayLayout.expandedWidth(column, visible: screen)
+        #expect(wide == column * OverlayLayout.expandedWidthFactor)
+        // 画面が狭ければ、そこで止まる。
+        #expect(OverlayLayout.expandedWidth(column, visible: CGRect(x: 0, y: 0, width: 400, height: 900))
+            == 400 - OverlayLayout.expandedSideMargin * 2)
+        // 画面が列より狭くても、列の幅は下回らない。
+        #expect(OverlayLayout.expandedWidth(column, visible: CGRect(x: 0, y: 0, width: 100, height: 900)) == column)
+
+        var placement = ColumnPlacement()
+        placement.budget = StackBudget.expandedSteps[0]
+        placement.width = column
+        placement.expandedWidth = wide
+        let state = conversation([reply("r1"), notice("n1")], readThrough: nil, unread: 1, notices: ["n1"])
+        #expect(UIProps.balloon(state, dismissed: nil, expanded: .reply("r1"), placement: placement, scale: .default)?
+            .width == wide)
+        #expect(UIProps.balloon(state, dismissed: nil, expanded: nil, placement: placement, scale: .default)?
+            .width == column)
+        #expect(UIProps.notices(state, hidden: false, expanded: .notice("n1"), placement: placement, scale: .default)?
+            .width == wide)
+        #expect(UIProps.notices(state, hidden: false, expanded: nil, placement: placement, scale: .default)?
+            .width == column)
+    }
+
     @Test("拡大した返事は全文を出し、切られていなければ履歴へは誘導しない")
     func expandedReply() {
         let long = String(repeating: "あ", count: BalloonText.maxCharacters + 10)
