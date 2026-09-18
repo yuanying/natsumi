@@ -192,12 +192,13 @@ public struct UIMediator {
             return []
 
         case .balloonCloseClicked:
-            // The × reads the reply at the front and brings the next one forward; on "受付中" and "考え中" there is
-            // nothing to read, so it only hides them.
-            guard UIProps.replyStack(state.conversation) != nil else {
-                state.dismissedIndicator = UIProps.indicator(state.conversation)
+            // On the thought bubble there is nothing to read, so the × only hides it, for the whole of the handling
+            // it belongs to (ADR 0017). On a reply it reads the one at the front and brings the next one forward.
+            guard UIProps.indicator(state.conversation) == nil else {
+                state.isIndicatorDismissed = true
                 return []
             }
+            guard UIProps.replyStack(state.conversation) != nil else { return [] }
             return apply(state.session.confirmFrontReply())
 
         case .readAllRepliesRequested:
@@ -375,10 +376,10 @@ public struct UIMediator {
         return out
     }
 
-    /// What the conversation now says about the indicator the owner closed and the bundle the badge hid.
+    /// What the conversation now says about the bubble the owner closed and the bundle the badge hid.
     private mutating func settle() {
-        let candidate = UIProps.replyStack(state.conversation) == nil ? UIProps.indicator(state.conversation) : nil
-        if candidate != state.dismissedIndicator { state.dismissedIndicator = nil }
+        // One handling is one thing she is saying: the bubble stays closed until she has nothing left to handle.
+        if UIProps.indicator(state.conversation) == nil { state.isIndicatorDismissed = false }
 
         // A card that is no longer at the front folds by itself; what is open is always what is shown.
         switch state.expanded {

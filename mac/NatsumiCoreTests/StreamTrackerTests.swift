@@ -80,6 +80,27 @@ struct StreamTrackerTests {
         #expect(tracker.accept(expression(seq: 2)) == .apply)
     }
 
+    @Test("思考の行は、stream の今の番号のまま届き、位置を動かさずに適用する")
+    func thinkingDoesNotTakeANumber() {
+        var tracker = StreamTracker(position: StreamPosition(epoch: Fixture.epoch, streamId: Fixture.stream, seq: 3))
+        #expect(tracker.accept(Fixture.decoded(Fixture.thinking("考えている", seq: 3))) == .apply)
+        #expect(tracker.position?.seq == 3)
+        // The next numbered event is still the one after 3: the line left no gap behind it.
+        #expect(tracker.accept(expression(seq: 4)) == .apply)
+        #expect(tracker.position?.seq == 4)
+    }
+
+    @Test("同期の前や別の stream の思考の行は、再同期を求めずに捨てる")
+    func thinkingBeforeSync() {
+        var tracker = StreamTracker()
+        #expect(tracker.accept(Fixture.decoded(Fixture.thinking("考えている", seq: 1))) == .ignore)
+        #expect(tracker.position == nil)
+
+        var synced = StreamTracker(position: StreamPosition(epoch: Fixture.epoch, streamId: Fixture.stream, seq: 3))
+        #expect(synced.accept(Fixture.decoded(Fixture.thinking("考えている", seq: 3, stream: "stream-other"))) == .ignore)
+        #expect(synced.position?.seq == 3)
+    }
+
     @Test("位置を忘れると、次は snapshot を待つ")
     func reset() {
         var tracker = StreamTracker(position: StreamPosition(epoch: Fixture.epoch, streamId: Fixture.stream, seq: 3))

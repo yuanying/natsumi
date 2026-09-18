@@ -99,6 +99,43 @@ struct ConversationStateTests {
         #expect(state.isThinking)
     }
 
+    @Test("思考の行は 1 行だけ持ち、次の行で入れ替わる")
+    func thinkingLineIsOneLine() {
+        var state = ConversationState()
+        #expect(state.thinkingLine == nil)
+        state.apply(.message(owner("m1", event: "e1")))
+        state.apply(.thinking(line: "まず要点を整理する"))
+        #expect(state.thinkingLine == "まず要点を整理する")
+        // The next line takes the place of the one before it; nothing is piled up.
+        state.apply(.thinking(line: "次に返事の形を決める"))
+        #expect(state.thinkingLine == "次に返事の形を決める")
+        // The empty line is the server saying the thinking is over.
+        state.apply(.thinking(line: ""))
+        #expect(state.thinkingLine == nil)
+    }
+
+    @Test("思考の行は、処理が終わったときと snapshot で消える")
+    func thinkingLineIsCleared() {
+        var state = ConversationState()
+        state.apply(.message(owner("m1", event: "e1")))
+        state.apply(.message(owner("m2", event: "e2")))
+        state.apply(.thinking(line: "二つまとめて考える"))
+        // One of the two is done, but she is still on the other: the line stays.
+        state.apply(.eventCompleted(EventCompletion(eventId: "e1", messageId: "m1", status: .replied, reason: nil)))
+        #expect(state.thinkingLine == "二つまとめて考える")
+        state.apply(.eventCompleted(EventCompletion(eventId: "e2", messageId: "m2", status: .replied, reason: nil)))
+        #expect(state.thinkingLine == nil)
+
+        // A snapshot does not carry the line, so it starts again from nothing.
+        state.apply(.message(owner("m3", event: "e3")))
+        state.apply(.thinking(line: "また考える"))
+        state.apply(.snapshot(Snapshot(
+            deviceId: "device-1", messages: [owner("m3", event: "e3")],
+            pendingEvents: [PendingEvent(eventId: "e3", messageId: "m3", state: .processing)], expression: .thinking)))
+        #expect(state.isThinking)
+        #expect(state.thinkingLine == nil)
+    }
+
     @Test("返事と知らせを区別できる")
     func replyOrNotice() {
         let notice = ShownMessage(messageId: "n1", role: .natsumi, kind: .notice, text: "お知らせ", createdAt: "2026-01-01T00:00:00.000Z")

@@ -87,8 +87,10 @@ public struct UIState {
 
     /// The card the owner opened to read in full. It folds by itself when that card is no longer at the front.
     public internal(set) var expanded: ExpandedCard?
-    /// The indicator the owner closed. It stays closed until the balloon would say something else.
-    var dismissedIndicator: BalloonIndicator?
+    /// The owner closed the thought bubble. One handling is one thing she is saying, so it stays closed for the
+    /// whole of it — through every line and through the reply — and opens again once she has nothing to handle
+    /// (ADR 0017).
+    var isIndicatorDismissed = false
     /// The badge hid the bundle. Hiding checks nothing, and a notice not seen before brings it back.
     var noticesHidden = false
     var seenNoticeIds: Set<String> = []

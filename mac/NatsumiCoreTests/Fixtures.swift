@@ -43,6 +43,11 @@ enum Fixture {
         ])
     }
 
+    /// The line of thinking: an event of the moment, which carries the number the stream is already at (ADR 0017).
+    static func thinking(_ line: String, seq: Int, stream: String = stream, epoch: String = epoch) -> Data {
+        envelope("conversation.thinking", seq: seq, epoch: epoch, stream: stream, payload: ["line": line])
+    }
+
     static func decoded(_ data: Data) -> ServerEnvelope {
         try! ServerEnvelope.decode(data)
     }

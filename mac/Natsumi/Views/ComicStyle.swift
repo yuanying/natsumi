@@ -31,6 +31,13 @@ enum Comic {
     static func font(_ size: CGFloat, bold: Bool = false) -> Font {
         Font(nsFont(size, bold: bold))
     }
+
+    /// One line of the lettering at this size. A bubble holding a single line is this tall whatever the line says,
+    /// so the line can change without the bubble changing with it (ADR 0017).
+    static func lineHeight(_ size: CGFloat) -> CGFloat {
+        let font = nsFont(size)
+        return ceil(font.ascender - font.descender + font.leading)
+    }
 }
 
 /// Cards behind the front one, offset away from the character, each with the same outline.

@@ -112,7 +112,8 @@ struct UIMediatorTests {
 
         let effects = mediator.handle(.inputSubmitted("架空のメッセージ"))
         #expect(sent(effects).count == 1)
-        #expect(props(mediator).balloon?.body == .receiving)
+        #expect(props(mediator).balloon?.body == .thinking(ThinkingProps(label: "受付中", line: nil)))
+        #expect(props(mediator).balloon?.outline == .thought)
     }
 
     @Test("本文のクリックは全文を出すだけで、× が 1 件ずつ既読にして次を前に出す")
@@ -171,7 +172,7 @@ struct UIMediatorTests {
         #expect(props(mediator).notices?.isExpanded == false)
     }
 
-    @Test("閉じた「考え中」は、吹き出しの中身が変わるまで出さない")
+    @Test("閉じた「考え中」は、その 1 回の処理が終わるまで出さない")
     func dismissThinking() {
         var mediator = synced(
             messages: [Fixture.message("m1", role: "owner", kind: "message", eventId: "e1")],
@@ -179,15 +180,42 @@ struct UIMediatorTests {
         _ = mediator.handle(.socketReceived(Fixture.envelope(
             "conversation.message", seq: 2,
             payload: Fixture.message("m2", role: "owner", kind: "message", eventId: "e2"))))
-        #expect(props(mediator).balloon?.body == .thinking)
+        #expect(props(mediator).balloon?.body == .thinking(ThinkingProps(label: "考え中", line: nil)))
 
         _ = mediator.handle(.balloonCloseClicked)
         #expect(props(mediator).balloon == nil)
 
+        // One handling is one thing she is saying: the lines that follow, and the reply she sends, stay hidden.
+        _ = mediator.handle(.socketReceived(Fixture.thinking("考えている", seq: 2)))
+        #expect(props(mediator).balloon == nil)
         _ = mediator.handle(.socketReceived(Fixture.envelope(
             "conversation.message", seq: 3, payload: Fixture.message("r3", text: "架空の返事", replyTo: "e2"))))
-        #expect(props(mediator).balloon?.body != nil)
+        #expect(props(mediator).balloon == nil)
+
+        // It is over when she has nothing left to handle, and the unread reply comes forward.
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.event.completed", seq: 4, payload: ["eventId": "e2", "messageId": "m2", "status": "replied"])))
         if case .reply = props(mediator).balloon?.body {} else { Issue.record("返事が出ていない") }
+    }
+
+    @Test("閉じた「受付中」は、続けて始まった「考え中」でも出し直さない")
+    func dismissCarriesFromReceivingToThinking() {
+        var mediator = synced(messages: [], readThrough: nil)
+        _ = mediator.handle(.inputSubmitted("架空のメッセージ"))
+        #expect(props(mediator).balloon?.body == .thinking(ThinkingProps(label: "受付中", line: nil)))
+        _ = mediator.handle(.balloonCloseClicked)
+        #expect(props(mediator).balloon == nil)
+
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "command.accepted", seq: 2, requestId: "r2",
+            payload: ["messageId": "m1", "eventId": "e1", "state": "processing"])))
+        #expect(props(mediator).balloon == nil)
+
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.event.completed", seq: 3, payload: ["eventId": "e1", "messageId": "m1", "status": "no-reply"])))
+        // Nothing is left to handle, so the next message opens the bubble again.
+        _ = mediator.handle(.inputSubmitted("もう一度"))
+        #expect(props(mediator).balloon?.body == .thinking(ThinkingProps(label: "受付中", line: nil)))
     }
 
     @Test("印のクリックで知らせの束を隠し、新しい知らせが来るとまた出す")
