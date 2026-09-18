@@ -198,23 +198,6 @@ struct OverlayLayoutTests {
         #expect(short.contains(layout.notices!))
     }
 
-    @Test("一列が入らないときは、束や行数を削る前に、キャラクターが縦に動いて場所を空ける")
-    func characterMakesRoom() {
-        let short = CGRect(x: 0, y: 0, width: 1000, height: 300)
-        let character = CGRect(x: 400, y: 100, width: 100, height: 100)
-        func offset(balloon height: CGFloat, input: CGSize? = nil) -> CGFloat {
-            OverlayLayout.fit(
-                visible: short, character: character, spacing: spacing, input: input, history: nil
-            ) { _ in (notices: nil, balloon: CGSize(width: 240, height: height)) }.characterOffset
-        }
-        // 上に 100 ポイントある。92+8 は入るので動かない。
-        #expect(offset(balloon: 92) == 0)
-        // 120+8 は 28 足りない。下へ 28 動けば入る。
-        #expect(offset(balloon: 120) == -28)
-        // 入力欄が下にあるときは、その分（40+8）を空けたままにしか動けない。
-        #expect(offset(balloon: 300, input: input) == -52)
-    }
-
     @Test("大きくなる吹き出しは、余裕のある向きへ伸びる")
     func growsTowardsTheRoom() {
         let tall = CGSize(width: 240, height: 600)
@@ -226,6 +209,19 @@ struct OverlayLayoutTests {
         let high = make(CGRect(x: 450, y: 700, width: 100, height: 100), balloon: tall, input: input)
         #expect(high.isFlipped)
         #expect(high.balloon!.maxY <= 700)
+    }
+
+    @Test("開いた吹き出しは、余裕のある側に入るだけの行数を取る")
+    func usesTheRoomThatIsThere() {
+        // 上に 800 ポイント空いている。20 ポイント 1 行なら 39 行ぶん入る。
+        let character = CGRect(x: 450, y: 100, width: 100, height: 100)
+        let layout = OverlayLayout.fit(
+            visible: CGRect(x: 0, y: 0, width: 1000, height: 1000), character: character, spacing: spacing,
+            input: nil, history: nil, steps: StackBudget.expandedSteps
+        ) { budget in (notices: nil, balloon: CGSize(width: 240, height: 20 * CGFloat(budget.lines))) }
+        #expect(layout.overflow == 0)
+        // 梯子の段は飛び飛びだが、入る行数から大きく取りこぼさない。
+        #expect(layout.budget.lines >= 32)
     }
 
     @Test("開いた吹き出しは、キャラがどこにいても一列に収まり、キャラも入力欄も覆わない")

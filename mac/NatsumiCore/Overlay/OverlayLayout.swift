@@ -24,13 +24,18 @@ public struct StackBudget: Equatable, Sendable {
         full, StackBudget(behind: 0, lines: BalloonText.maxLines), StackBudget(behind: 0, lines: 2), StackBudget(behind: 0, lines: 1),
     ]
     /// The ladder while a card is open: it starts at the whole text and comes down to the same last steps, so an
-    /// opened card that cannot fit ends up no worse than a closed one.
+    /// opened card that cannot fit ends up no worse than a closed one. The steps are close together near the top so
+    /// that a card takes as much of the room on its side as there is, rather than falling a long way past it.
     public static let expandedSteps: [StackBudget] = [
         StackBudget(behind: ReplyStack.maxBehind, lines: BalloonText.expandedMaxLines),
         StackBudget(behind: 0, lines: BalloonText.expandedMaxLines),
+        StackBudget(behind: 0, lines: 32),
         StackBudget(behind: 0, lines: 24),
+        StackBudget(behind: 0, lines: 18),
         StackBudget(behind: 0, lines: 12),
+        StackBudget(behind: 0, lines: 8),
         StackBudget(behind: 0, lines: BalloonText.maxLines),
+        StackBudget(behind: 0, lines: 3),
         StackBudget(behind: 0, lines: 2),
         StackBudget(behind: 0, lines: 1),
     ]
@@ -42,8 +47,8 @@ public struct StackBudget: Equatable, Sendable {
 /// the character and the input field. When there is not room above, the column flips (notices and balloon below,
 /// input field above); a panel that would leave the screen sideways moves inward on its own. The balloon and the
 /// notices always stay next to the character; when the input field has no room on its own side, it goes to the far
-/// end of the column, past the notices. The history is not in the column; it opens beside it. The character itself
-/// is never moved here.
+/// end of the column, past the notices. The history is not in the column; it opens beside it. The column grows
+/// towards whichever side of the character has the room for it; the character herself is never moved.
 public struct OverlayLayout: Equatable, Sendable {
     /// How far the tail stays from the balloon's sides.
     public static let tailInset: CGFloat = 18
@@ -58,9 +63,6 @@ public struct OverlayLayout: Equatable, Sendable {
     public var isFlipped = false
     /// How much height the column lacks on the screen; 0 when it fits.
     public var overflow: CGFloat = 0
-    /// How far the character would have to move for the column to keep its fullest form; 0 when she need not move.
-    /// Positive is up. The column does not move her itself: the mediator decides that (ADR 0016).
-    public var characterOffset: CGFloat = 0
     public var budget = StackBudget.full
 
     /// The gap between the character and the panels and between the panels, growing with the character.
@@ -77,20 +79,12 @@ public struct OverlayLayout: Equatable, Sendable {
     ) -> OverlayLayout {
         var layout = OverlayLayout()
         var last: (notices: CGSize?, balloon: CGSize?) = (nil, nil)
-        var offset: CGFloat = 0
-        for (step, budget) in steps.enumerated() {
+        for budget in steps {
             last = measure(budget)
             layout = make(
                 visible: visible, character: character, spacing: spacing,
                 notices: last.notices, balloon: last.balloon, input: input, history: history)
             layout.budget = budget
-            if step == 0, layout.overflow > 0 {
-                // The fullest column does not fit. Before anything is taken away from it, see how far the character
-                // could move to make room; the mediator decides whether she goes (ADR 0016).
-                offset = room(
-                    visible: visible, character: character, spacing: spacing, input: input, flipped: layout.isFlipped,
-                    overflow: layout.overflow)
-            }
             if layout.overflow == 0 { break }
         }
         if layout.overflow > 0, last.notices != nil {
@@ -102,25 +96,7 @@ public struct OverlayLayout: Equatable, Sendable {
                 notices: nil, balloon: last.balloon, input: input, history: history)
             layout.budget = budget
         }
-        layout.characterOffset = offset
         return layout
-    }
-
-    /// How far the character may move towards the other end of the screen, and needs to, for the column to fit.
-    /// She does not take the input field's room with her: it stays on her other side.
-    static func room(
-        visible: CGRect, character: CGRect, spacing: CGFloat, input: CGSize?, flipped: Bool, overflow: CGFloat
-    ) -> CGFloat {
-        let inputNeed = input.map { $0.height + spacing } ?? 0
-        let roomAbove = visible.maxY - character.maxY
-        let roomBelow = character.minY - visible.minY
-        // She moves away from the side the balloon is on; the input field is on the side she moves towards, unless
-        // it had no room there to begin with and went round to the far end.
-        let towards = flipped ? roomAbove : roomBelow
-        let inputBeyond = input != nil && inputNeed > towards
-        let limit = max(0, towards - (inputBeyond ? 0 : inputNeed))
-        let shift = min(overflow, limit)
-        return flipped ? shift : -shift
     }
 
     public static func make(
@@ -139,9 +115,11 @@ public struct OverlayLayout: Equatable, Sendable {
             let beyond = input != nil && inputNeed > otherRoom
             return (max(0, speech + (beyond ? inputNeed : 0) - speechRoom), beyond)
         }
+        // The column goes to whichever side of her has the room for it; upright is the default, and it gives way
+        // only when the other side can hold more of the column (ADR 0016).
         let normal = arrangement(flipped: false)
         let flip = arrangement(flipped: true)
-        let flipped = normal.overflow > 0 && flip.overflow < normal.overflow
+        let flipped = flip.overflow < normal.overflow
         let chosen = flipped ? flip : normal
 
         var layout = OverlayLayout()

@@ -77,9 +77,6 @@ public struct UIState {
     /// Where she stood before she stepped out of the pointer's way. nil while she is in her own place, and her own
     /// place is never overwritten while this is set.
     var dodgeHome: CGPoint?
-    /// How far she is standing from her own place to give the column room. It is measured from her place, not from
-    /// where she is, so the same room is never asked for twice and she comes back when it is no longer needed.
-    public internal(set) var columnOffset: CGFloat = 0
     /// The rectangle the root watches the pointer around, so that the same one is not asked for twice.
     var watchedPointerRect: CGRect?
 
@@ -99,9 +96,8 @@ public struct UIState {
 
     public var conversation: ConversationState { session.conversation }
 
-    /// She is standing somewhere other than her own place, for the pointer or for the column. Her own place must
-    /// not be overwritten while she is.
-    public var isSteppedAside: Bool { dodgeHome != nil || columnOffset != 0 }
+    /// She is standing out of the pointer's way. Her own place is elsewhere, and must not be overwritten.
+    public var isSteppedAside: Bool { dodgeHome != nil }
 
     init(session: SessionMachine) {
         self.session = session

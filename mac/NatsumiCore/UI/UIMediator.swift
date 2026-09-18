@@ -112,7 +112,6 @@ public struct UIMediator {
             // standing out of the pointer's way is over, because she is being put somewhere on purpose.
             state.isMoving = false
             state.dodgeHome = nil
-            state.columnOffset = 0
             state.motion = .running(state.facing)
             return [.stopCharacterMove] + watchPointer()
 
@@ -122,7 +121,6 @@ public struct UIMediator {
             state.motion = .still
             // Wherever the owner let go of her is her place now.
             state.dodgeHome = nil
-            state.columnOffset = 0
             return [.saveCharacterPlace] + watchPointer()
 
         case .characterMoveFinished:
@@ -130,28 +128,14 @@ public struct UIMediator {
             // A run the owner took over from ends without a word: she is in their hand now, still running.
             guard !state.isDragging else { return [] }
             state.motion = .still
-            // Standing aside, for the pointer or for the column, does not become her place.
+            // Stepping aside is only for as long as the pointer is there, so it does not become her place.
             return (state.isSteppedAside ? [] : [.saveCharacterPlace]) + watchPointer()
 
         case .screenConfigurationChanged(let visible):
             state.visibleFrame = visible
             state.dodgeHome = nil
-            state.columnOffset = 0
             let frame = OverlayLayout.clamp(state.characterFrame, into: visible)
             guard frame.origin != state.characterFrame.origin else { return watchPointer() }
-            return run(to: frame.origin)
-
-        case .columnNeedsRoom(let offset):
-            // The room is asked for from her own place, so asking again for the same room moves her nowhere, and
-            // asking for none at all brings her back. Anything else has her stepping further away with every reply.
-            guard !state.isDragging, !state.isMoving, state.dodgeHome == nil else { return [] }
-            guard offset != state.columnOffset else { return [] }
-            let home = CGPoint(x: state.characterFrame.minX, y: state.characterFrame.minY - state.columnOffset)
-            let frame = OverlayLayout.clamp(
-                CGRect(origin: CGPoint(x: home.x, y: home.y + offset), size: state.characterFrame.size),
-                into: state.visibleFrame)
-            state.columnOffset = frame.minY - home.y
-            guard frame.origin != state.characterFrame.origin else { return [] }
             return run(to: frame.origin)
 
         case .pointerCameNear(let pointer):
