@@ -85,6 +85,9 @@ final class ActionMenuItem: NSMenuItem {
     }
 }
 
+/// How far the mouse has to move before it counts as a drag rather than an unsteady click.
+private let dragThreshold: CGFloat = 3
+
 /// A click reports where it landed (origin at the top left); a drag moves the window; a right click or
 /// control-click shows the menu.
 final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
@@ -94,7 +97,10 @@ final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
     /// windows, so this tracking area covers what it cannot see.
     private var onPointer: @MainActor () -> Void = {}
     private var menuProvider: @MainActor () -> NSMenu? = { nil }
-    private var dragged = false
+    /// Where the window and the mouse were when the button went down, so a drag is measured from there.
+    private var anchor: (window: CGPoint, mouse: CGPoint)?
+    private var isDragging = false
+    private var swallowsClick = false
 
     init(
         rootView: Content, onClick: @escaping @MainActor (CGPoint) -> Void,
@@ -142,29 +148,41 @@ final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
-        dragged = false
+        isDragging = false
+        swallowsClick = false
+        anchor = window.map { (window: $0.frame.origin, mouse: NSEvent.mouseLocation) }
         if event.modifierFlags.contains(.control) {
-            // Handled as a right click; the mouse-up that follows must not also open the input field.
-            dragged = true
+            // Handled as a right click; the mouse-up that follows must not also open the input field, and this is
+            // not the start of a drag.
+            swallowsClick = true
+            anchor = nil
             showMenu(with: event)
         }
     }
 
+    /// The window is moved here rather than with `performDrag`, which runs a modal loop of its own: inside it the
+    /// run loop does not come round, so nothing is redrawn and the character stands still while she is carried.
     override func mouseDragged(with event: NSEvent) {
-        guard !dragged else { return }
-        dragged = true
-        onDrag(true)
-        // `performDrag` runs the drag to its end before it comes back; whether the mouse-up also reaches us after
-        // that depends on how it ended, so the end is reported here as well and taken only once.
-        window?.performDrag(with: event)
-        onDrag(false)
+        guard let window, let anchor else { return }
+        let mouse = NSEvent.mouseLocation
+        let dx = mouse.x - anchor.mouse.x, dy = mouse.y - anchor.mouse.y
+        if !isDragging {
+            guard (dx * dx + dy * dy).squareRoot() >= dragThreshold else { return }
+            isDragging = true
+            swallowsClick = true
+            onDrag(true)
+        }
+        window.setFrameOrigin(NSPoint(x: anchor.window.x + dx, y: anchor.window.y + dy))
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard !dragged else {
+        anchor = nil
+        if isDragging {
+            isDragging = false
             onDrag(false)
             return
         }
+        guard !swallowsClick else { return }
         let point = convert(event.locationInWindow, from: nil)
         onClick(CGPoint(x: point.x, y: isFlipped ? point.y : bounds.height - point.y))
     }
