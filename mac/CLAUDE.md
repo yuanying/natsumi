@@ -60,6 +60,12 @@
 - 接続と同期は `SessionMachine` の担当であり、これは別の関心事として残す。
   Mediator はソケットの出来事をそのまま渡し、返ってきた `SessionEffect` を自分の `UIEffect` として出す。
 - 乱数（requestId）は生成器を差し込む形にし、テストでは決まった値を返す。Mediator の中で `UUID()` を呼ばない。
+- **アニメーションは Root が持つ。** Mediator が決めるのは「どこへ動かすか」だけで、時間と曲線は Root が与える。
+  長さは `NatsumiCore` の `CharacterRun.duration` にそろえ、パネルの枠（`NSPanel` の frame）と中身を同じ時間・
+  同じ曲線で動かす。片方だけ動くと輪郭の中で文字が飛ぶ。
+- **画面の座標は Root が知らせる。** キャラクターの枠と表示できる範囲は `UIEvent` で Mediator に入れ、状態として持つ。
+  Mediator が `NSScreen` を見に行かない。生の座標の流れ（マウスの移動など）は Root で間引き、Mediator には
+  「近づいた」「離れた」のような意味のイベントだけを渡す。
 
 ## ファイルの置きどころ
 
@@ -72,7 +78,7 @@
 | `NatsumiCore/UI/UIMediator.swift` | 裁定そのもの |
 | `NatsumiCore/UI/Props.swift` | `RootProps` と各パネルの Props、`ColumnPlacement`、`UIProps` の導出 |
 | `NatsumiCore/UI/Stacks.swift` | 束の数え方（`ReplyStack`・`NoticeStack`・`BalloonText`・`CharacterBadge`） |
-| `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）と大きさ（`CharacterScale`・`InputBoxSize`・`OverlaySettings`） |
+| `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）、大きさ（`CharacterScale`・`InputBoxSize`・`OverlaySettings`）、走っての移動とポインタを避ける規則（`CharacterRun`・`PointerDodge`） |
 | `Natsumi/Components/` | Root と各パネルのコンポーネント、`OverlayPanel` と hosting view |
 | `Natsumi/Views/` | SwiftUI の Passive View と `Comic` の見た目 |
 | `Natsumi/Adapters/` | OS に触る部分（WebSocket・GitHub ログイン） |
