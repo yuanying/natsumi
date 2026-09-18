@@ -2,7 +2,8 @@
 
 - Date: 2026-09-15
 - Status: Accepted（「UI」の節の作り方は [ADR 0015](0015-mac-ui-passive-view-tree.md) で置き換え。
-  カードを確かめる操作・本文の拡大・キャラクターが走って動くことは [ADR 0016](0016-opening-a-card-and-moving-the-character.md) で改訂）
+  カードを確かめる操作・本文の拡大・カードのパネルの大きさの決め方・キャラクターが走って動くことは
+  [ADR 0016](0016-opening-a-card-and-moving-the-character.md) で改訂）
 
 ## Context
 
