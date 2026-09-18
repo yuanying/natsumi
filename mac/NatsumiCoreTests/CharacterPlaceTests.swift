@@ -62,6 +62,26 @@ struct CharacterPlaceTests {
         #expect(ended.contains(.saveCharacterPlace))
     }
 
+    @Test("走っている途中で掴まれたら、そこで走りをやめてドラッグに譲る")
+    func dragWinsOverARun() {
+        var mediator = self.mediator()
+        #expect(moves(mediator.handle(.pointerCameNear(at: CGPoint(x: 450, y: 350)))).isEmpty == false)
+
+        let grabbed = mediator.handle(.characterDragBegan)
+        #expect(grabbed.contains(.stopCharacterMove))
+        // 掴まれたら、どいている扱いは終わる。手を離したところが定位置になる。
+        #expect(mediator.state.isSteppedAside == false)
+
+        // 途中でやめた移動の完了が後から届いても、ドラッグの走りを止めないし、定位置も書き換えない。
+        let stale = mediator.handle(.characterMoveFinished)
+        #expect(stale.contains(.saveCharacterPlace) == false)
+        #expect(mediator.state.motion == .running(.right))
+
+        _ = mediator.handle(.characterFrameChanged(character.offsetBy(dx: -50, dy: 0), visible: screen))
+        #expect(mediator.state.motion == .running(.left))
+        #expect(mediator.handle(.characterDragEnded).contains(.saveCharacterPlace))
+    }
+
     @Test("ドラッグの間は、ポインタを見張らない")
     func noDodgeWhileDragging() {
         var mediator = self.mediator()

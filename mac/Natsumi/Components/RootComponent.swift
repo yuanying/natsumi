@@ -43,6 +43,8 @@ final class RootComponent: Component {
     private var wasHistoryOpen = false
     /// A run the mediator asked for is under way: the panels ride along with her, so nothing is laid out again.
     private var isRunningCharacter = false
+    /// Which run is the current one. A run that was stopped part way must not report itself finished.
+    private var runToken = 0
     /// The column is asking for room; the layout it asked from must not ask again.
     private var askingForRoom = false
     /// This pass changes the size of a card, so the panels grow into their new frames instead of jumping.
@@ -236,6 +238,8 @@ final class RootComponent: Component {
             return
         }
         isRunningCharacter = true
+        runToken += 1
+        let token = runToken
         NSAnimationContext.runAnimationGroup({ context in
             // The time comes from how far she has to go, so the running art plays at the same footfall either way.
             context.duration = CharacterRun.duration(from: panel.frame.origin, to: origin)
@@ -243,12 +247,25 @@ final class RootComponent: Component {
             panel.animator().setFrame(frame, display: true)
         }, completionHandler: { [weak self] in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, self.runToken == token else { return }
                 self.isRunningCharacter = false
                 self.deliver(.characterMoveFinished)
                 self.refresh(placeHistory: true)
             }
         })
+    }
+
+    /// Stops a run part way and leaves her exactly where it got to. Re-aiming the animator with no duration
+    /// replaces the animation in flight; without that, it would keep moving her under the owner's hand.
+    private func stopRunningCharacter() {
+        guard isRunningCharacter else { return }
+        isRunningCharacter = false
+        runToken += 1
+        let panel = character.panel
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            panel.animator().setFrame(panel.frame, display: true)
+        }
     }
 
     private func place(_ panel: NSPanel, at frame: CGRect?) {
@@ -363,6 +380,8 @@ final class RootComponent: Component {
             watchOutsideClicks(watching)
         case .moveCharacter(let origin):
             runCharacter(to: origin)
+        case .stopCharacterMove:
+            stopRunningCharacter()
         case .saveCharacterPlace:
             character.panel.saveFrame(usingName: Self.characterFrameName)
         case .watchPointer(let anchor):

@@ -108,8 +108,12 @@ public struct UIMediator {
         case .characterDragBegan:
             guard !state.isDragging else { return [] }
             state.isDragging = true
+            // The owner's hand wins over anything she was doing: wherever she was running to no longer matters, and
+            // standing out of the pointer's way is over, because she is being put somewhere on purpose.
+            state.isMoving = false
+            state.dodgeHome = nil
             state.motion = .running(state.facing)
-            return watchPointer()
+            return [.stopCharacterMove] + watchPointer()
 
         case .characterDragEnded:
             guard state.isDragging else { return [] }
@@ -121,6 +125,8 @@ public struct UIMediator {
 
         case .characterMoveFinished:
             state.isMoving = false
+            // A run the owner took over from ends without a word: she is in their hand now, still running.
+            guard !state.isDragging else { return [] }
             state.motion = .still
             // Stepping aside is only for as long as the pointer is there, so it does not become her place.
             return (state.dodgeHome == nil ? [.saveCharacterPlace] : []) + watchPointer()

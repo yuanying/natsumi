@@ -35,6 +35,9 @@ public enum UIEffect: Equatable, Sendable {
     case watchOutsideClicks(Bool)
     /// Run the character to this place, and answer with `.characterMoveFinished`.
     case moveCharacter(to: CGPoint)
+    /// Stop a run in flight and leave her where it got to. Nothing is answered: whoever stopped it decides what
+    /// happens next.
+    case stopCharacterMove
     /// Remember where she stands as the place she starts in next time.
     case saveCharacterPlace
     /// Watch the pointer around this rectangle and report when it settles by it or leaves it; nil stops watching.

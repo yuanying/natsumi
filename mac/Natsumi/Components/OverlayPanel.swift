@@ -163,16 +163,22 @@ final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
     /// The window is moved here rather than with `performDrag`, which runs a modal loop of its own: inside it the
     /// run loop does not come round, so nothing is redrawn and the character stands still while she is carried.
     override func mouseDragged(with event: NSEvent) {
-        guard let window, let anchor else { return }
+        guard let window, var anchor else { return }
         let mouse = NSEvent.mouseLocation
-        let dx = mouse.x - anchor.mouse.x, dy = mouse.y - anchor.mouse.y
         if !isDragging {
+            let dx = mouse.x - anchor.mouse.x, dy = mouse.y - anchor.mouse.y
             guard (dx * dx + dy * dy).squareRoot() >= dragThreshold else { return }
             isDragging = true
             swallowsClick = true
+            // Taking hold of her stops whatever run she was in the middle of, so the drag is measured from where
+            // she is now and not from where she was when the button went down.
             onDrag(true)
+            anchor = (window: window.frame.origin, mouse: mouse)
+            self.anchor = anchor
         }
-        window.setFrameOrigin(NSPoint(x: anchor.window.x + dx, y: anchor.window.y + dy))
+        window.setFrameOrigin(NSPoint(
+            x: anchor.window.x + (mouse.x - anchor.mouse.x),
+            y: anchor.window.y + (mouse.y - anchor.mouse.y)))
     }
 
     override func mouseUp(with event: NSEvent) {
