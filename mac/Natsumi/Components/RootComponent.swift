@@ -47,8 +47,9 @@ final class RootComponent: Component {
     private var runToken = 0
     /// This pass changes the size of a card, so the panels grow into their new frames instead of jumping.
     private var animatingLayout = false
-    /// Panels holding a larger frame until their drawing has finished animating into its new size.
-    private var settling: [ObjectIdentifier: Task<Void, Never>] = [:]
+    /// This pass folds a card: the frame is taken in first and the drawing is swapped after it (see `refresh`).
+    private var foldingCard = false
+    private var foldTask: Task<Void, Never>?
 
     private static let avatarDirectoryKey = "avatarDirectory"
     private static let characterFrameName = "natsumi.character"
@@ -128,8 +129,10 @@ final class RootComponent: Component {
         // Opening or folding a card changes how tall the column is: the panel frames and what is drawn in them move
         // over the same time and the same curve, so the outline never runs ahead of the words.
         animatingLayout = mediator.state.expanded != expandedBefore
+        foldingCard = animatingLayout && mediator.state.expanded == nil
         refresh()
         animatingLayout = false
+        foldingCard = false
         for effect in afterDrawing { perform(effect) }
     }
 
@@ -168,6 +171,27 @@ final class RootComponent: Component {
         placement.tailX = layout.tailX
         props = UIProps.root(state, placement: placement)
 
+        // A window clips what is drawn in it, and that clipping is the whole of what the owner sees move: the
+        // drawing itself is swapped over in one go and never animates. Opening works because the new, taller
+        // drawing is put in first and the frame uncovers it. Folding has to be the other way round — keep the open
+        // drawing and let the frame roll it up — or there is nothing left to uncover and it looks like nothing
+        // happened at all.
+        foldTask?.cancel()
+        foldTask = nil
+        if foldingCard {
+            animated {
+                place(balloon.panel, at: layout.balloon)
+                place(notices.panel, at: layout.notices)
+                place(input.panel, at: layout.input)
+            }
+            foldTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(CardAnimation.duration))
+                guard !Task.isCancelled, let self else { return }
+                self.refresh()
+            }
+            wasHistoryOpen = props.history != nil
+            return
+        }
         animated {
             render(props)
             place(balloon.panel, at: layout.balloon)
@@ -189,24 +213,6 @@ final class RootComponent: Component {
         history.render(props.history)
         settings.render(props.settings)
         menuBar.props = props.menu
-    }
-
-    /// Opens the panel wide enough for both the drawing it has and the drawing it is going to, and takes the exact
-    /// frame once the drawing has arrived.
-    ///
-    /// The window is what clips the drawing, and the drawing is what the owner sees move. Taking the new frame at
-    /// once would clip the old drawing away before it has moved anywhere, which is why folding a card looked like
-    /// nothing at all: the panel was already small, so there was nothing left to see shrink.
-    private func hold(_ panel: NSPanel, until frame: CGRect) {
-        let key = ObjectIdentifier(panel)
-        settling.removeValue(forKey: key)?.cancel()
-        panel.setFrame(panel.frame.union(frame), display: true)
-        settling[key] = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(CardAnimation.duration))
-            guard !Task.isCancelled, let self else { return }
-            self.settling.removeValue(forKey: key)
-            if panel.frame != frame { panel.setFrame(frame, display: true) }
-        }
     }
 
     /// Runs the drawing and the placing together over one time and one curve, when this pass is one the owner should
@@ -286,9 +292,14 @@ final class RootComponent: Component {
         }
         if panel.frame != frame {
             if animatingLayout, panel.isVisible {
-                hold(panel, until: frame)
+                // Folding takes the new height at once and keeps the old width: the drawing is still the open one,
+                // and the frame rolls it up from the far side. Changing the width as well would cut the words at
+                // the sides on the way; it is taken at the end, together with the drawing that fits it.
+                let rolling = foldingCard
+                    ? CGRect(x: panel.frame.minX, y: frame.minY, width: panel.frame.width, height: frame.height)
+                    : frame
+                panel.animator().setFrame(rolling, display: true)
             } else {
-                settling.removeValue(forKey: ObjectIdentifier(panel))?.cancel()
                 panel.setFrame(frame, display: true)
             }
         }
