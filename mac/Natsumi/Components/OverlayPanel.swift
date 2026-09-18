@@ -148,6 +148,9 @@ final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        // A drag whose mouse-up never arrived (the Space changed, the screen locked) would otherwise leave her held
+        // for good: nothing would move her again. The next press ends it.
+        if isDragging { onDrag(false) }
         isDragging = false
         swallowsClick = false
         anchor = window.map { (window: $0.frame.origin, mouse: NSEvent.mouseLocation) }
