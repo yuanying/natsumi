@@ -15,10 +15,6 @@ final class RootComponent: Component {
     private let overlaySettings = OverlaySettings(defaults: .standard)
     private let loginFlow = GitHubLoginFlow()
 
-    /// The two cards' panels, named so that a report can say which one it came from.
-    fileprivate var balloonPanel: NSPanel { balloon.panel }
-    fileprivate var noticesPanel: NSPanel { notices.panel }
-
     private var character: CharacterComponent!
     private let balloon = BalloonComponent()
     private let notices = NoticeBundleComponent()
@@ -49,12 +45,10 @@ final class RootComponent: Component {
     private var isRunningCharacter = false
     /// Which run is the current one. A run that was stopped part way must not report itself finished.
     private var runToken = 0
-    /// The width the layout last asked each card's panel for. Its height comes from the drawing; its width is at
-    /// least this, so that the drawing is never cut off at the sides while it is still re-setting itself.
-    private var cardWidths: [ObjectIdentifier: CGFloat] = [:]
-    /// Sizes the cards' drawings have reported, waiting for the next turn of the run loop.
-    private var reportedCardSizes: [KeyPath<RootComponent, NSPanel>: CGSize] = [:]
-    private var settlingCards = false
+    /// This pass opens or folds a card, so the card panels are held open while their drawings animate.
+    private var animatingCard = false
+    /// Panels held open, waiting to take their exact frame once the drawing has arrived at its new size.
+    private var holding: [ObjectIdentifier: Task<Void, Never>] = [:]
 
     private static let avatarDirectoryKey = "avatarDirectory"
     private static let characterFrameName = "natsumi.character"
@@ -67,8 +61,6 @@ final class RootComponent: Component {
             pointerMoved: { [weak self] in self?.pointerMoved() })
         for child in [character as Component, balloon, notices, input, history, settings] { adopt(child) }
 
-        balloon.onSize = { [weak self] size in self?.cardReported(size, for: \.balloonPanel) }
-        notices.onSize = { [weak self] size in self?.cardReported(size, for: \.noticesPanel) }
         menuBar.send = sink
         character.panel.delegate = windows
         history.panel.delegate = windows
@@ -122,6 +114,7 @@ final class RootComponent: Component {
         pending.append(event)
         guard !draining else { return }
         draining = true
+        let expandedBefore = mediator.state.expanded
         var afterDrawing: [UIEffect] = []
         while !pending.isEmpty {
             for effect in mediator.handle(pending.removeFirst()) {
@@ -132,7 +125,10 @@ final class RootComponent: Component {
             }
         }
         draining = false
+        // Opening or folding a card is the one change the owner should see happen.
+        animatingCard = mediator.state.expanded != expandedBefore
         refresh()
+        animatingCard = false
         for effect in afterDrawing { perform(effect) }
     }
 
@@ -172,64 +168,24 @@ final class RootComponent: Component {
         props = UIProps.root(state, placement: placement)
 
         render(props)
-        place(balloon.panel, at: layout.balloon, sizedByDrawing: true)
-        place(notices.panel, at: layout.notices, sizedByDrawing: true)
+        place(balloon.panel, at: layout.balloon, holdsOpen: true)
+        place(notices.panel, at: layout.notices, holdsOpen: true)
         place(input.panel, at: layout.input)
         placeHistoryWindow(props.history != nil, frame: layout.history)
         wasHistoryOpen = props.history != nil
     }
 
-    /// A card's drawing has reached a new size on its way to the one it is animating towards.
-    ///
-    /// The size is taken now and acted on in the next turn of the run loop. This report arrives from inside the
-    /// drawing's own layout, and moving a window from there raises an exception in AppKit part way through laying
-    /// the view tree out. Reports that arrive before that turn comes round are simply the later ones.
-    private func cardReported(_ size: CGSize, for card: KeyPath<RootComponent, NSPanel>) {
-        reportedCardSizes[card] = size
-        guard !settlingCards else { return }
-        settlingCards = true
-        Task { @MainActor [weak self] in
-            self?.settlingCards = false
-            self?.settleCards()
-        }
-    }
-
-    /// Gives each card's panel the size its drawing has reached and puts the column back together around them.
-    ///
-    /// A panel's width is the widest of what its drawing wants and what the layout asked for: while a card is
-    /// narrowing, the drawing is the wide one for a moment, and a panel narrower than its drawing would cut the
-    /// words off at the sides.
-    private func settleCards() {
-        guard !isRunningCharacter else { return }
-        let sizes = reportedCardSizes
-        reportedCardSizes.removeAll()
-        var moved = false
-        for (card, size) in sizes {
-            let panel = self[keyPath: card]
-            guard panel.isVisible, size != .zero else { continue }
-            let width = max(size.width, cardWidths[ObjectIdentifier(panel)] ?? size.width)
-            let wanted = CGSize(width: width, height: size.height)
-            guard panel.frame.size != wanted else { continue }
-            panel.setFrame(CGRect(origin: panel.frame.origin, size: wanted), display: true)
-            moved = true
-        }
-        if moved { placeColumn() }
-    }
-
-    /// Puts the column back together from the sizes the panels have right now, rather than the ones the layout
-    /// measured. A card part way through growing or shrinking has neither of those yet.
-    private func placeColumn() {
-        let state = mediator.state
-        func size(_ panel: NSPanel) -> CGSize? { panel.isVisible ? panel.frame.size : nil }
-        let layout = OverlayLayout.make(
-            visible: visibleFrame, character: character.panel.frame,
-            spacing: OverlayLayout.spacing(for: state.characterScale),
-            notices: size(notices.panel), balloon: size(balloon.panel), input: size(input.panel), history: nil)
-        for (panel, rect) in [
-            (balloon.panel, layout.balloon), (notices.panel, layout.notices), (input.panel, layout.input),
-        ] {
-            guard let rect, panel.isVisible, panel.frame.origin != rect.origin else { continue }
-            panel.setFrameOrigin(rect.origin)
+    /// Holds a panel at a size that fits both the drawing it has and the drawing it is going to, and gives it its
+    /// exact frame once the drawing has arrived. While it is held, nothing the drawing does is clipped away.
+    private func holdOpen(_ panel: NSPanel, until frame: CGRect) {
+        let key = ObjectIdentifier(panel)
+        holding.removeValue(forKey: key)?.cancel()
+        panel.setFrame(panel.frame.union(frame), display: true)
+        holding[key] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(CardAnimation.duration))
+            guard !Task.isCancelled, let self else { return }
+            self.holding.removeValue(forKey: key)
+            if panel.frame != frame { panel.setFrame(frame, display: true) }
         }
     }
 
@@ -305,24 +261,19 @@ final class RootComponent: Component {
         }
     }
 
-    /// `sizedByDrawing`: the panel's size is the drawing's own, so only where it stands is settled here. Its size
-    /// arrives from `cardResized` as the drawing animates.
-    private func place(_ panel: NSPanel, at frame: CGRect?, sizedByDrawing: Bool = false) {
+    /// `holdsOpen`: while a card is opening or folding, the panel is held wide enough for both sizes so that the
+    /// drawing can animate without being clipped, and takes its exact frame afterwards.
+    private func place(_ panel: NSPanel, at frame: CGRect?, holdsOpen: Bool = false) {
         guard let frame else {
             if panel.parent != nil { character.panel.removeChildWindow(panel) }
             panel.orderOut(nil)
-            cardWidths.removeValue(forKey: ObjectIdentifier(panel))
+            holding.removeValue(forKey: ObjectIdentifier(panel))?.cancel()
             return
         }
-        if sizedByDrawing {
-            cardWidths[ObjectIdentifier(panel)] = frame.width
-            // Showing it for the first time takes the measured frame whole, so it never appears at nothing.
-            if !panel.isVisible || panel.frame.size == .zero {
-                panel.setFrame(frame, display: true)
-            } else if panel.frame.origin != frame.origin {
-                panel.setFrameOrigin(frame.origin)
-            }
+        if holdsOpen, animatingCard, panel.isVisible {
+            holdOpen(panel, until: frame)
         } else if panel.frame != frame {
+            holding.removeValue(forKey: ObjectIdentifier(panel))?.cancel()
             panel.setFrame(frame, display: true)
         }
         if panel.parent == nil { character.panel.addChildWindow(panel, ordered: .above) }

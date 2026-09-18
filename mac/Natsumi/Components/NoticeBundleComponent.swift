@@ -21,13 +21,10 @@ final class NoticeBundleComponent: Component {
         panel.contentView = hosting
     }
 
-    /// The drawing animates itself and reports the size it has reached; the panel follows it (ADR 0016).
-    var onSize: @MainActor (CGSize) -> Void = { _ in }
-
     func view(_ props: NoticeBundleProps?) -> CardPanel<NoticeBundleProps?, NoticeBundleView> {
         CardPanel(
-            value: props, content: NoticeBundleView(props: props, card: card.sink, close: close.sink, historyLink: historyLink.sink),
-            onSize: { [weak self] size in self?.onSize(size) })
+            value: props, anchor: props?.edgesUpward == false ? .top : .bottom,
+            content: NoticeBundleView(props: props, card: card.sink, close: close.sink, historyLink: historyLink.sink))
     }
 
     /// The same drawing, for measuring only.

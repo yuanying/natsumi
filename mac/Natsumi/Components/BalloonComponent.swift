@@ -21,13 +21,10 @@ final class BalloonComponent: Component {
         panel.contentView = hosting
     }
 
-    /// The drawing animates itself and reports the size it has reached; the panel follows it (ADR 0016).
-    var onSize: @MainActor (CGSize) -> Void = { _ in }
-
     func view(_ props: BalloonProps?) -> CardPanel<BalloonProps?, BalloonView> {
         CardPanel(
-            value: props, content: BalloonView(props: props, text: text.sink, close: close.sink, historyLink: historyLink.sink),
-            onSize: { [weak self] size in self?.onSize(size) })
+            value: props, anchor: props?.tail == .up ? .top : .bottom,
+            content: BalloonView(props: props, text: text.sink, close: close.sink, historyLink: historyLink.sink))
     }
 
     /// The same drawing, for measuring only: nothing it shows is meant to be acted on.
