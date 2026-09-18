@@ -33,29 +33,6 @@ enum Comic {
     }
 }
 
-/// A card's drawing, inside a panel that is held open for it.
-///
-/// What animates on a Mac is a view inside a window, never the window itself: a window's frame is not interpolated
-/// on the render server, and — the part that cost the most here — a window clips whatever is drawn in it. With the
-/// panel sized to its drawing, every change became a window resize, and all that could be seen was the clipping.
-/// So the panel is held at a size that fits both the drawing it has and the drawing it is going to, and the
-/// drawing animates inside it, against the side the character is on, before the panel takes its exact size.
-///
-/// `.animation(_:value:)` and not `withAnimation`: the drawing is handed in by replacing a hosting view's root
-/// view, which happens outside any transaction, so `withAnimation` around it does nothing at all.
-struct CardPanel<Value: Equatable, Content: View>: View {
-    let value: Value
-    /// Where the character is, so the drawing keeps to that side of a panel that is larger than it.
-    let anchor: Alignment
-    let content: Content
-
-    var body: some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor)
-            .animation(.easeInOut(duration: CardAnimation.duration), value: value)
-    }
-}
-
 /// Cards behind the front one, offset away from the character, each with the same outline.
 struct StackedEdges<S: Shape>: View {
     let count: Int

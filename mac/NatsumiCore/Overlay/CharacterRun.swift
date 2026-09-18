@@ -45,6 +45,48 @@ public enum CharacterRun {
         if dx < -sidewaysThreshold { return .left }
         return last
     }
+
+    /// The curve a run follows: the ease-in-ease-out cubic Bézier, with its control points at (0.42, 0) and
+    /// (0.58, 1). The stage animates with the same one, so that where this says she is, she is.
+    public static let curve: (CGFloat, CGFloat, CGFloat, CGFloat) = (0.42, 0, 0.58, 1)
+
+    /// How far along the way she is at this share of the time, from 0 to 1.
+    public static func progress(at time: CGFloat) -> CGFloat {
+        guard time > 0 else { return 0 }
+        guard time < 1 else { return 1 }
+        let u = time
+        let (x1, y1, x2, y2) = curve
+        func bezier(_ t: CGFloat, _ p1: CGFloat, _ p2: CGFloat) -> CGFloat {
+            let s = 1 - t
+            return 3 * s * s * t * p1 + 3 * s * t * t * p2 + t * t * t
+        }
+        // The curve is given by its parameter, not by time; the parameter for this time is found by bisection.
+        var low: CGFloat = 0, high: CGFloat = 1
+        for _ in 0..<40 {
+            let mid = (low + high) / 2
+            if bezier(mid, x1, x2) < u { low = mid } else { high = mid }
+        }
+        return bezier((low + high) / 2, y1, y2)
+    }
+
+    /// Where she is this long into a run, so that a run stopped part way leaves her exactly where she was seen.
+    public static func place(from: CGPoint, to: CGPoint, duration: TimeInterval, elapsed: TimeInterval) -> CGPoint {
+        guard duration > 0, elapsed < duration else { return to }
+        guard elapsed > 0 else { return from }
+        let p = progress(at: CGFloat(elapsed / duration))
+        return CGPoint(x: from.x + (to.x - from.x) * p, y: from.y + (to.y - from.y) * p)
+    }
+}
+
+/// Where she stands between launches.
+public enum CharacterPlace {
+    /// The place an earlier version saved as her window's frame ("x y width height screenX screenY …", as AppKit
+    /// writes a window frame to the defaults), so that she does not move on the first launch of this one.
+    public static func legacyOrigin(_ frameString: String) -> CGPoint? {
+        let numbers = frameString.split(separator: " ").compactMap { Double($0) }
+        guard numbers.count >= 4 else { return nil }
+        return CGPoint(x: numbers[0], y: numbers[1])
+    }
 }
 
 /// Stepping out of the way of a pointer that is on its way to whatever is underneath her.

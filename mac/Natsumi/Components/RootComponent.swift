@@ -7,6 +7,11 @@ import SwiftUI
 /// It owns the mediator, runs the effects the mediator asks for, and lays the panels out. Events from the owner
 /// arrive from the components below; events from the world outside (the socket, the login, the Keychain, the
 /// avatar) are raised here. Both go into the same mediator, and what comes back is drawn and done.
+///
+/// The character and her two cards are drawn on the stage: one transparent panel the size of her screen, in which
+/// they are views placed at the frames the layout gives them (ADR 0016). The input field, the history and the
+/// settings are windows of their own. The root decides how each drawing pass is shown — at once, as a card opening,
+/// or as a run — and the stage's view animates it; nothing here animates a window's frame.
 @MainActor
 final class RootComponent: Component {
     private var mediator = UIMediator()
@@ -23,15 +28,42 @@ final class RootComponent: Component {
     private let settings = SettingsComponent()
     private let windows = PanelDelegate()
 
+    typealias Stage = StageView<CharacterStageView, BalloonView, NoticeBundleView>
+    /// The stage and its drawing. The stage covers the screen the character is on and never moves otherwise.
+    private let stage = OverlayPanel.make()
+    private var stageHosting: StageHostingView<Stage>!
+    private var stageScreen: NSScreen?
+
+    /// Where she stands, in screen coordinates. This is the one place it is kept: the mediator is told of every
+    /// change, and the stage draws her here.
+    private var characterFrame = CGRect.zero
+    /// A run the mediator asked for, while it is under way: the stage animates her from `from` to `to`, and this
+    /// is how far along she is when something interrupts it.
+    private var run: (from: CGPoint, to: CGPoint, start: Date, duration: TimeInterval)?
+    /// Which run is the current one. A run that was stopped part way must not report itself finished.
+    private var runToken = 0
+    /// Where she was taken hold of, while the owner is carrying her.
+    private var dragOrigin: CGPoint?
+    /// How the next drawing pass is shown, when something other than the usual rule has decided it.
+    private var forcedTransition: StageTransition?
+    private var placeHistoryNext = false
+
     private var socket: WebSocketClient?
     private var socketID: UUID?
     private var reconnectTask: Task<Void, Never>?
     private var outsideClickMonitor: Any?
 
-    /// The pointer: where it is watched around, the monitor that reports it moving, and the wait before she goes or
-    /// comes back. The mediator hears only "the pointer settled by her" and "it has gone".
-    private var pointerAnchor: CGRect?
+    /// The pointer. The stage covers the screen, so where it takes the mouse is decided here: only over the
+    /// character and her cards, and everywhere else the click goes through to whatever is underneath. The same
+    /// watching serves stepping out of the pointer's way; the mediator hears only "the pointer settled by her" and
+    /// "it has gone".
     private var pointerMonitor: Any?
+    /// Where the stage takes the mouse, in screen coordinates: what is drawn there now, and for the length of a
+    /// transition, where it was drawn before.
+    private var solidRects: [CGRect] = []
+    private var staleRects: [CGRect] = []
+    private var staleTask: Task<Void, Never>?
+    private var pointerAnchor: CGRect?
     private var pointerIsNear = false
     private var lastPointerSample = Date.distantPast
     private var pointerTask: Task<Void, Never>?
@@ -40,36 +72,39 @@ final class RootComponent: Component {
     private var draining = false
     private var placement = ColumnPlacement()
     private var appliedProps: RootProps?
+    private var appliedStage: StageProps?
+    /// The cards' frames on the screen, as last laid out, for telling a pointer on a card from one on its way past.
+    private var cardRects: [CGRect] = []
     private var wasHistoryOpen = false
-    /// A run the mediator asked for is under way: the panels ride along with her, so nothing is laid out again.
-    private var isRunningCharacter = false
-    /// Which run is the current one. A run that was stopped part way must not report itself finished.
-    private var runToken = 0
-    /// This pass opens or folds a card, so the card panels are held open while their drawings animate.
-    private var animatingCard = false
-    /// Panels held open, waiting to take their exact frame once the drawing has arrived at its new size.
-    private var holding: [ObjectIdentifier: Task<Void, Never>] = [:]
 
     private static let avatarDirectoryKey = "avatarDirectory"
-    private static let characterFrameName = "natsumi.character"
+    private static let characterOriginKey = "natsumi.characterOrigin"
+    /// Where an earlier version saved her window's frame.
+    private static let legacyCharacterFrameKey = "NSWindow Frame natsumi.character"
 
     init(menuBar: MenuBarModel) {
         self.menuBar = menuBar
         super.init(name: "root")
         character = CharacterComponent(
-            menu: { [weak self] in self?.contextMenu() },
-            pointerMoved: { [weak self] in self?.pointerMoved() })
+            carried: { [weak self] phase in self?.carried(phase) },
+            menu: { [weak self] in self?.contextMenu() })
         for child in [character as Component, balloon, notices, input, history, settings] { adopt(child) }
 
+        stageHosting = StageHostingView(rootView: Stage(
+            props: StageProps(
+                size: .zero, character: UIProps.root(mediator.state, placement: placement).character,
+                characterFrame: .zero, balloon: nil, balloonFrame: nil, notices: nil, noticesFrame: nil,
+                transition: .immediate),
+            character: character.view(UIProps.root(mediator.state, placement: placement).character),
+            balloon: nil, notices: nil))
+        stageHosting.onPointer = { [weak self] in self?.pointerMoved() }
+        stage.contentView = stageHosting
+        // Until the pointer is over something drawn on it, the stage is not there for the mouse.
+        stage.ignoresMouseEvents = true
+
         menuBar.send = sink
-        character.panel.delegate = windows
         history.panel.delegate = windows
         settings.panel.delegate = windows
-        windows.didMove = { [weak self] window in
-            guard let self, window === self.character.panel else { return }
-            self.deliver(.characterFrameChanged(self.character.panel.frame, visible: self.visibleFrame))
-            if !self.isRunningCharacter { self.refresh(placeHistory: true) }
-        }
         windows.willClose = { [weak self] window in
             guard let self else { return }
             if window === self.history.panel { self.history.dispatch(.historyCloseRequested) }
@@ -80,6 +115,7 @@ final class RootComponent: Component {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                self.placeStage()
                 self.character.dispatch(.screenConfigurationChanged(visible: self.visibleFrame))
             }
         }
@@ -92,58 +128,69 @@ final class RootComponent: Component {
     }
 
     func launch() {
-        if !character.panel.setFrameUsingName(Self.characterFrameName), let screen = NSScreen.main {
-            let visible = screen.visibleFrame
-            character.panel.setFrameOrigin(NSPoint(x: visible.maxX - 160, y: visible.minY + 40))
+        let size = overlaySettings.characterScale.artSize
+        if let origin = savedCharacterOrigin() {
+            characterFrame = CGRect(origin: origin, size: size)
+        } else {
+            let visible = NSScreen.main?.visibleFrame ?? .zero
+            characterFrame = CGRect(x: visible.maxX - 160, y: visible.minY + 40, width: size.width, height: size.height)
         }
-        // The frame is saved when she comes to rest in a place of her own, not on every move: standing out of the
-        // pointer's way would otherwise become the place she starts in next time.
-        character.panel.orderFrontRegardless()
+        placeStage()
+        stage.orderFrontRegardless()
+        watchPointer()
         deliver(.launched(LaunchInfo(
             characterScale: overlaySettings.characterScale, inputBoxSize: overlaySettings.inputBoxSize,
             serverOrigin: account.serverAddress?.origin.absoluteString, avatarDirectory: avatarDirectory,
             defaultAvatarDirectory: Self.defaultAvatarDirectory.path)))
-        deliver(.characterFrameChanged(character.panel.frame, visible: visibleFrame))
+        deliver(.characterFrameChanged(characterFrame, visible: visibleFrame))
+    }
+
+    /// The place she starts in: where she was last left, or where an earlier version left her.
+    private func savedCharacterOrigin() -> CGPoint? {
+        let defaults = UserDefaults.standard
+        if let saved = defaults.array(forKey: Self.characterOriginKey) as? [Double], saved.count == 2 {
+            return CGPoint(x: saved[0], y: saved[1])
+        }
+        return defaults.string(forKey: Self.legacyCharacterFrameKey).flatMap(CharacterPlace.legacyOrigin)
+    }
+
+    private func saveCharacterPlace() {
+        UserDefaults.standard.set([characterFrame.origin.x, characterFrame.origin.y], forKey: Self.characterOriginKey)
     }
 
     // MARK: - One event at a time
 
     /// Events are settled one by one. An effect may raise another event, so they queue up rather than nest; the
-    /// panels are drawn once at the end, and only then do the effects that need a panel on the screen run.
+    /// stage is drawn once at the end, and only then do the effects that need a panel on the screen run. Drawing
+    /// may itself have something to report (her frame changed with her scale), which goes round once more.
     private func deliver(_ event: UIEvent) {
         pending.append(event)
         guard !draining else { return }
         draining = true
-        let expandedBefore = mediator.state.expanded
-        var afterDrawing: [UIEffect] = []
-        while !pending.isEmpty {
-            for effect in mediator.handle(pending.removeFirst()) {
-                switch effect {
-                case .focusInput, .makeHistoryKey, .showSettings: afterDrawing.append(effect)
-                default: perform(effect)
+        defer { draining = false }
+        repeat {
+            var afterDrawing: [UIEffect] = []
+            while !pending.isEmpty {
+                for effect in mediator.handle(pending.removeFirst()) {
+                    switch effect {
+                    case .focusInput, .makeHistoryKey, .showSettings: afterDrawing.append(effect)
+                    default: perform(effect)
+                    }
                 }
             }
-        }
-        draining = false
-        // Opening or folding a card is the one change the owner should see happen.
-        animatingCard = mediator.state.expanded != expandedBefore
-        refresh()
-        animatingCard = false
-        for effect in afterDrawing { perform(effect) }
+            refresh()
+            for effect in afterDrawing { perform(effect) }
+        } while !pending.isEmpty
     }
 
     // MARK: - Drawing and layout
 
-    /// Derives the drawing parameters, lays the column out with the most of the stacks that fits, and hands every
-    /// component its own parameters.
-    ///
-    /// Drawing and placing are two jobs. While she is running, only the drawing is done: the panels are her child
-    /// windows and travel with her, so laying the column out again would fight the animation — but she is running,
-    /// and that is a drawing parameter that has to reach her view or the running art is never shown.
-    private func refresh(placeHistory: Bool = false) {
-        guard !isRunningCharacter else { return render(UIProps.root(mediator.state, placement: placement)) }
+    /// Derives the drawing parameters, lays the column out with the most of the stacks that fits, and hands the
+    /// stage and every window its own parameters.
+    private func refresh() {
         let state = mediator.state
-        fitCharacter(state)
+        let scaleChanged = fitCharacter(state)
+        let stageMoved = placeStage()
         placement.width = state.inputBoxSize.width
         // Measuring is what settles these, so they are not in play while it happens.
         placement.balloonHeight = nil
@@ -151,16 +198,18 @@ final class RootComponent: Component {
         var props = UIProps.root(state, placement: placement)
         let inputSize = props.input.map { fittingSize(of: input.probe($0), width: $0.boxSize.width) }
         let historyOpening = props.history != nil && !wasHistoryOpen
+        let placeHistory = placeHistoryNext
+        placeHistoryNext = false
 
         let layout = OverlayLayout.fit(
-            visible: visibleFrame, character: character.panel.frame,
+            visible: visibleFrame, character: characterFrame,
             spacing: OverlayLayout.spacing(for: state.characterScale), input: inputSize,
             history: props.history != nil && (placeHistory || historyOpening) ? history.panel.frame.size : nil,
             steps: UIProps.budgetSteps(state)
         ) { budget in
             placement.budget = budget
             let stacked = UIProps.root(state, placement: placement)
-            // Each panel is measured at its own width: an opened card is wider than the rest of the column.
+            // Each card is measured at its own width: an opened card is wider than the rest of the column.
             return (
                 notices: stacked.notices.map { fittingSize(of: notices.probe($0), width: $0.width) },
                 balloon: stacked.balloon.map { fittingSize(of: balloon.probe($0), width: $0.width) })
@@ -172,121 +221,175 @@ final class RootComponent: Component {
         placement.noticesHeight = layout.notices?.height
         props = UIProps.root(state, placement: placement)
 
-        render(props)
-        place(balloon.panel, at: layout.balloon, holdsOpen: true)
-        place(notices.panel, at: layout.notices, holdsOpen: true)
+        // How this pass is shown. The owner's hand, a new scale, a moved stage and the first drawing are not to be
+        // seen happening; a run is seen over its own time; everything else is a card opening or the column settling.
+        let transition: StageTransition
+        if let forced = forcedTransition {
+            transition = forced
+        } else if dragOrigin != nil || scaleChanged || stageMoved || appliedStage == nil {
+            transition = .immediate
+        } else if let run {
+            transition = .run(max(run.duration - Date().timeIntervalSince(run.start), 0.05))
+        } else {
+            transition = .card
+        }
+        forcedTransition = nil
+
+        render(props, layout: layout, transition: transition)
+        cardRects = [layout.balloon, layout.notices].compactMap { $0 }
         place(input.panel, at: layout.input)
         placeHistoryWindow(props.history != nil, frame: layout.history)
         wasHistoryOpen = props.history != nil
     }
 
-    /// Holds a panel at a size that fits both the drawing it has and the drawing it is going to, and gives it its
-    /// exact frame once the drawing has arrived. While it is held, nothing the drawing does is clipped away.
-    private func holdOpen(_ panel: NSPanel, until frame: CGRect) {
-        let key = ObjectIdentifier(panel)
-        holding.removeValue(forKey: key)?.cancel()
-        panel.setFrame(panel.frame.union(frame), display: true)
-        holding[key] = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(CardAnimation.duration))
-            guard !Task.isCancelled, let self else { return }
-            self.holding.removeValue(forKey: key)
-            if panel.frame != frame { panel.setFrame(frame, display: true) }
+    /// Hands the stage and every window their drawing parameters, when they are not the ones they already have.
+    private func render(_ props: RootProps, layout: OverlayLayout, transition: StageTransition) {
+        let stageProps = StageProps.make(
+            root: props, character: characterFrame, layout: layout, stage: stage.frame, transition: transition)
+        if stageProps != appliedStage {
+            let before = appliedStage
+            appliedStage = stageProps
+            stageHosting.rootView = Stage(
+                props: stageProps, character: character.view(props.character),
+                balloon: props.balloon.map(balloon.view), notices: props.notices.map(notices.view))
+            takeMouse(
+                over: [characterFrame] + [layout.balloon, layout.notices].compactMap { $0 },
+                leaving: before.map { [$0.characterFrame, $0.balloonFrame, $0.noticesFrame].compactMap { $0 } } ?? [],
+                stageFrame: stage.frame, transition: transition)
         }
-    }
-
-    /// Hands every component its own drawing parameters, when they are not the ones it already has.
-    private func render(_ props: RootProps) {
         guard props != appliedProps else { return }
         appliedProps = props
-        character.render(props.character)
-        balloon.render(props.balloon)
-        notices.render(props.notices)
         input.render(props.input)
         history.render(props.history)
         settings.render(props.settings)
         menuBar.props = props.menu
     }
 
+    /// Where the stage takes the mouse from now on: over what is drawn, and, while a transition is under way, over
+    /// where it was drawn (a run is covered by the box round both ends of it, which the way between lies in).
+    private func takeMouse(
+        over rects: [CGRect], leaving before: [CGRect], stageFrame: CGRect, transition: StageTransition
+    ) {
+        solidRects = rects
+        staleTask?.cancel()
+        let duration: TimeInterval
+        switch transition {
+        case .immediate: duration = 0
+        case .card: duration = CardAnimation.duration
+        case .run(let time): duration = time
+        }
+        guard duration > 0, !before.isEmpty else {
+            staleRects = []
+            return
+        }
+        // `before` is in the stage's coordinates; back to the screen's.
+        let previous = before.map {
+            CGRect(x: stageFrame.minX + $0.minX, y: stageFrame.maxY - $0.maxY, width: $0.width, height: $0.height)
+        }
+        staleRects = previous
+        if case .run = transition, let first = previous.first {
+            staleRects[0] = first.union(characterFrame)
+        }
+        staleTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard !Task.isCancelled else { return }
+            self?.staleRects = []
+        }
+    }
+
+    /// The stage covers the screen she is on. It moves only when she is carried to another screen or the screens
+    /// change; nothing drawn on it moves with it, because everything is placed in screen coordinates and put back
+    /// at once.
+    @discardableResult
+    private func placeStage() -> Bool {
+        let center = CGPoint(x: characterFrame.midX, y: characterFrame.midY)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? stageScreen ?? NSScreen.main
+        else { return false }
+        stageScreen = screen
+        guard stage.frame != screen.frame else { return false }
+        stage.setFrame(screen.frame, display: true)
+        return true
+    }
 
     private var visibleFrame: CGRect {
-        let panel = character.panel
-        let center = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
-        let screen = NSScreen.screens.first { $0.frame.contains(center) } ?? panel.screen ?? NSScreen.main
-        return screen?.visibleFrame ?? panel.frame
+        stageScreen?.visibleFrame ?? characterFrame
     }
 
     /// Sizes the character to the scale. Only a new size moves her (keeping her feet in place); showing or hiding
-    /// panels never does.
-    private func fitCharacter(_ state: UIState) {
-        let panel = character.panel
-        let frame = OverlayLayout.characterFrame(panel.frame, art: state.characterScale.artSize, visible: visibleFrame)
-        guard frame != panel.frame else { return }
-        panel.setFrame(frame, display: true)
-        if !state.isSteppedAside { panel.saveFrame(usingName: Self.characterFrameName) }
+    /// panels never does. Returns whether she changed.
+    private func fitCharacter(_ state: UIState) -> Bool {
+        let frame = OverlayLayout.characterFrame(characterFrame, art: state.characterScale.artSize, visible: visibleFrame)
+        guard frame != characterFrame else { return false }
+        characterFrame = frame
+        if !state.isSteppedAside { saveCharacterPlace() }
+        pending.append(.characterFrameChanged(frame, visible: visibleFrame))
+        return true
     }
 
-    /// Runs her to a place the mediator chose. The panels in the column are her child windows, so they go with her;
-    /// the history is not, and is put back where it belongs once she arrives.
+    /// The owner carrying her. Her event has already been raised by her component; this is the moving.
+    private func carried(_ phase: CharacterDrag) {
+        switch phase {
+        case .began:
+            // Any run she was in was stopped by the event; she is taken hold of where she is now.
+            dragOrigin = characterFrame.origin
+        case .moved(let offset):
+            guard let dragOrigin else { return }
+            characterFrame.origin = CGPoint(x: dragOrigin.x + offset.width, y: dragOrigin.y + offset.height)
+            placeStage()
+            deliver(.characterFrameChanged(characterFrame, visible: visibleFrame))
+        case .ended:
+            dragOrigin = nil
+        }
+    }
+
+    /// Runs her to a place the mediator chose. The stage animates her there over the run's time, and the column
+    /// goes with her over the same time; the history is a window of its own and is put back once she arrives.
     private func runCharacter(to origin: CGPoint) {
-        let panel = character.panel
-        var frame = panel.frame
-        frame.origin = origin
-        guard frame != panel.frame else {
+        let from = characterFrame.origin
+        guard origin != from else {
             deliver(.characterMoveFinished)
             return
         }
-        isRunningCharacter = true
+        let duration = CharacterRun.duration(from: from, to: origin)
         runToken += 1
         let token = runToken
-        NSAnimationContext.runAnimationGroup({ context in
-            // The time comes from how far she has to go, so the running art plays at the same footfall either way.
-            context.duration = CharacterRun.duration(from: panel.frame.origin, to: origin)
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            panel.animator().setFrame(frame, display: true)
-        }, completionHandler: { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.runToken == token else { return }
-                self.isRunningCharacter = false
-                self.deliver(.characterMoveFinished)
-                self.refresh(placeHistory: true)
-            }
-        })
-    }
-
-    /// Stops a run part way and leaves her exactly where it got to. Re-aiming the animator with no duration
-    /// replaces the animation in flight; without that, it would keep moving her under the owner's hand.
-    private func stopRunningCharacter() {
-        guard isRunningCharacter else { return }
-        isRunningCharacter = false
-        runToken += 1
-        let panel = character.panel
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            panel.animator().setFrame(panel.frame, display: true)
+        run = (from, origin, Date(), duration)
+        characterFrame.origin = origin
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard let self, self.runToken == token else { return }
+            self.run = nil
+            self.placeHistoryNext = true
+            self.deliver(.characterFrameChanged(self.characterFrame, visible: self.visibleFrame))
+            self.deliver(.characterMoveFinished)
         }
     }
 
-    /// `holdsOpen`: while a card is opening or folding, the panel is held wide enough for both sizes so that the
-    /// drawing can animate without being clipped, and takes its exact frame afterwards.
-    private func place(_ panel: NSPanel, at frame: CGRect?, holdsOpen: Bool = false) {
+    /// Stops a run part way and leaves her exactly where it got to: where the stage has drawn her at this moment,
+    /// worked out from the same curve it animates with. The next drawing pass shows her there at once.
+    private func stopRunningCharacter() {
+        guard let run else { return }
+        runToken += 1
+        self.run = nil
+        characterFrame.origin = CharacterRun.place(
+            from: run.from, to: run.to, duration: run.duration, elapsed: Date().timeIntervalSince(run.start))
+        forcedTransition = .immediate
+    }
+
+    /// The input field is a window of its own, above the stage, so that it can take the keyboard.
+    private func place(_ panel: NSPanel, at frame: CGRect?) {
         guard let frame else {
-            if panel.parent != nil { character.panel.removeChildWindow(panel) }
+            if panel.parent != nil { stage.removeChildWindow(panel) }
             panel.orderOut(nil)
-            holding.removeValue(forKey: ObjectIdentifier(panel))?.cancel()
             return
         }
-        if holdsOpen, animatingCard, panel.isVisible {
-            holdOpen(panel, until: frame)
-        } else if panel.frame != frame {
-            holding.removeValue(forKey: ObjectIdentifier(panel))?.cancel()
-            panel.setFrame(frame, display: true)
-        }
-        if panel.parent == nil { character.panel.addChildWindow(panel, ordered: .above) }
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
+        if panel.parent == nil { stage.addChildWindow(panel, ordered: .above) }
         if !panel.isVisible { panel.orderFront(nil) }
     }
 
-    /// The history is not in the column and not a child window: a titled window kept on the screen by AppKit would
-    /// otherwise pull the character along with it.
+    /// The history is not on the stage and not a child window: a titled window kept on the screen by AppKit would
+    /// otherwise pull the stage along with it.
     private func placeHistoryWindow(_ isOpen: Bool, frame: CGRect?) {
         let panel = history.panel
         guard isOpen else {
@@ -383,9 +486,9 @@ final class RootComponent: Component {
         case .stopCharacterMove:
             stopRunningCharacter()
         case .saveCharacterPlace:
-            character.panel.saveFrame(usingName: Self.characterFrameName)
+            saveCharacterPlace()
         case .watchPointer(let anchor):
-            watchPointer(anchor)
+            watchPointer(near: anchor)
         case .makeHistoryKey:
             history.panel.makeKey()
         case .showSettings:
@@ -467,35 +570,41 @@ final class RootComponent: Component {
 
     // MARK: - The pointer
 
-    /// Watches the pointer around a rectangle: usually where the character stands, and, while she is standing out of
-    /// its way, the place she will come back to. Mouse moves are thinned out here and never reach the mediator; it
-    /// hears only that the pointer settled by her or that it has gone.
-    private func watchPointer(_ anchor: CGRect?) {
+    /// Watches the pointer for as long as the app runs. A global monitor sees it everywhere but inside this app's
+    /// own windows, and the stage is one of those whenever it is taking the mouse; the stage's own tracking area
+    /// sees it there. Between them every move is seen once.
+    private func watchPointer() {
+        guard pointerMonitor == nil else { return }
+        pointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pointerMoved() }
+        }
+    }
+
+    /// Where the pointer is watched around for stepping aside: usually where the character stands, and, while she
+    /// is standing out of its way, the place she will come back to. nil while she is not to step aside at all.
+    private func watchPointer(near anchor: CGRect?) {
         pointerAnchor = anchor
         pointerTask?.cancel()
         pointerTask = nil
         pointerIsNear = false
-        if anchor != nil, pointerMonitor == nil {
-            // A global monitor sees the pointer everywhere but inside this app's own windows; the character's panel
-            // has a tracking area for that part.
-            pointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
-                MainActor.assumeIsolated { self?.pointerMoved() }
-            }
-        } else if anchor == nil, let monitor = pointerMonitor {
-            NSEvent.removeMonitor(monitor)
-            pointerMonitor = nil
-        }
     }
 
     private func pointerMoved() {
+        let pointer = NSEvent.mouseLocation
+        // Whether the stage takes the mouse is settled on every move: a click has to land right after the pointer
+        // arrives over her.
+        let overSomething = (solidRects + staleRects).contains { $0.contains(pointer) }
+        if stage.ignoresMouseEvents == overSomething { stage.ignoresMouseEvents = !overSomething }
+
+        // Stepping aside is looked at less often; mouse moves arrive far faster than it needs.
         guard let anchor = pointerAnchor else { return }
         let now = Date()
         guard now.timeIntervalSince(lastPointerSample) >= PointerDodge.sampleInterval else { return }
         lastPointerSample = now
-        let pointer = NSEvent.mouseLocation
         let scale = mediator.state.characterScale.textScale
-        // The panels in the column are there to be clicked: a pointer on one of them is not on its way past her.
-        let onAPanel = [balloon.panel, notices.panel, input.panel].contains { $0.isVisible && $0.frame.contains(pointer) }
+        // The cards and the input field are there to be clicked: a pointer on one of them is not on its way past her.
+        let onAPanel = cardRects.contains { $0.contains(pointer) }
+            || (input.panel.isVisible && input.panel.frame.contains(pointer))
         if !pointerIsNear, !onAPanel, PointerDodge.isNear(pointer, of: anchor, textScale: scale) {
             pointerIsNear = true
             waitThen(PointerDodge.linger) { [weak self] in
@@ -572,16 +681,10 @@ final class RootComponent: Component {
     }
 }
 
-/// The window callbacks the root needs. `Component` is not an `NSObject`, so the panels report here.
+/// The window callbacks the root needs. `Component` is not an `NSObject`, so the windows report here.
 @MainActor
 final class PanelDelegate: NSObject, NSWindowDelegate {
-    var didMove: (NSWindow) -> Void = { _ in }
     var willClose: (NSWindow) -> Void = { _ in }
-
-    func windowDidMove(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow else { return }
-        didMove(window)
-    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         willClose(sender)
