@@ -9,14 +9,18 @@ struct BalloonView: View {
     let close: EventSink
     let historyLink: EventSink
 
-    static func tailHeight(_ textScale: Double) -> CGFloat { 12 * textScale }
+    /// The room kept below (or above) the box for what points at the character: a tail for a reply, and the
+    /// wider trail of circles for a thought.
+    static func tailHeight(_ textScale: Double, outline: BalloonOutline = .speech) -> CGFloat {
+        (outline == .thought ? 20 : 12) * textScale
+    }
 
     var body: some View {
         if let props {
             let scale = props.textScale
             let step = Comic.edgeStep(scale)
             let ink = Comic.outline(scale)
-            let tailHeight = Self.tailHeight(scale)
+            let tailHeight = Self.tailHeight(scale, outline: props.outline)
             let down = props.tail == .down
             let shape = BalloonOutlineShape(
                 outline: props.outline, tail: props.tail, tailX: props.tailX - ink, tailHeight: tailHeight,
@@ -120,6 +124,8 @@ private struct ThinkingLine: View {
                     .transition(.opacity)
             }
         }
+        // The whole width, dots or line alike, so that the × does not move when the first line arrives.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: Comic.lineHeight(14 * scale), alignment: .leading)
         .animation(.easeInOut(duration: Self.fade), value: props.line)
         .help(props.label)
@@ -169,8 +175,9 @@ struct BalloonOutlineShape: Shape {
     }
 }
 
-/// The comic thought bubble: a cloud of bumps, with small circles going to the character in place of a tail. It
-/// keeps to the same rectangle a speech balloon of the same size would, so the column is laid out the same way.
+/// The comic thought bubble: a cloud of big soft lobes, with circles trailing off to the character in place of a
+/// tail. It keeps to the same rectangle a speech balloon of the same size would, so the column is laid out the
+/// same way.
 struct ThoughtShape: Shape {
     var tail: BalloonTail
     var tailX: CGFloat
@@ -179,34 +186,38 @@ struct ThoughtShape: Shape {
 
     func path(in rect: CGRect) -> Path {
         let box = BoxOfBalloon(tail: tail, tailHeight: tailHeight, radius: radius).box(in: rect)
-        // The bumps reach the box's own edge from a body inset by their radius, so the cloud stays inside it.
-        let bump = max(4, min(radius * 0.9, box.height / 4))
-        let body = box.insetBy(dx: bump, dy: bump)
+        // The lobes reach the box's own edge from a body inset by how far they stand out, so the cloud stays inside
+        // the rectangle the column gave it.
+        let reach = max(3, min(radius * 0.9, box.height / 4))
+        let body = box.insetBy(dx: reach, dy: reach)
         guard body.width > 0, body.height > 0 else { return Path(roundedRect: box, cornerRadius: radius) }
-        var path = Path(roundedRect: body, cornerRadius: max(radius - bump, 2))
-        func circle(_ centre: CGPoint, _ diameter: CGFloat) {
+        var path = Path(roundedRect: body, cornerRadius: max(radius - reach, 2))
+        func lobe(at centre: CGPoint, _ size: CGSize) {
             path = path.union(Path(ellipseIn: CGRect(
-                x: centre.x - diameter / 2, y: centre.y - diameter / 2, width: diameter, height: diameter)))
+                x: centre.x - size.width / 2, y: centre.y - size.height / 2,
+                width: size.width, height: size.height)))
         }
-        let across = max(2, Int((body.width / (bump * 1.7)).rounded()))
+        // A few wide lobes along the top and the bottom. A balloon this long is drawn with a handful of big soft
+        // bumps; one small circle after another would read as a doily rather than a cloud.
+        let across = max(2, Int((body.width / max(box.height * 1.2, 1)).rounded()))
+        let bump = CGSize(width: min(body.width, body.width / CGFloat(across) * 1.15), height: reach * 2)
+        // The outermost lobe's own edge sits on the body's, so no lobe reaches past the rectangle sideways.
+        let span = body.width - bump.width
         for i in 0...across {
-            let x = body.minX + body.width * CGFloat(i) / CGFloat(across)
-            circle(CGPoint(x: x, y: body.minY), bump * 2)
-            circle(CGPoint(x: x, y: body.maxY), bump * 2)
+            let x = body.minX + bump.width / 2 + span * CGFloat(i) / CGFloat(across)
+            lobe(at: CGPoint(x: x, y: body.minY), bump)
+            lobe(at: CGPoint(x: x, y: body.maxY), bump)
         }
-        let down = max(1, Int((body.height / (bump * 1.7)).rounded()))
-        for i in 0...down {
-            let y = body.minY + body.height * CGFloat(i) / CGFloat(down)
-            circle(CGPoint(x: body.minX, y: y), bump * 2)
-            circle(CGPoint(x: body.maxX, y: y), bump * 2)
-        }
+        // One lobe on each side, so the ends are round rather than pinched between two bumps.
+        let side = CGSize(width: reach * 2, height: body.height * 0.9)
+        lobe(at: CGPoint(x: body.minX, y: body.midY), side)
+        lobe(at: CGPoint(x: body.maxX, y: body.midY), side)
         // The thought trailing off towards her: two circles, the further one smaller.
         let x = min(max(tailX, box.minX + radius), box.maxX - radius)
-        for (along, size) in [(0.30, 0.46), (0.74, 0.28)] {
-            let y = tail == .down
-                ? box.maxY + tailHeight * along
-                : box.minY - tailHeight * along
-            circle(CGPoint(x: x, y: y), tailHeight * size)
+        let trail = min(reach * 1.6, tailHeight * 0.5)
+        for (along, size) in [(0.32, 1.0), (0.76, 0.62)] {
+            let y = tail == .down ? box.maxY + tailHeight * along : box.minY - tailHeight * along
+            lobe(at: CGPoint(x: x, y: y), CGSize(width: trail * size, height: trail * size))
         }
         return path
     }
