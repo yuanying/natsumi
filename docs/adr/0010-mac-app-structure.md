@@ -1,7 +1,9 @@
 # 0010. Mac アプリの構成
 
 - Date: 2026-09-15
-- Status: Accepted（「UI」の節の作り方は [ADR 0015](0015-mac-ui-passive-view-tree.md) で置き換え。画面に出るものの仕様はそのまま）
+- Status: Accepted（「UI」の節の作り方は [ADR 0015](0015-mac-ui-passive-view-tree.md) で置き換え。
+  カードを確かめる操作・本文の拡大・キャラクターと吹き出し・知らせを 1 枚の舞台のウインドウに描くこと・
+  キャラクターが走って動くことは [ADR 0016](0016-opening-a-card-and-moving-the-character.md) で改訂）
 
 ## Context
 

@@ -30,6 +30,12 @@ struct BalloonView: View {
             .padding(down ? .bottom : .top, tailHeight)
             .frame(maxWidth: max(props.width - step * CGFloat(props.edges) - ink * 2, 80), alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
+            // The box is drawn to the height the layout gave the panel, not to the height of what it says. That
+            // one number is what animates, and it is the number the panel itself arrives at, so the drawing and
+            // the panel finish together with nothing to jump between them. The words are laid out whole and cut to
+            // the balloon's own outline, so a line that has not been reached yet is simply not there yet.
+            .frame(height: props.panelHeight.map { $0 - step * CGFloat(props.edges) - ink * 2 }, alignment: .top)
+            .clipShape(shape)
             .background {
                 // The replies behind show as outlines a little away from the character.
                 StackedEdges(
@@ -108,12 +114,18 @@ private struct Dots: View {
     }
 }
 
-/// A rounded box with a tail pointing at the character.
+/// A rounded box with a tail pointing at the character. The tail's position animates with the box, so that a
+/// card pushed sideways while it opens keeps pointing at her all the way.
 struct BalloonShape: Shape {
     var tail: BalloonTail
     var tailX: CGFloat
     var tailHeight: CGFloat
     var radius: CGFloat
+
+    var animatableData: CGFloat {
+        get { tailX }
+        set { tailX = newValue }
+    }
 
     func path(in rect: CGRect) -> Path {
         // SwiftUI's y grows downward: a balloon above the character has its tail at the bottom.

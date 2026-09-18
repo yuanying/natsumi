@@ -94,6 +94,63 @@ public struct UIMediator {
         case .inputEscaped, .clickedOutsideApp:
             return closeInput()
 
+        case .characterFrameChanged(let frame, let visible):
+            let before = state.characterFrame
+            state.characterFrame = frame
+            state.visibleFrame = visible
+            // A run of her own moves her frame step by step; where the pointer is watched settles when she arrives.
+            guard state.isDragging else { return state.isMoving ? [] : watchPointer() }
+            // The owner is carrying her: she runs the way she is being carried.
+            state.facing = CharacterRun.facing(from: before.origin, to: frame.origin, keeping: state.facing)
+            state.motion = .running(state.facing)
+            return []
+
+        case .characterDragBegan:
+            guard !state.isDragging else { return [] }
+            state.isDragging = true
+            // The owner's hand wins over anything she was doing: wherever she was running to no longer matters, and
+            // standing out of the pointer's way is over, because she is being put somewhere on purpose.
+            state.isMoving = false
+            state.dodgeHome = nil
+            state.motion = .running(state.facing)
+            return [.stopCharacterMove] + watchPointer()
+
+        case .characterDragEnded:
+            guard state.isDragging else { return [] }
+            state.isDragging = false
+            state.motion = .still
+            // Wherever the owner let go of her is her place now.
+            state.dodgeHome = nil
+            return [.saveCharacterPlace] + watchPointer()
+
+        case .characterMoveFinished:
+            state.isMoving = false
+            // A run the owner took over from ends without a word: she is in their hand now, still running.
+            guard !state.isDragging else { return [] }
+            state.motion = .still
+            // Stepping aside is only for as long as the pointer is there, so it does not become her place.
+            return (state.isSteppedAside ? [] : [.saveCharacterPlace]) + watchPointer()
+
+        case .screenConfigurationChanged(let visible):
+            state.visibleFrame = visible
+            state.dodgeHome = nil
+            let frame = OverlayLayout.clamp(state.characterFrame, into: visible)
+            guard frame.origin != state.characterFrame.origin else { return watchPointer() }
+            return run(to: frame.origin)
+
+        case .pointerCameNear(let pointer):
+            guard !state.isInputOpen, !state.isDragging, !state.isMoving, state.dodgeHome == nil else { return [] }
+            guard let origin = PointerDodge.target(
+                character: state.characterFrame, pointer: pointer, visible: state.visibleFrame)
+            else { return [] }
+            state.dodgeHome = state.characterFrame.origin
+            return run(to: origin) + watchPointer()
+
+        case .pointerWentAway:
+            guard let home = state.dodgeHome else { return [] }
+            state.dodgeHome = nil
+            return run(to: home)
+
         case .badgeClicked:
             guard UIProps.noticeStack(state.conversation) != nil else { return [] }
             state.noticesHidden.toggle()
@@ -129,24 +186,39 @@ public struct UIMediator {
             return []
 
         case .balloonTextClicked:
-            return apply(state.session.confirmFrontReply())
+            // Opening a reply reads nothing: only the × tells the server anything.
+            guard let front = UIProps.replyStack(state.conversation)?.front else { return [] }
+            open(.reply(front.messageId))
+            return []
 
         case .balloonCloseClicked:
-            // The × reads every unread reply; on "受付中" and "考え中" it only hides them.
-            guard UIProps.replyStack(state.conversation) == nil else {
-                return apply(state.session.confirmAllReplies())
+            // The × reads the reply at the front and brings the next one forward; on "受付中" and "考え中" there is
+            // nothing to read, so it only hides them.
+            guard UIProps.replyStack(state.conversation) != nil else {
+                state.dismissedIndicator = UIProps.indicator(state.conversation)
+                return []
             }
-            state.dismissedIndicator = UIProps.indicator(state.conversation)
-            return []
+            return apply(state.session.confirmFrontReply())
 
         case .readAllRepliesRequested:
             return apply(state.session.confirmAllReplies())
 
         case .noticeTextClicked:
+            guard let stack = UIProps.noticeStack(state.conversation) else { return [] }
+            switch stack.front {
+            case .notice(let message):
+                open(.notice(message.messageId))
+                return []
+            case .older(let ids):
+                // The card has no text to open, so a click on it still checks the notices it stands for.
+                return apply(state.session.acknowledge(ids))
+            }
+
+        case .noticeCloseClicked:
             guard let ids = UIProps.noticeStack(state.conversation)?.frontIds else { return [] }
             return apply(state.session.acknowledge(ids))
 
-        case .noticeCloseClicked, .acknowledgeAllNoticesRequested:
+        case .acknowledgeAllNoticesRequested:
             return apply(state.session.acknowledgeAllNotices())
 
         // MARK: Login, logout and the server
@@ -224,6 +296,32 @@ public struct UIMediator {
 
     // MARK: - The pieces the decisions are made of
 
+    /// Sends her running to a place, facing the way she goes.
+    private mutating func run(to origin: CGPoint) -> [UIEffect] {
+        state.facing = CharacterRun.facing(from: state.characterFrame.origin, to: origin, keeping: state.facing)
+        state.motion = .running(state.facing)
+        state.isMoving = true
+        return [.moveCharacter(to: origin)]
+    }
+
+    /// Asks for the pointer to be watched around the place she would come back to, and not at all while the owner
+    /// is holding her or has the input field open. Watching where she comes back to, rather than where she stands,
+    /// is what keeps her from setting off again the moment she lands.
+    private mutating func watchPointer() -> [UIEffect] {
+        var rect: CGRect?
+        if !state.isInputOpen, !state.isDragging, !state.characterFrame.isEmpty {
+            rect = CGRect(origin: state.dodgeHome ?? state.characterFrame.origin, size: state.characterFrame.size)
+        }
+        guard rect != state.watchedPointerRect else { return [] }
+        state.watchedPointerRect = rect
+        return [.watchPointer(near: rect)]
+    }
+
+    /// Opens a card to its whole text, or folds it when it is the one already open. Only one is open at a time.
+    private mutating func open(_ card: ExpandedCard) {
+        state.expanded = state.expanded == card ? nil : card
+    }
+
     /// Drops the connection and asks whether there is still a session to come back with.
     private mutating func resume() -> [UIEffect] {
         _ = state.session.stop()
@@ -234,16 +332,18 @@ public struct UIMediator {
         return [.disconnect, .resumeSession]
     }
 
+    /// The input field opens right under her, so she stays put while it is open: a pointer on its way to it must
+    /// not send her running.
     private mutating func openInput() -> [UIEffect] {
         guard !state.isInputOpen else { return [] }
         state.isInputOpen = true
-        return [.focusInput, .watchOutsideClicks(true)]
+        return [.focusInput, .watchOutsideClicks(true)] + watchPointer()
     }
 
     private mutating func closeInput() -> [UIEffect] {
         guard state.isInputOpen else { return [] }
         state.isInputOpen = false
-        return [.watchOutsideClicks(false)]
+        return [.watchOutsideClicks(false)] + watchPointer()
     }
 
     /// Passes the session machine's effects on as the mediator's own, and reads the connection's state off it.
@@ -279,6 +379,19 @@ public struct UIMediator {
     private mutating func settle() {
         let candidate = UIProps.replyStack(state.conversation) == nil ? UIProps.indicator(state.conversation) : nil
         if candidate != state.dismissedIndicator { state.dismissedIndicator = nil }
+
+        // A card that is no longer at the front folds by itself; what is open is always what is shown.
+        switch state.expanded {
+        case .reply(let id):
+            if UIProps.replyStack(state.conversation)?.front.messageId != id { state.expanded = nil }
+        case .notice(let id):
+            if case .notice(let front) = UIProps.noticeStack(state.conversation)?.front, front.messageId == id {
+            } else {
+                state.expanded = nil
+            }
+        case nil:
+            break
+        }
 
         let ids = state.conversation.unacknowledgedNotificationIds
         if ids.contains(where: { !state.seenNoticeIds.contains($0) }) { state.noticesHidden = false }

@@ -63,6 +63,37 @@ final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// The stage's hosting view: the mouse works on the first click, the view never sizes its window, and the pointer
+/// is seen moving over it even though the app is never the active one. While the stage is taking the mouse a global
+/// monitor is blind to it, so the tracking area (`.activeAlways`) is what reports the pointer there — including the
+/// moment it leaves what is drawn, which is when the stage stops taking the mouse.
+final class StageHostingView<Content: View>: NSHostingView<Content> {
+    var onPointer: @MainActor () -> Void = {}
+
+    required init(rootView: Content) {
+        super.init(rootView: rootView)
+        sizingOptions = []
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("not used")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(
+            rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onPointer() }
+    override func mouseMoved(with event: NSEvent) { onPointer() }
+    override func mouseExited(with event: NSEvent) { onPointer() }
+}
+
 /// A menu item that runs a closure.
 final class ActionMenuItem: NSMenuItem {
     private let handler: @MainActor () -> Void
@@ -82,62 +113,5 @@ final class ActionMenuItem: NSMenuItem {
         // Menus call their actions on the main thread.
         let handler = handler
         MainActor.assumeIsolated { handler() }
-    }
-}
-
-/// A click reports where it landed (origin at the top left); a drag moves the window; a right click or
-/// control-click shows the menu.
-final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
-    private var onClick: @MainActor (CGPoint) -> Void = { _ in }
-    private var menuProvider: @MainActor () -> NSMenu? = { nil }
-    private var dragged = false
-
-    init(rootView: Content, onClick: @escaping @MainActor (CGPoint) -> Void, menu: @escaping @MainActor () -> NSMenu?) {
-        self.onClick = onClick
-        self.menuProvider = menu
-        super.init(rootView: rootView)
-        // The character's frame is set only by its scale and the owner's drag.
-        sizingOptions = []
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        showMenu(with: event)
-    }
-
-    private func showMenu(with event: NSEvent) {
-        guard let menu = menuProvider() else { return }
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
-    }
-
-    required init(rootView: Content) {
-        super.init(rootView: rootView)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("not used")
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        dragged = false
-        if event.modifierFlags.contains(.control) {
-            // Handled as a right click; the mouse-up that follows must not also open the input field.
-            dragged = true
-            showMenu(with: event)
-        }
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard !dragged else { return }
-        dragged = true
-        window?.performDrag(with: event)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard !dragged else { return }
-        let point = convert(event.locationInWindow, from: nil)
-        onClick(CGPoint(x: point.x, y: isFlipped ? point.y : bounds.height - point.y))
     }
 }

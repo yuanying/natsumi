@@ -29,6 +29,12 @@ public enum ConnectionStatus: Equatable, Sendable {
     }
 }
 
+/// The card whose whole text is shown. Only one is open at a time: opening another folds the one before.
+public enum ExpandedCard: Equatable, Sendable {
+    case reply(String)
+    case notice(String)
+}
+
 /// Where the grip was taken hold of, so that a drag is measured from there.
 struct GripAnchor: Equatable {
     var mouse: CGPoint
@@ -58,11 +64,29 @@ public struct UIState {
     /// How tall the text in the input field is, as the text view measured it.
     public internal(set) var inputTextHeight: CGFloat = 0
 
+    /// Where the character stands and which screen she is on, as the root last reported them. The mediator works
+    /// out where she should go from these; it never asks the screen itself.
+    public internal(set) var characterFrame: CGRect = .zero
+    public internal(set) var visibleFrame: CGRect = .zero
+    /// What she is doing, over and above her face.
+    public internal(set) var motion: CharacterMotion = .still
+    /// The way she last went sideways. Straight up and straight down keep it.
+    var facing: RunDirection = .right
+    var isDragging = false
+    var isMoving = false
+    /// Where she stood before she stepped out of the pointer's way. nil while she is in her own place, and her own
+    /// place is never overwritten while this is set.
+    var dodgeHome: CGPoint?
+    /// The rectangle the root watches the pointer around, so that the same one is not asked for twice.
+    var watchedPointerRect: CGRect?
+
     public internal(set) var avatar = AvatarArt.placeholder
     public internal(set) var avatarDescription = ""
     public internal(set) var avatarDirectory = ""
     public internal(set) var defaultAvatarDirectory = ""
 
+    /// The card the owner opened to read in full. It folds by itself when that card is no longer at the front.
+    public internal(set) var expanded: ExpandedCard?
     /// The indicator the owner closed. It stays closed until the balloon would say something else.
     var dismissedIndicator: BalloonIndicator?
     /// The badge hid the bundle. Hiding checks nothing, and a notice not seen before brings it back.
@@ -71,6 +95,9 @@ public struct UIState {
     var gripAnchor: GripAnchor?
 
     public var conversation: ConversationState { session.conversation }
+
+    /// She is standing out of the pointer's way. Her own place is elsewhere, and must not be overwritten.
+    public var isSteppedAside: Bool { dodgeHome != nil }
 
     init(session: SessionMachine) {
         self.session = session

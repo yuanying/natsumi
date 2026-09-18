@@ -8,17 +8,25 @@ public struct ColumnPlacement: Equatable, Sendable {
     /// The tail's position from the balloon's left side.
     public var tailX: CGFloat
     public var budget: StackBudget
-    /// The input field's width, which every panel in the column keeps to.
+    /// The input field's width, which the column keeps to.
     public var width: CGFloat
+    /// What an opened card may widen to. Cards that are not open, and the input field, keep to `width`.
+    public var expandedWidth: CGFloat
+    /// The height the layout gave each card's panel. A card draws its box at exactly this height, so that opening
+    /// and folding animate the one number the panel will end up at and arrive there together with it. nil while the
+    /// cards are being measured, which is what settles these heights in the first place.
+    public var balloonHeight: CGFloat?
+    public var noticesHeight: CGFloat?
 
     public init(
         tail: BalloonTail = .down, tailX: CGFloat = 40, budget: StackBudget = .full,
-        width: CGFloat = InputBoxSize.default.width
+        width: CGFloat = InputBoxSize.default.width, expandedWidth: CGFloat = InputBoxSize.default.width
     ) {
         self.tail = tail
         self.tailX = tailX
         self.budget = budget
         self.width = width
+        self.expandedWidth = expandedWidth
     }
 }
 
@@ -61,16 +69,20 @@ public struct CharacterProps: Equatable, Sendable {
     public var scale: CharacterScale
     public var avatar: AvatarArt
     public var expression: Expression
+    /// What she is doing while she wears that face. Moving is drawn with running art instead.
+    public var motion: CharacterMotion
     /// The small grey mark and what it says; nil while connected.
     public var disconnectedHelp: String?
     public var badge: BadgeProps?
 
     public init(
-        scale: CharacterScale, avatar: AvatarArt, expression: Expression, disconnectedHelp: String?, badge: BadgeProps?
+        scale: CharacterScale, avatar: AvatarArt, expression: Expression, motion: CharacterMotion = .still,
+        disconnectedHelp: String?, badge: BadgeProps?
     ) {
         self.scale = scale
         self.avatar = avatar
         self.expression = expression
+        self.motion = motion
         self.disconnectedHelp = disconnectedHelp
         self.badge = badge
     }
@@ -80,15 +92,20 @@ public struct CharacterProps: Equatable, Sendable {
 public struct ReplyProps: Equatable, Sendable {
     public var text: String
     public var lineLimit: Int
+    /// The owner opened this one, so `text` is the whole reply.
+    public var isExpanded: Bool
     /// "続きは履歴で": the text is cut, or the column had to show fewer lines.
     public var showsHistoryLink: Bool
     /// "あと N 件".
     public var more: Int
     public var help: String
 
-    public init(text: String, lineLimit: Int, showsHistoryLink: Bool, more: Int, help: String) {
+    public init(
+        text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, more: Int, help: String
+    ) {
         self.text = text
         self.lineLimit = lineLimit
+        self.isExpanded = isExpanded
         self.showsHistoryLink = showsHistoryLink
         self.more = more
         self.help = help
@@ -102,6 +119,12 @@ public struct BalloonProps: Equatable, Sendable {
         /// natsumi has owner messages still to handle.
         case thinking
         case reply(ReplyProps)
+
+        /// Whether the front reply is opened to its whole text.
+        public var isExpanded: Bool {
+            if case .reply(let reply) = self { return reply.isExpanded }
+            return false
+        }
     }
 
     public var body: Body
@@ -113,11 +136,13 @@ public struct BalloonProps: Equatable, Sendable {
     public var tailX: CGFloat
     public var width: CGFloat
     public var textScale: Double
+    /// The height of the panel this is drawn in; the box is drawn to it. nil means the height of what it says.
+    public var panelHeight: CGFloat?
     public var closeHelp: String
 
     public init(
         body: Body, isBusy: Bool, edges: Int, tail: BalloonTail, tailX: CGFloat, width: CGFloat, textScale: Double,
-        closeHelp: String
+        panelHeight: CGFloat? = nil, closeHelp: String
     ) {
         self.body = body
         self.isBusy = isBusy
@@ -126,6 +151,7 @@ public struct BalloonProps: Equatable, Sendable {
         self.tailX = tailX
         self.width = width
         self.textScale = textScale
+        self.panelHeight = panelHeight
         self.closeHelp = closeHelp
     }
 }
@@ -133,28 +159,38 @@ public struct BalloonProps: Equatable, Sendable {
 public struct NoticeBundleProps: Equatable, Sendable {
     public var text: String
     public var lineLimit: Int
+    /// The owner opened this card, so `text` is the whole notice.
+    public var isExpanded: Bool
     public var showsHistoryLink: Bool
     public var more: Int
     public var help: String
+    /// What the × says it does. It checks the front card only.
+    public var closeHelp: String
     public var edges: Int
     /// Cards behind go away from the character: up in the upright column, down when it is flipped.
     public var edgesUpward: Bool
     public var width: CGFloat
     public var textScale: Double
+    /// The height of the panel this is drawn in; the card is drawn to it. See `BalloonProps.panelHeight`.
+    public var panelHeight: CGFloat?
 
     public init(
-        text: String, lineLimit: Int, showsHistoryLink: Bool, more: Int, help: String, edges: Int, edgesUpward: Bool,
-        width: CGFloat, textScale: Double
+        text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, more: Int, help: String,
+        closeHelp: String, edges: Int, edgesUpward: Bool, width: CGFloat, textScale: Double,
+        panelHeight: CGFloat? = nil
     ) {
         self.text = text
         self.lineLimit = lineLimit
+        self.isExpanded = isExpanded
         self.showsHistoryLink = showsHistoryLink
         self.more = more
         self.help = help
+        self.closeHelp = closeHelp
         self.edges = edges
         self.edgesUpward = edgesUpward
         self.width = width
         self.textScale = textScale
+        self.panelHeight = panelHeight
     }
 }
 
@@ -304,13 +340,17 @@ public enum UIProps {
     public static func root(_ state: UIState, placement: ColumnPlacement) -> RootProps {
         var placement = placement
         placement.width = state.inputBoxSize.width
+        // An opened card takes the room at the sides as well as the room above or below (ADR 0016).
+        placement.expandedWidth = OverlayLayout.expandedWidth(placement.width, visible: state.visibleFrame)
         let conversation = state.conversation
         return RootProps(
             character: character(state, stack: noticeStack(conversation)),
             balloon: balloon(
-                conversation, dismissed: state.dismissedIndicator, placement: placement, scale: state.characterScale),
+                conversation, dismissed: state.dismissedIndicator, expanded: state.expanded, placement: placement,
+                scale: state.characterScale),
             notices: notices(
-                conversation, hidden: state.noticesHidden, placement: placement, scale: state.characterScale),
+                conversation, hidden: state.noticesHidden, expanded: state.expanded, placement: placement,
+                scale: state.characterScale),
             input: state.isInputOpen
                 ? input(
                     conversation, status: state.status, scale: state.characterScale, boxSize: state.inputBoxSize,
@@ -363,59 +403,97 @@ public enum UIProps {
         }
         return CharacterProps(
             scale: state.characterScale, avatar: state.avatar, expression: state.conversation.expression,
-            disconnectedHelp: state.status == .connected ? nil : state.status.text, badge: badge)
+            motion: state.motion, disconnectedHelp: state.status == .connected ? nil : state.status.text,
+            badge: badge)
     }
 
     public static func balloon(
-        _ conversation: ConversationState, dismissed: BalloonIndicator?, placement: ColumnPlacement,
-        scale: CharacterScale
+        _ conversation: ConversationState, dismissed: BalloonIndicator?, expanded: ExpandedCard? = nil,
+        placement: ColumnPlacement, scale: CharacterScale
     ) -> BalloonProps? {
         let indicator = indicator(conversation)
-        func props(body: BalloonProps.Body, isBusy: Bool, edges: Int, closeHelp: String) -> BalloonProps {
+        func props(body: BalloonProps.Body, isBusy: Bool, edges: Int, width: CGFloat, closeHelp: String) -> BalloonProps {
             BalloonProps(
                 body: body, isBusy: isBusy, edges: edges, tail: placement.tail, tailX: placement.tailX,
-                width: placement.width, textScale: scale.textScale, closeHelp: closeHelp)
+                width: width, textScale: scale.textScale, panelHeight: placement.balloonHeight,
+                closeHelp: closeHelp)
         }
         if let stack = replyStack(conversation) {
-            let preview = BalloonText.preview(stack.front.text)
-            let lines = placement.budget.lines
+            let isExpanded = expanded == .reply(stack.front.messageId)
+            let shown = card(stack.front.text, isExpanded: isExpanded, budget: placement.budget)
             let reply = ReplyProps(
-                text: preview.text, lineLimit: lines,
-                showsHistoryLink: preview.isTruncated || lines < BalloonText.maxLines, more: stack.more,
-                help: stack.more > 0 ? "クリックで確かめて次へ" : "クリックで確かめて閉じる")
+                text: shown.text, lineLimit: shown.lineLimit, isExpanded: isExpanded,
+                showsHistoryLink: shown.showsHistoryLink, more: stack.more,
+                help: isExpanded ? "クリックで畳む" : "クリックで全文を出す")
             return props(
                 body: .reply(reply), isBusy: indicator != nil, edges: min(stack.behind, placement.budget.behind),
-                closeHelp: "すべて既読にして閉じる")
+                width: isExpanded ? placement.expandedWidth : placement.width,
+                closeHelp: stack.more > 0 ? "この返事を既読にして次へ" : "この返事を既読にして閉じる")
         }
         guard let indicator, indicator != dismissed else { return nil }
         return props(
-            body: indicator == .receiving ? .receiving : .thinking, isBusy: false, edges: 0, closeHelp: "閉じる")
+            body: indicator == .receiving ? .receiving : .thinking, isBusy: false, edges: 0,
+            width: placement.width, closeHelp: "閉じる")
+    }
+
+    /// What a card puts on the screen: the preview, or the whole text when the owner opened it, and whether the
+    /// history still has more of it than is shown.
+    static func card(_ text: String, isExpanded: Bool, budget: StackBudget) -> (
+        text: String, lineLimit: Int, showsHistoryLink: Bool
+    ) {
+        guard isExpanded else {
+            let preview = BalloonText.preview(text)
+            let lines = min(budget.lines, BalloonText.maxLines)
+            return (preview.text, lines, preview.isTruncated || lines < BalloonText.maxLines)
+        }
+        let whole = BalloonText.whole(text)
+        let lines = budget.lines
+        // The column gave less than the whole allowance, or the text is written in more lines than that: what is
+        // left over is only in the history.
+        let cut = lines < BalloonText.expandedMaxLines || BalloonText.lineCount(whole) > lines
+        return (whole, lines, cut)
     }
 
     public static func notices(
-        _ conversation: ConversationState, hidden: Bool, placement: ColumnPlacement, scale: CharacterScale
+        _ conversation: ConversationState, hidden: Bool, expanded: ExpandedCard? = nil, placement: ColumnPlacement,
+        scale: CharacterScale
     ) -> NoticeBundleProps? {
         guard !hidden, let stack = noticeStack(conversation) else { return nil }
-        let lines = placement.budget.lines
         let text: String
+        let lineLimit: Int
         let showsHistoryLink: Bool
+        let isExpanded: Bool
         let help: String
+        let closeHelp: String
         switch stack.front {
         case .notice(let message):
-            let preview = BalloonText.preview(message.text)
-            text = preview.text
-            showsHistoryLink = preview.isTruncated || lines < BalloonText.maxLines
-            help = stack.more > 0 ? "クリックで確かめて次へ" : "クリックで確かめて閉じる"
+            isExpanded = expanded == .notice(message.messageId)
+            let shown = card(message.text, isExpanded: isExpanded, budget: placement.budget)
+            text = shown.text
+            lineLimit = shown.lineLimit
+            showsHistoryLink = shown.showsHistoryLink
+            help = isExpanded ? "クリックで畳む" : "クリックで全文を出す"
+            closeHelp = stack.more > 0 ? "この知らせを確認して次へ" : "この知らせを確認して閉じる"
         case .older(let ids):
-            // Their text is older than the history, so there is nowhere to send the owner.
+            // Their text is older than the history, so there is nothing to open and nowhere to send the owner.
+            isExpanded = false
             text = "前の知らせが \(ids.count) 件あります（本文は履歴より前のため出せません）"
+            lineLimit = min(placement.budget.lines, BalloonText.maxLines)
             showsHistoryLink = false
             help = "クリックでまとめて確かめる"
+            closeHelp = stack.more > 0 ? "まとめて確認して次へ" : "まとめて確認して閉じる"
         }
         return NoticeBundleProps(
-            text: text, lineLimit: lines, showsHistoryLink: showsHistoryLink, more: stack.more, help: help,
+            text: text, lineLimit: lineLimit, isExpanded: isExpanded, showsHistoryLink: showsHistoryLink,
+            more: stack.more, help: help, closeHelp: closeHelp,
             edges: min(stack.behind, placement.budget.behind), edgesUpward: placement.tail == .down,
-            width: placement.width, textScale: scale.textScale)
+            width: isExpanded ? placement.expandedWidth : placement.width, textScale: scale.textScale,
+            panelHeight: placement.noticesHeight)
+    }
+
+    /// The ladder the column is laid out with. An opened card asks for many more lines than a closed one.
+    public static func budgetSteps(_ state: UIState) -> [StackBudget] {
+        state.expanded == nil ? StackBudget.steps : StackBudget.expandedSteps
     }
 
     public static func input(

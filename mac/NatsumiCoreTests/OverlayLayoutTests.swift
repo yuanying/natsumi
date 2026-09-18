@@ -198,6 +198,67 @@ struct OverlayLayoutTests {
         #expect(short.contains(layout.notices!))
     }
 
+    @Test("大きくなる吹き出しは、余裕のある向きへ伸びる")
+    func growsTowardsTheRoom() {
+        let tall = CGSize(width: 240, height: 600)
+        // 下のほうにいるなら、余裕のある上へ。
+        let low = make(CGRect(x: 450, y: 100, width: 100, height: 100), balloon: tall, input: input)
+        #expect(low.isFlipped == false)
+        #expect(low.balloon!.minY >= 200)
+        // 上のほうにいるなら、余裕のある下へ。
+        let high = make(CGRect(x: 450, y: 700, width: 100, height: 100), balloon: tall, input: input)
+        #expect(high.isFlipped)
+        #expect(high.balloon!.maxY <= 700)
+    }
+
+    @Test("開いた吹き出しは、余裕のある側に入るだけの行数を取る")
+    func usesTheRoomThatIsThere() {
+        // 上に 800 ポイント空いている。20 ポイント 1 行なら 39 行ぶん入る。
+        let character = CGRect(x: 450, y: 100, width: 100, height: 100)
+        let layout = OverlayLayout.fit(
+            visible: CGRect(x: 0, y: 0, width: 1000, height: 1000), character: character, spacing: spacing,
+            input: nil, history: nil, steps: StackBudget.expandedSteps
+        ) { budget in (notices: nil, balloon: CGSize(width: 240, height: 20 * CGFloat(budget.lines))) }
+        #expect(layout.overflow == 0)
+        // 梯子の段は飛び飛びだが、入る行数から大きく取りこぼさない。
+        #expect(layout.budget.lines >= 32)
+    }
+
+    @Test("開いた吹き出しは、キャラがどこにいても一列に収まり、キャラも入力欄も覆わない")
+    func expandedColumnNeverCoversTheCharacter() {
+        // 実機に近い画面（メニューバーと Dock を除いた範囲）と、200% のキャラクター。
+        let visible = CGRect(x: 0, y: 90, width: 1710, height: 950)
+        let art = CGSize(width: 192, height: 208)
+        let inputBox = CGSize(width: 392, height: 60)
+        let gap: CGFloat = 11
+        for y in stride(from: 20, through: 900, by: 20) {
+            for x in [visible.minX, visible.midX, visible.maxX - art.width] {
+                let character = CGRect(origin: CGPoint(x: x, y: CGFloat(y)), size: art)
+                for hasNotices in [false, true] {
+                    let layout = OverlayLayout.fit(
+                        visible: visible, character: character, spacing: gap, input: inputBox, history: nil,
+                        steps: StackBudget.expandedSteps
+                    ) { budget in
+                        // 開いた長い返事: 行数に比例して伸び、いちばん広いときは画面より高い。
+                        (notices: hasNotices ? CGSize(width: 392, height: 90) : nil,
+                         balloon: CGSize(width: 392, height: 26 * CGFloat(budget.lines) + 30))
+                    }
+                    let where_ = "y=\(y) x=\(x) notices=\(hasNotices)"
+                    let rects = [layout.notices, layout.balloon, layout.input].compactMap { $0 }
+                    for (index, rect) in rects.enumerated() {
+                        #expect(visible.contains(rect), "\(where_): \(rect) が画面から出た")
+                        #expect(rect.intersects(character) == false, "\(where_): \(rect) がキャラを覆った")
+                        for other in rects[(index + 1)...] {
+                            #expect(rect.intersects(other) == false, "\(where_): \(rect) と \(other) が重なった")
+                        }
+                    }
+                    #expect(layout.balloon != nil, "\(where_): 吹き出しが消えた")
+                    #expect(layout.input != nil, "\(where_): 入力欄が消えた")
+                }
+            }
+        }
+    }
+
     @Test("履歴は一列に入れず、一列の横の空いている側に、一列のパネルと重ならないように開く")
     func historyBeside() {
         let center = CGRect(x: 400, y: 300, width: 100, height: 100)

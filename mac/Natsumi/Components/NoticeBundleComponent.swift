@@ -1,38 +1,27 @@
-import AppKit
 import NatsumiCore
 import SwiftUI
 
-/// The yellow bundle of unchecked notices. Its front card and its × mean different things.
+/// The yellow bundle of unchecked notices. Its front card and its × mean different things. It is drawn on the
+/// stage; the root places it there.
 @MainActor
 final class NoticeBundleComponent: Component {
-    let panel = OverlayPanel.make()
     private let card = Component(name: "notices.card")
     private let close = Component(name: "notices.close")
     private let historyLink = Component(name: "notices.historyLink")
-    private var applied: NoticeBundleProps?
-    private var hosting: FirstMouseHostingView<NoticeBundleView>!
 
     init() {
         super.init(name: "notices")
         adopt(card)
         adopt(close)
         adopt(historyLink)
-        hosting = FirstMouseHostingView(rootView: view(nil))
-        panel.contentView = hosting
     }
 
-    func view(_ props: NoticeBundleProps?) -> NoticeBundleView {
+    func view(_ props: NoticeBundleProps) -> NoticeBundleView {
         NoticeBundleView(props: props, card: card.sink, close: close.sink, historyLink: historyLink.sink)
     }
 
     /// The same drawing, for measuring only.
     func probe(_ props: NoticeBundleProps) -> NoticeBundleView {
         NoticeBundleView(props: props, card: .ignored, close: .ignored, historyLink: .ignored)
-    }
-
-    func render(_ props: NoticeBundleProps?) {
-        guard props != applied else { return }
-        applied = props
-        hosting.rootView = view(props)
     }
 }

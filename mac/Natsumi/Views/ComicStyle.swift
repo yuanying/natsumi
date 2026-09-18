@@ -1,4 +1,5 @@
 import AppKit
+import NatsumiCore
 import SwiftUI
 
 /// The comic look of the character's panels: paper with a bold black outline and rounded lettering. The panels keep

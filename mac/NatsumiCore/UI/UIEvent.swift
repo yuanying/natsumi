@@ -53,6 +53,19 @@ public enum UIEvent: Equatable, Sendable {
     case characterClicked
     /// The yellow count at the character's top right.
     case badgeClicked
+    /// Where she stands and which screen she is on. The root reports it whenever either changes; nothing is decided
+    /// on it except which way she faces while the owner drags her.
+    case characterFrameChanged(CGRect, visible: CGRect)
+    case characterDragBegan
+    case characterDragEnded
+    /// A run the mediator asked for has arrived.
+    case characterMoveFinished
+    /// A display went away or changed size: what is on the screen now.
+    case screenConfigurationChanged(visible: CGRect)
+    /// The pointer has stayed by her long enough to look like it is on its way to what is underneath. It carries
+    /// where it is once, for choosing where to go; the stream of moves stays in the root.
+    case pointerCameNear(at: CGPoint)
+    case pointerWentAway
 
     // MARK: The balloon
 

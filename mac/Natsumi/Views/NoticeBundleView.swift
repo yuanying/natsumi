@@ -17,12 +17,15 @@ struct NoticeBundleView: View {
             let shape = RoundedRectangle(cornerRadius: Comic.radius(scale))
             HStack(alignment: .top, spacing: 8 * scale) {
                 content(props)
-                CloseButton(help: "すべて確認して閉じる", scale: scale) { close(.noticeCloseClicked) }
+                CloseButton(help: props.closeHelp, scale: scale) { close(.noticeCloseClicked) }
             }
             .padding(.horizontal, 14 * scale)
             .padding(.vertical, 10 * scale)
             .frame(maxWidth: max(props.width - step * CGFloat(props.edges) - ink * 2, 80), alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
+            // Drawn to the height the layout gave the panel, and cut to the card's own outline (see `BalloonView`).
+            .frame(height: props.panelHeight.map { $0 - step * CGFloat(props.edges) - ink * 2 }, alignment: .top)
+            .clipShape(shape)
             .background {
                 StackedEdges(
                     count: props.edges, step: step, upward: props.edgesUpward, fill: Comic.noticePaper,

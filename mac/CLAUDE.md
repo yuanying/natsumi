@@ -12,8 +12,11 @@
 
 - 画面に出るものはすべて `Component` として木に属し、根は `RootComponent` ひとつである。
   親が子を作り、子は親を弱く持つ。`adopt` で親子にし、木の形は生涯変わらない。
-- 6 つのパネル（キャラクター・返事の吹き出し・知らせの束・入力欄・履歴・設定）が Root の直下の子である。
-  パネルの中でイベントを出す部分は、さらにその子にする。いまある子は、キャラクターの印、
+- 6 つの部品（キャラクター・返事の吹き出し・知らせの束・入力欄・履歴・設定）が Root の直下の子である。
+  部品の中でイベントを出す部分は、さらにその子にする。
+  **キャラクター・吹き出し・知らせの束は、Root が持つ 1 枚の透明なウインドウ（舞台）の中の View として描く**
+  （ADR 0016）。この 3 つのコンポーネントはウインドウを持たず、Props から自分の View を作って Root に渡す。
+  入力欄・履歴・設定は自分のウインドウを持つ。いまある子は、キャラクターの印、
   吹き出しの本文・×・「続きは履歴で」、知らせのカード・×・「続きは履歴で」、入力欄の文字の欄・履歴のボタン・つまみである。
 - **木の外から個々のコンポーネントを掴まない。** アプリが持ってよいのは Root だけで、`AppDelegate` もそれしか持たない。
   新しいパネルを足すときは、Root の子として作り、Root から描画パラメータを渡す。
@@ -60,6 +63,13 @@
 - 接続と同期は `SessionMachine` の担当であり、これは別の関心事として残す。
   Mediator はソケットの出来事をそのまま渡し、返ってきた `SessionEffect` を自分の `UIEffect` として出す。
 - 乱数（requestId）は生成器を差し込む形にし、テストでは決まった値を返す。Mediator の中で `UUID()` を呼ばない。
+- **アニメーションは Root が持つ。** Mediator が決めるのは「どこへ動かすか」だけで、見せ方は Root が与える。
+  Root は描画パスごとに `StageTransition`（即座・カードの開閉・走り）を選び、舞台の View がそれを時間と曲線に
+  変える。長さは `NatsumiCore`（`CardAnimation.duration`・`CharacterRun.duration`）にそろえる。
+  **ウインドウの枠をアニメーションさせない。** 動くものはすべて舞台の中の View である。
+- **画面の座標は Root が知らせる。** キャラクターの枠と表示できる範囲は `UIEvent` で Mediator に入れ、状態として持つ。
+  Mediator が `NSScreen` を見に行かない。生の座標の流れ（マウスの移動など）は Root で間引き、Mediator には
+  「近づいた」「離れた」のような意味のイベントだけを渡す。
 
 ## ファイルの置きどころ
 
@@ -72,9 +82,10 @@
 | `NatsumiCore/UI/UIMediator.swift` | 裁定そのもの |
 | `NatsumiCore/UI/Props.swift` | `RootProps` と各パネルの Props、`ColumnPlacement`、`UIProps` の導出 |
 | `NatsumiCore/UI/Stacks.swift` | 束の数え方（`ReplyStack`・`NoticeStack`・`BalloonText`・`CharacterBadge`） |
-| `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）と大きさ（`CharacterScale`・`InputBoxSize`・`OverlaySettings`） |
-| `Natsumi/Components/` | Root と各パネルのコンポーネント、`OverlayPanel` と hosting view |
-| `Natsumi/Views/` | SwiftUI の Passive View と `Comic` の見た目 |
+| `NatsumiCore/UI/StageProps.swift` | 舞台の描画パラメータ（`StageProps`・`StageTransition`）と舞台の座標への変換 |
+| `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）、大きさ（`CharacterScale`・`InputBoxSize`・`OverlaySettings`）、走っての移動とポインタを避ける規則（`CharacterRun`・`PointerDodge`） |
+| `Natsumi/Components/` | Root と各部品のコンポーネント、`OverlayPanel` と hosting view、キャラクターのマウスの受け口（`CharacterMouseArea`） |
+| `Natsumi/Views/` | SwiftUI の Passive View、舞台（`StageView`）、`Comic` の見た目 |
 | `Natsumi/Adapters/` | OS に触る部分（WebSocket・GitHub ログイン） |
 
 名前の付け方は、パネルのコンポーネントが `<名前>Component`、その View が `<名前>View`、

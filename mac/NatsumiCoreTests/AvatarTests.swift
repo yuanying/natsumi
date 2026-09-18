@@ -108,6 +108,29 @@ struct AvatarTests {
         #expect(manifest.spritesheet == "spritesheet.webp")
     }
 
+    @Test("移動中の動作は、進む向きの走る絵で表情の動作を上書きする")
+    func runningOverridesTheExpression() throws {
+        let manifest = try AvatarManifest.make(pet: nil, avatar: Data("{}".utf8))
+        #expect(manifest.animationName(for: .happy, motion: .still) == "waving")
+        #expect(manifest.animationName(for: .happy, motion: .running(.right)) == "running-right")
+        #expect(manifest.animationName(for: .happy, motion: .running(.left)) == "running-left")
+    }
+
+    @Test("向きの走る絵が無ければ向きのない走り、それも無ければ表情の動作のままにする")
+    func runningFallsBack() throws {
+        let sideless = try AvatarManifest.make(
+            pet: nil,
+            avatar: Data(#"{"animations":{"idle":{"row":0,"frames":2},"running":{"row":1,"frames":3}},"expressions":{"neutral":"idle"}}"#.utf8))
+        #expect(sideless.animationName(for: .neutral, motion: .running(.left)) == "running")
+
+        // A hand-made avatar with no running art at all keeps the face's own animation.
+        let sample = try SampleAvatar()
+        defer { sample.remove() }
+        let avatar = try AvatarLoader.load(directory: sample.directory)
+        #expect(avatar.manifest.animationName(for: .happy, motion: .running(.right)) == "wave")
+        #expect(avatar.frames(for: .happy, motion: .running(.right)).count == 3)
+    }
+
     @Test("定義のないディレクトリ、atlas より小さい画像、範囲外の行、未知の動作は読み込まない")
     func invalid() throws {
         let empty = FileManager.default.temporaryDirectory.appendingPathComponent("natsumi-empty-\(UUID().uuidString)")
