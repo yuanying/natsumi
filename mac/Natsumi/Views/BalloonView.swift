@@ -1,107 +1,90 @@
 import NatsumiCore
 import SwiftUI
 
-/// What the layout decided for the column, read by the panels while they are measured and drawn.
-@MainActor
-@Observable
-final class ColumnPlacement {
-    var tail: BalloonTail = .down
-    var tailX: CGFloat = 40
-    var budget = StackBudget.full
-    /// The widest a panel in the column may be; the input field's width.
-    var width: CGFloat = InputBoxSize.default.width
-}
-
-/// natsumi's unread replies in a comic speech balloon, the oldest in front with the others stacked behind it, or dots
-/// while she is receiving or thinking.
+/// natsumi's unread replies in a comic speech balloon, the oldest in front with the others stacked behind it, or
+/// dots while she is receiving or thinking.
 struct BalloonView: View {
-    let model: AppModel
-    let placement: ColumnPlacement
-    let openHistory: () -> Void
+    let props: BalloonProps?
+    let text: EventSink
+    let close: EventSink
+    let historyLink: EventSink
 
     static func tailHeight(_ textScale: Double) -> CGFloat { 12 * textScale }
 
     var body: some View {
-        let scale = model.characterScale.textScale
-        let stack: ReplyStack? = if case .replies(let stack) = model.balloon.content { stack } else { nil }
-        let edges = min(stack?.behind ?? 0, placement.budget.behind)
-        let step = Comic.edgeStep(scale)
-        let ink = Comic.outline(scale)
-        let tailHeight = Self.tailHeight(scale)
-        let down = placement.tail == .down
-        let shape = BalloonShape(tail: placement.tail, tailX: placement.tailX - ink, tailHeight: tailHeight, radius: Comic.radius(scale))
-        HStack(alignment: .top, spacing: 8 * scale) {
-            content(scale: scale)
-                .frame(minWidth: 24 * scale, alignment: .leading)
-            Button(action: model.closeBalloon) { Image(systemName: "xmark") }
-                .help(stack == nil ? "閉じる" : "すべて既読にして閉じる")
-                .buttonStyle(.borderless)
-                .font(.system(size: 10 * scale, weight: .bold))
-                .foregroundStyle(Comic.ink)
+        if let props {
+            let scale = props.textScale
+            let step = Comic.edgeStep(scale)
+            let ink = Comic.outline(scale)
+            let tailHeight = Self.tailHeight(scale)
+            let down = props.tail == .down
+            let shape = BalloonShape(
+                tail: props.tail, tailX: props.tailX - ink, tailHeight: tailHeight, radius: Comic.radius(scale))
+            HStack(alignment: .top, spacing: 8 * scale) {
+                content(props)
+                    .frame(minWidth: 24 * scale, alignment: .leading)
+                CloseButton(help: props.closeHelp, scale: scale) { close(.balloonCloseClicked) }
+            }
+            .padding(.horizontal, 14 * scale)
+            .padding(.vertical, 10 * scale)
+            .padding(down ? .bottom : .top, tailHeight)
+            .frame(maxWidth: max(props.width - step * CGFloat(props.edges) - ink * 2, 80), alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                // The replies behind show as outlines a little away from the character.
+                StackedEdges(
+                    count: props.edges, step: step, upward: down, fill: Comic.paper, lineWidth: ink,
+                    shape: BoxOfBalloon(tail: props.tail, tailHeight: tailHeight, radius: Comic.radius(scale)))
+                shape.fill(Comic.paper)
+                shape.stroke(Comic.ink, lineWidth: ink)
+            }
+            .padding(.trailing, step * CGFloat(props.edges))
+            .padding(down ? .top : .bottom, step * CGFloat(props.edges))
+            .padding(ink)
+            .environment(\.colorScheme, .light)
         }
-        .padding(.horizontal, 14 * scale)
-        .padding(.vertical, 10 * scale)
-        .padding(down ? .bottom : .top, tailHeight)
-        .frame(maxWidth: max(placement.width - step * CGFloat(edges) - ink * 2, 80), alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
-        .background {
-            // The replies behind show as outlines a little away from the character.
-            StackedEdges(
-                count: edges, step: step, upward: down, fill: Comic.paper, lineWidth: ink,
-                shape: BoxOfBalloon(tail: placement.tail, tailHeight: tailHeight, radius: Comic.radius(scale)))
-            shape.fill(Comic.paper)
-            shape.stroke(Comic.ink, lineWidth: ink)
-        }
-        .padding(.trailing, step * CGFloat(edges))
-        .padding(down ? .top : .bottom, step * CGFloat(edges))
-        .padding(ink)
-        .environment(\.colorScheme, .light)
     }
 
     @ViewBuilder
-    private func content(scale: Double) -> some View {
-        switch model.balloon.content {
+    private func content(_ props: BalloonProps) -> some View {
+        let scale = props.textScale
+        switch props.body {
         case .receiving:
             Dots(label: "受付中", scale: scale)
         case .thinking:
             Dots(label: "考え中", scale: scale)
-        case .replies(let stack):
-            let preview = BalloonText.preview(stack.front.text)
-            let lines = placement.budget.lines
+        case .reply(let reply):
             VStack(alignment: .leading, spacing: 4 * scale) {
-                Button(action: model.confirmFrontReply) {
-                    Text(preview.text)
+                Button { text(.balloonTextClicked) } label: {
+                    Text(reply.text)
                         .font(Comic.font(14 * scale))
                         .lineSpacing(3 * scale)
                         .foregroundStyle(Comic.ink)
-                        .lineLimit(lines)
+                        .lineLimit(reply.lineLimit)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(stack.more > 0 ? "クリックで確かめて次へ" : "クリックで確かめて閉じる")
-                let cut = preview.isTruncated || lines < BalloonText.maxLines
-                if cut || stack.more > 0 || model.balloon.isBusy {
+                .help(reply.help)
+                if reply.showsHistoryLink || reply.more > 0 || props.isBusy {
                     // The same footer as the notices: the count first, under the text.
                     HStack(spacing: 8 * scale) {
-                        if stack.more > 0 {
-                            MoreCount(count: stack.more, scale: scale)
+                        if reply.more > 0 {
+                            MoreCount(count: reply.more, scale: scale)
                         }
-                        if cut {
-                            Button("続きは履歴で", action: openHistory)
+                        if reply.showsHistoryLink {
+                            Button("続きは履歴で") { historyLink(.historyLinkClicked) }
                                 .buttonStyle(.link)
                                 .font(Comic.font(11 * scale))
                         }
-                        if model.balloon.isBusy {
+                        if props.isBusy {
                             ProgressView().controlSize(.mini).help("考え中")
                         }
                     }
                 }
             }
-        case nil:
-            EmptyView()
         }
     }
 }
