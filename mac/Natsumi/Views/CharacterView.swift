@@ -30,12 +30,13 @@ struct CharacterView: View {
         switch props.avatar {
         case .sprite(let asset):
             // Frames are 2x pixels; they are resampled smoothly to the chosen size.
-            Image(decorative: asset.frame(for: props.expression, elapsed: elapsed), scale: 2)
+            Image(decorative: asset.frame(for: props.expression, motion: props.motion, elapsed: elapsed), scale: 2)
                 .resizable()
                 .interpolation(.high)
                 .antialiased(true)
                 .frame(width: size.width, height: size.height)
         case .placeholder:
+            // The stand-in art has nothing to run with: she changes place without changing her face.
             Text(PlaceholderArt.symbol(for: props.expression))
                 .font(.system(size: 64 * props.scale.value))
         }

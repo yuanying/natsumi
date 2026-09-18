@@ -198,6 +198,23 @@ struct OverlayLayoutTests {
         #expect(short.contains(layout.notices!))
     }
 
+    @Test("一列が入らないときは、束や行数を削る前に、キャラクターが縦に動いて場所を空ける")
+    func characterMakesRoom() {
+        let short = CGRect(x: 0, y: 0, width: 1000, height: 300)
+        let character = CGRect(x: 400, y: 100, width: 100, height: 100)
+        func offset(balloon height: CGFloat, input: CGSize? = nil) -> CGFloat {
+            OverlayLayout.fit(
+                visible: short, character: character, spacing: spacing, input: input, history: nil
+            ) { _ in (notices: nil, balloon: CGSize(width: 240, height: height)) }.characterOffset
+        }
+        // 上に 100 ポイントある。92+8 は入るので動かない。
+        #expect(offset(balloon: 92) == 0)
+        // 120+8 は 28 足りない。下へ 28 動けば入る。
+        #expect(offset(balloon: 120) == -28)
+        // 入力欄が下にあるときは、その分（40+8）を空けたままにしか動けない。
+        #expect(offset(balloon: 300, input: input) == -52)
+    }
+
     @Test("履歴は一列に入れず、一列の横の空いている側に、一列のパネルと重ならないように開く")
     func historyBeside() {
         let center = CGRect(x: 400, y: 300, width: 100, height: 100)

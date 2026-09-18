@@ -94,6 +94,67 @@ public struct UIMediator {
         case .inputEscaped, .clickedOutsideApp:
             return closeInput()
 
+        case .characterFrameChanged(let frame, let visible):
+            let before = state.characterFrame
+            state.characterFrame = frame
+            state.visibleFrame = visible
+            // A run of her own moves her frame step by step; where the pointer is watched settles when she arrives.
+            guard state.isDragging else { return state.isMoving ? [] : watchPointer() }
+            // The owner is carrying her: she runs the way she is being carried.
+            state.facing = CharacterRun.facing(from: before.origin, to: frame.origin, keeping: state.facing)
+            state.motion = .running(state.facing)
+            return []
+
+        case .characterDragBegan:
+            guard !state.isDragging else { return [] }
+            state.isDragging = true
+            state.motion = .running(state.facing)
+            return watchPointer()
+
+        case .characterDragEnded:
+            guard state.isDragging else { return [] }
+            state.isDragging = false
+            state.motion = .still
+            // Wherever the owner let go of her is her place now.
+            state.dodgeHome = nil
+            return [.saveCharacterPlace] + watchPointer()
+
+        case .characterMoveFinished:
+            state.isMoving = false
+            state.motion = .still
+            // Stepping aside is only for as long as the pointer is there, so it does not become her place.
+            return (state.dodgeHome == nil ? [.saveCharacterPlace] : []) + watchPointer()
+
+        case .screenConfigurationChanged(let visible):
+            state.visibleFrame = visible
+            state.dodgeHome = nil
+            let frame = OverlayLayout.clamp(state.characterFrame, into: visible)
+            guard frame.origin != state.characterFrame.origin else { return watchPointer() }
+            return run(to: frame.origin)
+
+        case .columnNeedsRoom(let offset):
+            // She keeps the place she makes for the column: coming back every time it shrinks would have her
+            // stepping up and down with every reply. Only the pointer moves her for a while.
+            guard !state.isDragging, !state.isMoving, state.dodgeHome == nil, offset != 0 else { return [] }
+            var frame = state.characterFrame
+            frame.origin.y += offset
+            frame = OverlayLayout.clamp(frame, into: state.visibleFrame)
+            guard frame.origin != state.characterFrame.origin else { return [] }
+            return run(to: frame.origin)
+
+        case .pointerCameNear(let pointer):
+            guard !state.isInputOpen, !state.isDragging, !state.isMoving, state.dodgeHome == nil else { return [] }
+            guard let origin = PointerDodge.target(
+                character: state.characterFrame, pointer: pointer, visible: state.visibleFrame)
+            else { return [] }
+            state.dodgeHome = state.characterFrame.origin
+            return run(to: origin) + watchPointer()
+
+        case .pointerWentAway:
+            guard let home = state.dodgeHome else { return [] }
+            state.dodgeHome = nil
+            return run(to: home)
+
         case .badgeClicked:
             guard UIProps.noticeStack(state.conversation) != nil else { return [] }
             state.noticesHidden.toggle()
@@ -239,6 +300,27 @@ public struct UIMediator {
 
     // MARK: - The pieces the decisions are made of
 
+    /// Sends her running to a place, facing the way she goes.
+    private mutating func run(to origin: CGPoint) -> [UIEffect] {
+        state.facing = CharacterRun.facing(from: state.characterFrame.origin, to: origin, keeping: state.facing)
+        state.motion = .running(state.facing)
+        state.isMoving = true
+        return [.moveCharacter(to: origin)]
+    }
+
+    /// Asks for the pointer to be watched around the place she would come back to, and not at all while the owner
+    /// is holding her or has the input field open. Watching where she comes back to, rather than where she stands,
+    /// is what keeps her from setting off again the moment she lands.
+    private mutating func watchPointer() -> [UIEffect] {
+        var rect: CGRect?
+        if !state.isInputOpen, !state.isDragging, !state.characterFrame.isEmpty {
+            rect = CGRect(origin: state.dodgeHome ?? state.characterFrame.origin, size: state.characterFrame.size)
+        }
+        guard rect != state.watchedPointerRect else { return [] }
+        state.watchedPointerRect = rect
+        return [.watchPointer(near: rect)]
+    }
+
     /// Opens a card to its whole text, or folds it when it is the one already open. Only one is open at a time.
     private mutating func open(_ card: ExpandedCard) {
         state.expanded = state.expanded == card ? nil : card
@@ -254,16 +336,18 @@ public struct UIMediator {
         return [.disconnect, .resumeSession]
     }
 
+    /// The input field opens right under her, so she stays put while it is open: a pointer on its way to it must
+    /// not send her running.
     private mutating func openInput() -> [UIEffect] {
         guard !state.isInputOpen else { return [] }
         state.isInputOpen = true
-        return [.focusInput, .watchOutsideClicks(true)]
+        return [.focusInput, .watchOutsideClicks(true)] + watchPointer()
     }
 
     private mutating func closeInput() -> [UIEffect] {
         guard state.isInputOpen else { return [] }
         state.isInputOpen = false
-        return [.watchOutsideClicks(false)]
+        return [.watchOutsideClicks(false)] + watchPointer()
     }
 
     /// Passes the session machine's effects on as the mediator's own, and reads the connection's state off it.

@@ -11,7 +11,7 @@ final class CharacterComponent: Component {
     private var applied: CharacterProps?
     private var hosting: ClickOrDragHostingView<CharacterView>!
 
-    init(menu: @escaping @MainActor () -> NSMenu?) {
+    init(menu: @escaping @MainActor () -> NSMenu?, pointerMoved: @escaping @MainActor () -> Void) {
         super.init(name: "character")
         adopt(badge)
         hosting = ClickOrDragHostingView(
@@ -26,6 +26,8 @@ final class CharacterComponent: Component {
                     self.dispatch(.characterClicked)
                 }
             },
+            onDrag: { [weak self] begun in self?.dispatch(begun ? .characterDragBegan : .characterDragEnded) },
+            onPointer: pointerMoved,
             menu: menu)
         panel.contentView = hosting
     }

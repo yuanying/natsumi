@@ -61,16 +61,20 @@ public struct CharacterProps: Equatable, Sendable {
     public var scale: CharacterScale
     public var avatar: AvatarArt
     public var expression: Expression
+    /// What she is doing while she wears that face. Moving is drawn with running art instead.
+    public var motion: CharacterMotion
     /// The small grey mark and what it says; nil while connected.
     public var disconnectedHelp: String?
     public var badge: BadgeProps?
 
     public init(
-        scale: CharacterScale, avatar: AvatarArt, expression: Expression, disconnectedHelp: String?, badge: BadgeProps?
+        scale: CharacterScale, avatar: AvatarArt, expression: Expression, motion: CharacterMotion = .still,
+        disconnectedHelp: String?, badge: BadgeProps?
     ) {
         self.scale = scale
         self.avatar = avatar
         self.expression = expression
+        self.motion = motion
         self.disconnectedHelp = disconnectedHelp
         self.badge = badge
     }
@@ -382,7 +386,8 @@ public enum UIProps {
         }
         return CharacterProps(
             scale: state.characterScale, avatar: state.avatar, expression: state.conversation.expression,
-            disconnectedHelp: state.status == .connected ? nil : state.status.text, badge: badge)
+            motion: state.motion, disconnectedHelp: state.status == .connected ? nil : state.status.text,
+            badge: badge)
     }
 
     public static func balloon(

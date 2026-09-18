@@ -58,6 +58,9 @@ public struct OverlayLayout: Equatable, Sendable {
     public var isFlipped = false
     /// How much height the column lacks on the screen; 0 when it fits.
     public var overflow: CGFloat = 0
+    /// How far the character would have to move for the column to keep its fullest form; 0 when she need not move.
+    /// Positive is up. The column does not move her itself: the mediator decides that (ADR 0016).
+    public var characterOffset: CGFloat = 0
     public var budget = StackBudget.full
 
     /// The gap between the character and the panels and between the panels, growing with the character.
@@ -69,26 +72,55 @@ public struct OverlayLayout: Equatable, Sendable {
     /// balloon when they show that much.
     public static func fit(
         visible: CGRect, character: CGRect, spacing: CGFloat, input: CGSize?, history: CGSize?,
+        steps: [StackBudget] = StackBudget.steps,
         measure: (StackBudget) -> (notices: CGSize?, balloon: CGSize?)
     ) -> OverlayLayout {
         var layout = OverlayLayout()
         var last: (notices: CGSize?, balloon: CGSize?) = (nil, nil)
-        for budget in StackBudget.steps {
+        var offset: CGFloat = 0
+        for (step, budget) in steps.enumerated() {
             last = measure(budget)
             layout = make(
                 visible: visible, character: character, spacing: spacing,
                 notices: last.notices, balloon: last.balloon, input: input, history: history)
             layout.budget = budget
-            if layout.overflow == 0 { return layout }
+            if step == 0, layout.overflow > 0 {
+                // The fullest column does not fit. Before anything is taken away from it, see how far the character
+                // could move to make room; the mediator decides whether she goes (ADR 0016).
+                offset = room(
+                    visible: visible, character: character, spacing: spacing, input: input, flipped: layout.isFlipped,
+                    overflow: layout.overflow)
+            }
+            if layout.overflow == 0 { break }
         }
-        // Still too tall: leave the notices out (the badge still counts them) rather than piling panels on each other.
-        guard last.notices != nil else { return layout }
-        let budget = layout.budget
-        layout = make(
-            visible: visible, character: character, spacing: spacing,
-            notices: nil, balloon: last.balloon, input: input, history: history)
-        layout.budget = budget
+        if layout.overflow > 0, last.notices != nil {
+            // Still too tall: leave the notices out (the badge still counts them) rather than piling panels on each
+            // other.
+            let budget = layout.budget
+            layout = make(
+                visible: visible, character: character, spacing: spacing,
+                notices: nil, balloon: last.balloon, input: input, history: history)
+            layout.budget = budget
+        }
+        layout.characterOffset = offset
         return layout
+    }
+
+    /// How far the character may move towards the other end of the screen, and needs to, for the column to fit.
+    /// She does not take the input field's room with her: it stays on her other side.
+    static func room(
+        visible: CGRect, character: CGRect, spacing: CGFloat, input: CGSize?, flipped: Bool, overflow: CGFloat
+    ) -> CGFloat {
+        let inputNeed = input.map { $0.height + spacing } ?? 0
+        let roomAbove = visible.maxY - character.maxY
+        let roomBelow = character.minY - visible.minY
+        // She moves away from the side the balloon is on; the input field is on the side she moves towards, unless
+        // it had no room there to begin with and went round to the far end.
+        let towards = flipped ? roomAbove : roomBelow
+        let inputBeyond = input != nil && inputNeed > towards
+        let limit = max(0, towards - (inputBeyond ? 0 : inputNeed))
+        let shift = min(overflow, limit)
+        return flipped ? shift : -shift
     }
 
     public static func make(

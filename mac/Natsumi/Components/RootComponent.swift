@@ -28,18 +28,35 @@ final class RootComponent: Component {
     private var reconnectTask: Task<Void, Never>?
     private var outsideClickMonitor: Any?
 
+    /// The pointer: where it is watched around, the monitor that reports it moving, and the wait before she goes or
+    /// comes back. The mediator hears only "the pointer settled by her" and "it has gone".
+    private var pointerAnchor: CGRect?
+    private var pointerMonitor: Any?
+    private var pointerIsNear = false
+    private var lastPointerSample = Date.distantPast
+    private var pointerTask: Task<Void, Never>?
+
     private var pending: [UIEvent] = []
     private var draining = false
     private var placement = ColumnPlacement()
     private var appliedProps: RootProps?
     private var wasHistoryOpen = false
+    /// A run the mediator asked for is under way: the panels ride along with her, so nothing is laid out again.
+    private var isRunningCharacter = false
+    /// The column is asking for room; the layout it asked from must not ask again.
+    private var askingForRoom = false
+    /// This pass changes the size of a card, so the panels grow into their new frames instead of jumping.
+    private var animatingLayout = false
 
     private static let avatarDirectoryKey = "avatarDirectory"
+    private static let characterFrameName = "natsumi.character"
 
     init(menuBar: MenuBarModel) {
         self.menuBar = menuBar
         super.init(name: "root")
-        character = CharacterComponent(menu: { [weak self] in self?.contextMenu() })
+        character = CharacterComponent(
+            menu: { [weak self] in self?.contextMenu() },
+            pointerMoved: { [weak self] in self?.pointerMoved() })
         for child in [character as Component, balloon, notices, input, history, settings] { adopt(child) }
 
         menuBar.send = sink
@@ -48,7 +65,8 @@ final class RootComponent: Component {
         settings.panel.delegate = windows
         windows.didMove = { [weak self] window in
             guard let self, window === self.character.panel else { return }
-            self.refresh(placeHistory: true)
+            self.deliver(.characterFrameChanged(self.character.panel.frame, visible: self.visibleFrame))
+            if !self.isRunningCharacter { self.refresh(placeHistory: true) }
         }
         windows.willClose = { [weak self] window in
             guard let self else { return }
@@ -58,7 +76,10 @@ final class RootComponent: Component {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.keepCharacterOnScreen() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.character.dispatch(.screenConfigurationChanged(visible: self.visibleFrame))
+            }
         }
     }
 
@@ -69,16 +90,18 @@ final class RootComponent: Component {
     }
 
     func launch() {
-        if !character.panel.setFrameUsingName("natsumi.character"), let screen = NSScreen.main {
+        if !character.panel.setFrameUsingName(Self.characterFrameName), let screen = NSScreen.main {
             let visible = screen.visibleFrame
             character.panel.setFrameOrigin(NSPoint(x: visible.maxX - 160, y: visible.minY + 40))
         }
-        character.panel.setFrameAutosaveName("natsumi.character")
+        // The frame is saved when she comes to rest in a place of her own, not on every move: standing out of the
+        // pointer's way would otherwise become the place she starts in next time.
         character.panel.orderFrontRegardless()
         deliver(.launched(LaunchInfo(
             characterScale: overlaySettings.characterScale, inputBoxSize: overlaySettings.inputBoxSize,
             serverOrigin: account.serverAddress?.origin.absoluteString, avatarDirectory: avatarDirectory,
             defaultAvatarDirectory: Self.defaultAvatarDirectory.path)))
+        deliver(.characterFrameChanged(character.panel.frame, visible: visibleFrame))
     }
 
     // MARK: - One event at a time
@@ -89,6 +112,7 @@ final class RootComponent: Component {
         pending.append(event)
         guard !draining else { return }
         draining = true
+        let expandedBefore = mediator.state.expanded
         var afterDrawing: [UIEffect] = []
         while !pending.isEmpty {
             for effect in mediator.handle(pending.removeFirst()) {
@@ -99,7 +123,11 @@ final class RootComponent: Component {
             }
         }
         draining = false
+        // Opening or folding a card changes how tall the column is: the panel frames and what is drawn in them move
+        // over the same time and the same curve, so the outline never runs ahead of the words.
+        animatingLayout = mediator.state.expanded != expandedBefore
         refresh()
+        animatingLayout = false
         for effect in afterDrawing { perform(effect) }
     }
 
@@ -108,6 +136,9 @@ final class RootComponent: Component {
     /// Derives the drawing parameters, lays the column out with the most of the stacks that fits, and hands every
     /// component its own parameters.
     private func refresh(placeHistory: Bool = false) {
+        // While she is running, the panels are her child windows and travel with her; the column is laid out again
+        // when she arrives.
+        guard !isRunningCharacter else { return }
         let state = mediator.state
         fitCharacter(state)
         placement.width = state.inputBoxSize.width
@@ -118,7 +149,8 @@ final class RootComponent: Component {
         let layout = OverlayLayout.fit(
             visible: visibleFrame, character: character.panel.frame,
             spacing: OverlayLayout.spacing(for: state.characterScale), input: inputSize,
-            history: props.history != nil && (placeHistory || historyOpening) ? history.panel.frame.size : nil
+            history: props.history != nil && (placeHistory || historyOpening) ? history.panel.frame.size : nil,
+            steps: UIProps.budgetSteps(state)
         ) { budget in
             placement.budget = budget
             let stacked = UIProps.root(state, placement: placement)
@@ -126,27 +158,49 @@ final class RootComponent: Component {
                 notices: stacked.notices.map { fittingSize(of: notices.probe($0), width: placement.width) },
                 balloon: stacked.balloon.map { fittingSize(of: balloon.probe($0), width: placement.width) })
         }
+        if layout.characterOffset != 0, !askingForRoom {
+            // The column does not fit where she stands. She is asked to make room first; the ladder only comes into
+            // it when she cannot move far enough (ADR 0016). What she does about it is hers to decide.
+            askingForRoom = true
+            character.dispatch(.columnNeedsRoom(offset: layout.characterOffset))
+            askingForRoom = false
+            // She only makes room when she can. If she stayed put, the column is laid out with what there is.
+            if isRunningCharacter { return }
+        }
         placement.budget = layout.budget
         placement.tail = layout.tail
         placement.tailX = layout.tailX
         props = UIProps.root(state, placement: placement)
 
-        if props != appliedProps {
-            appliedProps = props
-            character.render(props.character)
-            balloon.render(props.balloon)
-            notices.render(props.notices)
-            input.render(props.input)
-            history.render(props.history)
-            settings.render(props.settings)
-            menuBar.props = props.menu
-        }
+        animated {
+            if props != appliedProps {
+                appliedProps = props
+                character.render(props.character)
+                balloon.render(props.balloon)
+                notices.render(props.notices)
+                input.render(props.input)
+                history.render(props.history)
+                settings.render(props.settings)
+                menuBar.props = props.menu
+            }
 
-        place(balloon.panel, at: layout.balloon)
-        place(notices.panel, at: layout.notices)
-        place(input.panel, at: layout.input)
+            place(balloon.panel, at: layout.balloon)
+            place(notices.panel, at: layout.notices)
+            place(input.panel, at: layout.input)
+        }
         placeHistoryWindow(props.history != nil, frame: layout.history)
         wasHistoryOpen = props.history != nil
+    }
+
+    /// Runs the drawing and the placing together over one time and one curve, when this pass is one the owner should
+    /// see move.
+    private func animated(_ body: () -> Void) {
+        guard animatingLayout else { return body() }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = CharacterRun.duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            withAnimation(.easeInOut(duration: CharacterRun.duration)) { body() }
+        }
     }
 
     private var visibleFrame: CGRect {
@@ -161,15 +215,34 @@ final class RootComponent: Component {
     private func fitCharacter(_ state: UIState) {
         let panel = character.panel
         let frame = OverlayLayout.characterFrame(panel.frame, art: state.characterScale.artSize, visible: visibleFrame)
-        if frame != panel.frame { panel.setFrame(frame, display: true) }
+        guard frame != panel.frame else { return }
+        panel.setFrame(frame, display: true)
+        if !state.isSteppedAside { panel.saveFrame(usingName: Self.characterFrameName) }
     }
 
-    /// The screens changed (a display went away, the resolution changed): bring the character back onto one.
-    private func keepCharacterOnScreen() {
+    /// Runs her to a place the mediator chose. The panels in the column are her child windows, so they go with her;
+    /// the history is not, and is put back where it belongs once she arrives.
+    private func runCharacter(to origin: CGPoint) {
         let panel = character.panel
-        let frame = OverlayLayout.clamp(panel.frame, into: visibleFrame)
-        if frame != panel.frame { panel.setFrame(frame, display: true) }
-        refresh()
+        var frame = panel.frame
+        frame.origin = origin
+        guard frame != panel.frame else {
+            deliver(.characterMoveFinished)
+            return
+        }
+        isRunningCharacter = true
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = CharacterRun.duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(frame, display: true)
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isRunningCharacter = false
+                self.deliver(.characterMoveFinished)
+                self.refresh(placeHistory: true)
+            }
+        })
     }
 
     private func place(_ panel: NSPanel, at frame: CGRect?) {
@@ -178,7 +251,13 @@ final class RootComponent: Component {
             panel.orderOut(nil)
             return
         }
-        if panel.frame != frame { panel.setFrame(frame, display: true) }
+        if panel.frame != frame {
+            if animatingLayout, panel.isVisible {
+                panel.animator().setFrame(frame, display: true)
+            } else {
+                panel.setFrame(frame, display: true)
+            }
+        }
         if panel.parent == nil { character.panel.addChildWindow(panel, ordered: .above) }
         if !panel.isVisible { panel.orderFront(nil) }
     }
@@ -276,6 +355,12 @@ final class RootComponent: Component {
             input.focus()
         case .watchOutsideClicks(let watching):
             watchOutsideClicks(watching)
+        case .moveCharacter(let origin):
+            runCharacter(to: origin)
+        case .saveCharacterPlace:
+            character.panel.saveFrame(usingName: Self.characterFrameName)
+        case .watchPointer(let anchor):
+            watchPointer(anchor)
         case .makeHistoryKey:
             history.panel.makeKey()
         case .showSettings:
@@ -352,6 +437,67 @@ final class RootComponent: Component {
         } else if !watching, let monitor = outsideClickMonitor {
             NSEvent.removeMonitor(monitor)
             outsideClickMonitor = nil
+        }
+    }
+
+    // MARK: - The pointer
+
+    /// Watches the pointer around a rectangle: usually where the character stands, and, while she is standing out of
+    /// its way, the place she will come back to. Mouse moves are thinned out here and never reach the mediator; it
+    /// hears only that the pointer settled by her or that it has gone.
+    private func watchPointer(_ anchor: CGRect?) {
+        pointerAnchor = anchor
+        pointerTask?.cancel()
+        pointerTask = nil
+        pointerIsNear = false
+        if anchor != nil, pointerMonitor == nil {
+            // A global monitor sees the pointer everywhere but inside this app's own windows; the character's panel
+            // has a tracking area for that part.
+            pointerMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+                MainActor.assumeIsolated { self?.pointerMoved() }
+            }
+        } else if anchor == nil, let monitor = pointerMonitor {
+            NSEvent.removeMonitor(monitor)
+            pointerMonitor = nil
+        }
+    }
+
+    private func pointerMoved() {
+        guard let anchor = pointerAnchor else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastPointerSample) >= PointerDodge.sampleInterval else { return }
+        lastPointerSample = now
+        let pointer = NSEvent.mouseLocation
+        let scale = mediator.state.characterScale.textScale
+        // The panels in the column are there to be clicked: a pointer on one of them is not on its way past her.
+        let onAPanel = [balloon.panel, notices.panel, input.panel].contains { $0.isVisible && $0.frame.contains(pointer) }
+        if !pointerIsNear, !onAPanel, PointerDodge.isNear(pointer, of: anchor, textScale: scale) {
+            pointerIsNear = true
+            waitThen(PointerDodge.linger) { [weak self] in
+                guard let self, let anchor = self.pointerAnchor else { return }
+                let now = NSEvent.mouseLocation
+                guard PointerDodge.isNear(now, of: anchor, textScale: scale) else { return }
+                self.deliver(.pointerCameNear(at: now))
+            }
+        } else if pointerIsNear, PointerDodge.isAway(pointer, of: anchor, textScale: scale) {
+            pointerIsNear = false
+            waitThen(PointerDodge.settle) { [weak self] in
+                guard let self, let anchor = self.pointerAnchor,
+                      PointerDodge.isAway(NSEvent.mouseLocation, of: anchor, textScale: scale)
+                else { return }
+                self.deliver(.pointerWentAway)
+            }
+        }
+    }
+
+    /// The one wait the pointer has going at a time: a new one replaces the one before, so a pointer that passes by
+    /// never sets her off.
+    private func waitThen(_ delay: TimeInterval, _ body: @escaping @MainActor () -> Void) {
+        pointerTask?.cancel()
+        pointerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, self != nil else { return }
+            body()
         }
     }
 

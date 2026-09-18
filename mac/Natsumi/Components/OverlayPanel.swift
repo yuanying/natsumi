@@ -89,16 +89,37 @@ final class ActionMenuItem: NSMenuItem {
 /// control-click shows the menu.
 final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
     private var onClick: @MainActor (CGPoint) -> Void = { _ in }
+    private var onDrag: @MainActor (Bool) -> Void = { _ in }
+    /// Where the pointer is when it is over the character herself. A global monitor is blind inside the app's own
+    /// windows, so this tracking area covers what it cannot see.
+    private var onPointer: @MainActor () -> Void = {}
     private var menuProvider: @MainActor () -> NSMenu? = { nil }
     private var dragged = false
 
-    init(rootView: Content, onClick: @escaping @MainActor (CGPoint) -> Void, menu: @escaping @MainActor () -> NSMenu?) {
+    init(
+        rootView: Content, onClick: @escaping @MainActor (CGPoint) -> Void,
+        onDrag: @escaping @MainActor (Bool) -> Void, onPointer: @escaping @MainActor () -> Void,
+        menu: @escaping @MainActor () -> NSMenu?
+    ) {
         self.onClick = onClick
+        self.onDrag = onDrag
+        self.onPointer = onPointer
         self.menuProvider = menu
         super.init(rootView: rootView)
-        // The character's frame is set only by its scale and the owner's drag.
+        // The character's frame is set only by its scale, the owner's drag, and where the mediator sends her.
         sizingOptions = []
     }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        // `.activeAlways`: the app is never the active one, and the pointer still has to be seen.
+        addTrackingArea(NSTrackingArea(
+            rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .mouseMoved, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onPointer() }
+    override func mouseMoved(with event: NSEvent) { onPointer() }
 
     override func rightMouseDown(with event: NSEvent) {
         showMenu(with: event)
@@ -132,11 +153,18 @@ final class ClickOrDragHostingView<Content: View>: NSHostingView<Content> {
     override func mouseDragged(with event: NSEvent) {
         guard !dragged else { return }
         dragged = true
+        onDrag(true)
+        // `performDrag` runs the drag to its end before it comes back; whether the mouse-up also reaches us after
+        // that depends on how it ended, so the end is reported here as well and taken only once.
         window?.performDrag(with: event)
+        onDrag(false)
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard !dragged else { return }
+        guard !dragged else {
+            onDrag(false)
+            return
+        }
         let point = convert(event.locationInWindow, from: nil)
         onClick(CGPoint(x: point.x, y: isFlipped ? point.y : bounds.height - point.y))
     }

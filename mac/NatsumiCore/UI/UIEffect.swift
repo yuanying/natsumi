@@ -33,6 +33,12 @@ public enum UIEffect: Equatable, Sendable {
     case focusInput
     /// Watch for clicks in other apps while the input field is open.
     case watchOutsideClicks(Bool)
+    /// Run the character to this place, and answer with `.characterMoveFinished`.
+    case moveCharacter(to: CGPoint)
+    /// Remember where she stands as the place she starts in next time.
+    case saveCharacterPlace
+    /// Watch the pointer around this rectangle and report when it settles by it or leaves it; nil stops watching.
+    case watchPointer(near: CGRect?)
     case makeHistoryKey
     case showSettings
     case hideSettings

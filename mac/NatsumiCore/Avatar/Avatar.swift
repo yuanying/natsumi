@@ -94,6 +94,17 @@ public struct AvatarManifest: Equatable, Sendable {
         return animations.min { $0.value.row < $1.value.row }?.key ?? "idle"
     }
 
+    /// The animation for a face that is also moving. Running is drawn with the art for the way she is going, else
+    /// with running art that has no side to it; an avatar with none at all keeps its face's own animation and only
+    /// changes place. A missing animation is never an error here: owners bring their own avatars.
+    public func animationName(for expression: Expression, motion: CharacterMotion) -> String {
+        guard case .running(let direction) = motion else { return animationName(for: expression) }
+        for candidate in [direction == .left ? "running-left" : "running-right", "running"] {
+            if animations[candidate] != nil { return candidate }
+        }
+        return animationName(for: expression)
+    }
+
     private func validate() throws {
         let name = spritesheet
         guard !name.isEmpty, !name.contains("/"), !name.hasPrefix("."),
@@ -149,13 +160,13 @@ public struct AvatarAsset: Equatable, @unchecked Sendable {
         self.frames = frames
     }
 
-    public func frames(for expression: Expression) -> [CGImage] {
-        frames[manifest.animationName(for: expression)] ?? []
+    public func frames(for expression: Expression, motion: CharacterMotion = .still) -> [CGImage] {
+        frames[manifest.animationName(for: expression, motion: motion)] ?? []
     }
 
-    /// The frame to show `elapsed` seconds into the expression's animation, looping.
-    public func frame(for expression: Expression, elapsed: TimeInterval) -> CGImage {
-        let frames = frames(for: expression)
+    /// The frame to show `elapsed` seconds into the animation, looping.
+    public func frame(for expression: Expression, motion: CharacterMotion = .still, elapsed: TimeInterval) -> CGImage {
+        let frames = frames(for: expression, motion: motion)
         let index = Int((max(0, elapsed) * manifest.framesPerSecond + 1e-9).rounded(.down)) % frames.count
         return frames[index]
     }
