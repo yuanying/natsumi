@@ -71,10 +71,18 @@ public struct OverlayLayout: Equatable, Sendable {
     /// What an opened card leaves at the sides of the screen.
     public static let expandedSideMargin: CGFloat = 24
 
-    /// How wide an opened card may be: as wide as there is room for, up to the factor, and never narrower than the
-    /// rest of the column.
-    public static func expandedWidth(_ width: CGFloat, visible: CGRect) -> CGFloat {
-        min(width * expandedWidthFactor, max(width, visible.width - expandedSideMargin * 2))
+    /// How wide an opened card may be: as wide as there is room for on both sides of where the column already
+    /// stands, up to the factor, and never narrower than the rest of the column.
+    ///
+    /// Widening must not move the column sideways. Near the side of a screen a wide card and a narrow one are
+    /// pushed inward by different amounts, so their middles no longer agree — and opening or folding a card would
+    /// slide it across as well as growing it. Kept to the room around the middle the column already has, both are
+    /// drawn about the same line and only the height changes.
+    public static func expandedWidth(_ width: CGFloat, character: CGRect, visible: CGRect) -> CGFloat {
+        let x = min(max(character.midX - width / 2, visible.minX), visible.maxX - width)
+        let middle = x + width / 2
+        let room = 2 * min(middle - visible.minX, visible.maxX - middle)
+        return min(width * expandedWidthFactor, max(width, min(room, visible.width - expandedSideMargin * 2)))
     }
 
     /// The gap between the character and the panels and between the panels, growing with the character.

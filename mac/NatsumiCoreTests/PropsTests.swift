@@ -103,13 +103,16 @@ struct PropsTests {
     func expandedIsWider() {
         let screen = CGRect(x: 0, y: 0, width: 1710, height: 950)
         let column = CGFloat(InputBoxSize.default.width)
-        let wide = OverlayLayout.expandedWidth(column, visible: screen)
+        let middle = CGRect(x: 800, y: 90, width: 192, height: 208)
+        let wide = OverlayLayout.expandedWidth(column, character: middle, visible: screen)
         #expect(wide == column * OverlayLayout.expandedWidthFactor)
         // 画面が狭ければ、そこで止まる。
-        #expect(OverlayLayout.expandedWidth(column, visible: CGRect(x: 0, y: 0, width: 400, height: 900))
+        let narrow = CGRect(x: 0, y: 0, width: 400, height: 900)
+        #expect(OverlayLayout.expandedWidth(column, character: CGRect(x: 104, y: 0, width: 192, height: 208), visible: narrow)
             == 400 - OverlayLayout.expandedSideMargin * 2)
-        // 画面が列より狭くても、列の幅は下回らない。
-        #expect(OverlayLayout.expandedWidth(column, visible: CGRect(x: 0, y: 0, width: 100, height: 900)) == column)
+        // 画面の端にいるときは、列の位置が動かない分までしか広がらない。
+        let atEdge = CGRect(x: 1493, y: 90, width: 192, height: 208)
+        #expect(OverlayLayout.expandedWidth(column, character: atEdge, visible: screen) == column)
 
         var placement = ColumnPlacement()
         placement.budget = StackBudget.expandedSteps[0]
