@@ -51,6 +51,9 @@ public struct ConversationState: Equatable, Sendable {
     /// Owner messages natsumi has not finished with, by event ID.
     public private(set) var pendingEvents: [String: EventState] = [:]
     public private(set) var expression: Expression = .neutral
+    /// The line natsumi is writing now, while she is handling something (ADR 0017). It is not part of the
+    /// conversation: nothing keeps it, no snapshot carries it, and the end of the handling clears it.
+    public private(set) var thinkingLine: String?
     public private(set) var outbox: [OutgoingMessage] = []
     /// What the server says the owner has read and checked.
     public private(set) var readState = ReadState()
@@ -141,6 +144,8 @@ public struct ConversationState: Equatable, Sendable {
                 uniquingKeysWith: { _, latest in latest })
             expression = snapshot.expression
             readState = snapshot.readState
+            // A snapshot is the whole of what the server keeps, and the line is not in it.
+            thinkingLine = nil
         case .message(let message):
             guard !messages.contains(where: { $0.messageId == message.messageId }) else { return }
             messages.append(message)
@@ -156,8 +161,13 @@ public struct ConversationState: Equatable, Sendable {
             }
         case .expression(let expression):
             self.expression = expression
+        case .thinking(let line):
+            // The empty line is the server saying the thinking is over.
+            thinkingLine = line.isEmpty ? nil : line
         case .eventCompleted(let completion):
             pendingEvents[completion.eventId] = nil
+            // She may still be on another message; the line goes only when there is nothing left to handle.
+            if pendingEvents.isEmpty { thinkingLine = nil }
         case .readMoved(let through, let count):
             readState.readThroughMessageId = through
             readState.unreadReplyCount = count

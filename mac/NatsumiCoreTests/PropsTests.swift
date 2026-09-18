@@ -30,9 +30,13 @@ struct PropsTests {
     }
 
     private func balloon(
-        _ conversation: ConversationState, dismissed: BalloonIndicator? = nil, placement: ColumnPlacement = ColumnPlacement()
+        _ conversation: ConversationState, dismissed: Bool = false, placement: ColumnPlacement = ColumnPlacement()
     ) -> BalloonProps? {
         UIProps.balloon(conversation, dismissed: dismissed, placement: placement, scale: .default)
+    }
+
+    private func thinking(_ label: String, line: String? = nil) -> BalloonProps.Body {
+        .thinking(ThinkingProps(label: label, line: line))
     }
 
     private func notices(
@@ -59,7 +63,8 @@ struct PropsTests {
             text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 3, help: "クリックで全文を出す")))
         #expect(props?.edges == ReplyStack.maxBehind)
         #expect(props?.closeHelp == "この返事を既読にして次へ")
-        #expect(props?.isBusy == false)
+        // A reply is said out loud: it keeps the speech balloon.
+        #expect(props?.outline == .speech)
     }
 
     @Test("後ろに重ねる枚数には上限があり、超えた分は件数だけにする")
@@ -122,9 +127,9 @@ struct PropsTests {
         placement.width = column
         placement.expandedWidth = wide
         let state = conversation([reply("r1"), notice("n1")], readThrough: nil, unread: 1, notices: ["n1"])
-        #expect(UIProps.balloon(state, dismissed: nil, expanded: .reply("r1"), placement: placement, scale: .default)?
+        #expect(UIProps.balloon(state, dismissed: false, expanded: .reply("r1"), placement: placement, scale: .default)?
             .width == wide)
-        #expect(UIProps.balloon(state, dismissed: nil, expanded: nil, placement: placement, scale: .default)?
+        #expect(UIProps.balloon(state, dismissed: false, expanded: nil, placement: placement, scale: .default)?
             .width == column)
         #expect(UIProps.notices(state, hidden: false, expanded: .notice("n1"), placement: placement, scale: .default)?
             .width == wide)
@@ -139,7 +144,7 @@ struct PropsTests {
         var placement = ColumnPlacement()
         placement.budget = StackBudget.expandedSteps[0]
         let props = UIProps.balloon(
-            state, dismissed: nil, expanded: .reply("r1"), placement: placement, scale: .default)
+            state, dismissed: false, expanded: .reply("r1"), placement: placement, scale: .default)
         #expect(props?.body == .reply(ReplyProps(
             text: long, lineLimit: BalloonText.expandedMaxLines, isExpanded: true, showsHistoryLink: false, more: 0,
             help: "クリックで畳む")))
@@ -152,7 +157,7 @@ struct PropsTests {
         var placement = ColumnPlacement()
         placement.budget = StackBudget(behind: 0, lines: 12)
         let props = UIProps.balloon(
-            state, dismissed: nil, expanded: .reply("r1"), placement: placement, scale: .default)
+            state, dismissed: false, expanded: .reply("r1"), placement: placement, scale: .default)
         #expect(props?.body == .reply(ReplyProps(
             text: many, lineLimit: 12, isExpanded: true, showsHistoryLink: true, more: 0, help: "クリックで畳む")))
     }
@@ -178,36 +183,63 @@ struct PropsTests {
         #expect(StackBudget.expandedSteps.map(\.lines) == StackBudget.expandedSteps.map(\.lines).sorted(by: >))
     }
 
-    @Test("返事の未読が無く処理待ちがあるときだけ考え中を出し、未読があれば未読を出して処理中の印を付ける")
+    @Test("処理待ちがある間は、未読の返事があっても考え中の吹き出しに切り替える")
     func indicators() {
         var state = conversation([reply("r0")], readThrough: "r0")
         state.enqueue(text: "やあ", requestId: "q1")
-        #expect(balloon(state)?.body == .receiving)
+        #expect(balloon(state)?.body == thinking("受付中"))
+        #expect(balloon(state)?.outline == .thought)
         #expect(balloon(state)?.closeHelp == "閉じる")
+        #expect(balloon(state)?.edges == 0)
 
         state.apply(.accepted(CommandAccepted(messageId: "m1", eventId: "e1", state: .processing)), requestId: "q1")
-        #expect(balloon(state)?.body == .thinking)
+        #expect(balloon(state)?.body == thinking("考え中"))
 
         // A notice is not a reply: the balloon keeps thinking.
         state.apply(.message(notice("n1")))
-        #expect(balloon(state)?.body == .thinking)
+        #expect(balloon(state)?.body == thinking("考え中"))
 
+        // The reply she just sent waits its turn: while she is still working, the bubble is hers (ADR 0017).
         state.apply(.message(reply("r2", to: "e1")))
-        #expect(balloon(state)?.isBusy == true)
+        #expect(balloon(state)?.body == thinking("考え中"))
         state.apply(.eventCompleted(EventCompletion(eventId: "e1", messageId: "m1", status: .replied, reason: nil)))
-        #expect(balloon(state)?.isBusy == false)
+        #expect(UIProps.replyStack(state)?.front.messageId == "r2")
+        #expect(balloon(state)?.outline == .speech)
+        if case .reply = balloon(state)?.body {} else { Issue.record("返事に戻っていない") }
+    }
+
+    @Test("思考の行が届けば行を出し、無ければ点滅のままにする")
+    func thinkingLine() {
+        var state = conversation(
+            [owner("m1", event: "e1")], readThrough: "m1",
+            pending: [PendingEvent(eventId: "e1", messageId: "m1", state: .processing)])
+        #expect(balloon(state)?.body == thinking("考え中"))
+
+        state.apply(.thinking(line: "まず要点を整理する"))
+        #expect(balloon(state)?.body == thinking("考え中", line: "まず要点を整理する"))
+        // The line is never cut here: the balloon draws one line of it and cuts what does not fit.
+        let long = String(repeating: "あ", count: 200)
+        state.apply(.thinking(line: long))
+        #expect(balloon(state)?.body == thinking("考え中", line: long))
+        #expect(balloon(state)?.outline == .thought)
+
+        state.apply(.thinking(line: ""))
+        #expect(balloon(state)?.body == thinking("考え中"))
     }
 
     @Test("閉じた印は出さないが、未読の返事は閉じても出し続ける")
     func dismissed() {
-        let thinking = conversation(
+        var working = conversation(
             [owner("m1", event: "e1")], readThrough: "m1",
             pending: [PendingEvent(eventId: "e1", messageId: "m1", state: .processing)])
-        #expect(balloon(thinking, dismissed: .thinking) == nil)
-        #expect(balloon(thinking, dismissed: .receiving)?.body == .thinking)
+        #expect(balloon(working, dismissed: true) == nil)
+        #expect(balloon(working, dismissed: false)?.body == thinking("考え中"))
+        // A new line is the same handling still going on: it does not bring the bubble back.
+        working.apply(.thinking(line: "考えている"))
+        #expect(balloon(working, dismissed: true) == nil)
 
         let unread = conversation([reply("r1")], readThrough: nil, unread: 1)
-        #expect(balloon(unread, dismissed: .thinking)?.body != nil)
+        #expect(balloon(unread, dismissed: true)?.body != nil)
     }
 
     @Test("長い発言は文字数と行数で切り、続きがあることを示す")

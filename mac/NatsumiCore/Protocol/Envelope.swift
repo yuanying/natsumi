@@ -13,6 +13,9 @@ public enum ServerEvent: Equatable, Sendable {
     case message(ShownMessage)
     case expression(Expression)
     case eventCompleted(EventCompletion)
+    /// `conversation.thinking`: the line natsumi is writing right now. An empty line says the thinking is over.
+    /// It is of the moment: it takes no number on the stream and is in no snapshot (ADR 0017).
+    case thinking(line: String)
     /// `conversation.read`: some device moved the read position.
     case readMoved(readThroughMessageId: String, unreadReplyCount: Int)
     /// `notification.acked`: some device checked a notice for the first time.
@@ -50,6 +53,7 @@ public struct ServerEnvelope: Equatable, Sendable {
         case "conversation.message": payload(ShownMessage.self).map { .message($0) }
         case "avatar.expression": payload(ExpressionPayload.self).map { .expression($0.expression) }
         case "conversation.event.completed": payload(EventCompletion.self).map { .eventCompleted($0) }
+        case "conversation.thinking": payload(ThinkingPayload.self).map { .thinking(line: $0.line) }
         case "conversation.read":
             payload(ReadPayload.self).map { .readMoved(readThroughMessageId: $0.readThroughMessageId, unreadReplyCount: $0.unreadReplyCount) }
         case "notification.acked": payload(AckedPayload.self).map { .notificationAcked(notificationId: $0.notificationId) }
@@ -90,6 +94,8 @@ public struct ServerEnvelope: Equatable, Sendable {
     }
 
     private struct AckedPayload: Decodable { let notificationId: String }
+
+    private struct ThinkingPayload: Decodable { let line: String }
 
     private struct CodePayload: Decodable {
         let code: String

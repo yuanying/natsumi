@@ -30,6 +30,15 @@ struct ServerEnvelopeTests {
             messageId: "m2", role: .natsumi, kind: .notice, text: "お知らせ", createdAt: "2026-01-01T00:00:00.000Z", about: ["e1"])))
     }
 
+    @Test("conversation.thinking は、いま書かれている 1 行を運ぶ")
+    func thinkingLine() {
+        let envelope = Fixture.decoded(Fixture.thinking("まず要点を整理する", seq: 42))
+        #expect(envelope.position == StreamPosition(epoch: Fixture.epoch, streamId: Fixture.stream, seq: 42))
+        #expect(envelope.event == .thinking(line: "まず要点を整理する"))
+        // The empty line is how the server says the thinking is over.
+        #expect(Fixture.decoded(Fixture.thinking("", seq: 42)).event == .thinking(line: ""))
+    }
+
     @Test("session.snapshot は端末 ID・履歴・処理待ち・表情を持つ")
     func snapshot() {
         let envelope = Fixture.decoded(Fixture.snapshot(

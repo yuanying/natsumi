@@ -35,7 +35,7 @@ struct NoticeFlowTests {
         #expect(props(m).notices == nil)
 
         _ = m.handle(.inputSubmitted("架空のメッセージ"))
-        #expect(props(m).balloon?.body == .receiving)
+        #expect(props(m).balloon?.body == .thinking(ThinkingProps(label: "受付中", line: nil)))
 
         var seq = 1
         func receive(_ type: String, requestId: String? = nil, _ payload: [String: Any]) {
@@ -43,26 +43,31 @@ struct NoticeFlowTests {
             _ = m.handle(.socketReceived(Fixture.envelope(type, seq: seq, requestId: requestId, payload: payload)))
         }
         receive("command.accepted", requestId: "r2", ["messageId": "m1", "eventId": "e1", "state": "processing"])
-        #expect(props(m).balloon?.body == .thinking)
+        #expect(props(m).balloon?.body == .thinking(ThinkingProps(label: "考え中", line: nil)))
         receive("conversation.message", Fixture.message("m1", role: "owner", kind: "message", eventId: "e1"))
         receive("avatar.expression", ["expression": "thinking"])
         // The model sets the face through its tool while it works.
         receive("avatar.expression", ["expression": "thinking"])
-        #expect(props(m).balloon?.body == .thinking)
+        // The line she is writing goes in the same bubble, without a number of its own (ADR 0017).
+        _ = m.handle(.socketReceived(Fixture.thinking("知らせを送ろう", seq: seq)))
+        #expect(props(m).balloon?.body == .thinking(ThinkingProps(label: "考え中", line: "知らせを送ろう")))
 
         var notice = Fixture.message("n1", kind: "notice", text: "架空のお知らせ")
         notice["about"] = ["e1"]
         receive("conversation.message", notice)
-        #expect(props(m).balloon?.body == .thinking)
+        // The notices are a bundle of their own: they stay out while she thinks.
+        #expect(props(m).balloon?.body == .thinking(ThinkingProps(label: "考え中", line: "知らせを送ろう")))
         #expect(props(m).notices?.text == "架空のお知らせ")
         #expect(props(m).character.badge?.count == 1)
 
         receive("conversation.message", Fixture.message("m2", text: "架空の返事", replyTo: "e1"))
+        // Her reply waits behind the bubble until she has finished with the event.
+        #expect(props(m).balloon?.body == .thinking(ThinkingProps(label: "考え中", line: "知らせを送ろう")))
+        receive("conversation.event.completed", ["eventId": "e1", "messageId": "m1", "status": "replied"])
+        #expect(m.state.conversation.thinkingLine == nil)
         #expect(props(m).balloon?.body == .reply(ReplyProps(
             text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
             help: "クリックで全文を出す")))
-        #expect(props(m).balloon?.isBusy == true)
-        receive("conversation.event.completed", ["eventId": "e1", "messageId": "m1", "status": "replied"])
         if resetExpression { receive("avatar.expression", ["expression": "neutral"]) }
         return m
     }
@@ -86,7 +91,7 @@ struct NoticeFlowTests {
         #expect(props(m).balloon?.body == .reply(ReplyProps(
             text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
             help: "クリックで全文を出す")))
-        #expect(props(m).balloon?.isBusy == false)
+        #expect(props(m).balloon?.outline == .speech)
         #expect(props(m).notices?.text == "架空のお知らせ")
         #expect(props(m).notices?.more == 0)
     }

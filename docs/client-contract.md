@@ -59,6 +59,8 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 その stream 内で単調増加する `seq` を持つ。stream は同一 epoch 中の端末再接続をまたいで維持する。
 全端末向けイベントにも各 stream で個別に採番し、端末限定イベントはその stream だけで採番する。
 他端末への配信で自端末の seq は進まない。通知先の決定に使うサーバー操作順序は別の内部カウンターとする。
+例外は `conversation.thinking` だけで、これは採番せず、その stream がいま出している seq をそのまま付けて送る
+（下記「考えている 1 行」）。
 同じ deviceId から二重接続した場合は、新接続が旧接続を置き換える。
 `requestId` は応答の相関に使い、購読者全体へのイベントでは省略できる。
 内部のファイルパス、認証情報、Pi の session ファイル参照、任意の Pi SDK 呼び出しをクライアントに転送しない。
@@ -67,7 +69,9 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 {"v":1,"epoch":"epoch-example","streamId":"stream-example","seq":42,"type":"conversation.message","payload":{"messageId":"message-example","role":"natsumi","kind":"reply","text":"こんにちは","replyTo":"event-example","createdAt":"2026-01-01T00:00:00.000Z"}}
 ```
 
-`messageId` と `eventId` は natsumi が採番する ID である。Pi の session ID・entry ID・思考・ツールの呼び出しはクライアントに渡さない。
+`messageId` と `eventId` は natsumi が採番する ID である。Pi の session ID・entry ID・ツールの呼び出し（引数も結果も）はクライアントに渡さない。
+思考は、**いま書かれている 1 行だけ**を `conversation.thinking` で流す（[ADR 0017](adr/0017-streaming-the-line-she-is-thinking.md)）。
+思考の全文と、その記録は渡さない。返事の途中の文字列は流れない。
 
 | クライアント command | payload | サーバーの結果 |
 | --- | --- | --- |
@@ -86,6 +90,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `notification.acked` | notificationId、acknowledgedAt。知らせを初めて確認したときだけ全端末に届く |
 | `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は replyTo（答えたイベント）、notice は関係するイベントがあれば about |
 | `avatar.expression` | expression（neutral / happy / laughing / surprised / thinking / worried / sad / sleepy） |
+| `conversation.thinking` | line（natsumi がいま書いている思考の 1 行。120 文字まで。空文字は思考が終わったこと）。その場限りで、採番せず、再送もせず、記録もしない。下記「考えている 1 行」 |
 | `conversation.event.completed` | eventId、messageId、status（replied / no-reply / failed）。failed には reason（model-call-limit / timeout / model-error / stopped） |
 | `approval.pending` / `approval.resolved` | approvalId、revision、具体的変更内容または確定結果 |
 | `notification.batch` | 未実装で、送られない。知らせは `conversation.message`（kind: notice）で届く。下記「通知と定期処理」 |
@@ -115,11 +120,12 @@ natsumi は一本の思考ループで、本人のメッセージを 1 件ずつ
    同じ requestId の再送には同じ messageId・eventId と現在の state（queued / processing / replied / no-reply / failed）を返し、
    本文か端末が違えば `request-conflict` で拒否する。処理中でも busy にはならず、次の境目で差し込まれるか順番を待つ。
 2. 続けて全端末に、本人のメッセージの `conversation.message` と、`avatar.expression`（thinking）が届く。
-3. natsumi が返事を確定すると、全文の `conversation.message`（kind: reply）が一度だけ届く。1 つのメッセージへの返事は最大 1 回である。
-   相談や知らせは kind: notice で届く。途中の文字列は流れない。
-4. 処理が終わると `conversation.event.completed` が届く。返事なしで終わることもある（no-reply）。
+3. 処理の間、natsumi が書いている思考の 1 行が `conversation.thinking` で届く（下記「考えている 1 行」）。
+4. natsumi が返事を確定すると、全文の `conversation.message`（kind: reply）が一度だけ届く。1 つのメッセージへの返事は最大 1 回である。
+   相談や知らせは kind: notice で届く。**返事の途中の文字列は流れない。**
+5. 処理が終わると `conversation.event.completed` が届く。返事なしで終わることもある（no-reply）。
    表情が thinking のままなら（natsumi が自分で付けたものも含む）、ほかに待っているメッセージがなければ neutral の `avatar.expression` が続く。
-5. thinking 以外の表情は、最後に変わってから一定の時間（サーバーの設定、既定 3 分）で neutral に戻り、そのときも `avatar.expression` が届く（ADR 0014）。
+6. thinking 以外の表情は、最後に変わってから一定の時間（サーバーの設定、既定 3 分）で neutral に戻り、そのときも `avatar.expression` が届く（ADR 0014）。
 
 `session.snapshot` の `messages` は SQLite の記録から作る。natsumi の思考、内心、ツールの呼び出しは含まれない。
 サーバーを再起動しても同じ履歴が返る。再起動の前に処理中だったメッセージは二度処理せず、返事がなければ failed になる。
@@ -129,16 +135,42 @@ natsumi は毎晩決まった時刻に一日を振り返り、思考の記録を
 - 振り返りの間、`avatar.expression` は sleepy になる。
 - その間に送ったメッセージも受け付けられ（state は queued）、全端末に表示される。表情は thinking にならない。
   返事は振り返りが終わってから届く。
-- 振り返りそのものは会話に出ない。振り返りに対する `conversation.event.completed` も届かない。
+- 振り返りそのものは会話に出ない。振り返りに対する `conversation.event.completed` も `conversation.thinking` も届かない。
 - 終わると、待っているメッセージがあれば thinking、なければ neutral の `avatar.expression` が届く。
 - 会話の履歴（snapshot）は、振り返りと記録の切り替えで変わらない。
 
-ライブイベントは端末の stream ごとにメモリ内の有限バッファに保つ。
+ライブイベントは端末の stream ごとにメモリ内の有限バッファに保つ（`conversation.thinking` を除く）。
 同一 epoch/streamId かつ必要な seq がその stream のバッファに残っていれば差分を再配信できる。
 epoch/streamId が変わった、その stream の seq が抜けた、受信が遅くバッファを超えた場合は snapshot を要求する。
 stream を破棄・再作成する場合は新しい streamId を発行し、同じ ID で seq をリセットしない。
 snapshot はサーバーの一つの同期処理で作るので、その間にイベントは割り込まない。snapshot より大きい seq のイベントをその上に適用する。
 Mac 再起動時はサーバーの snapshot を正とし、永続的な独自会話 DB は持たない。
+
+## 考えている 1 行
+
+本人のメッセージを処理している間、natsumi が書いている思考の **1 行だけ**が `conversation.thinking` で全端末に届く
+（[ADR 0017](adr/0017-streaming-the-line-she-is-thinking.md)。ADR 0008 の「思考はクライアントに渡さない」を一部改める）。
+
+- payload は `line` の 1 つだけで、思考の本文の**最後の改行より後ろ**である。改行が来れば次の行に入れ替わる。
+  全文は流れない。ツールの呼び出しの引数も結果も流れない。
+- 行が育つ途中も流すが、**250 ms に 1 回まで**に間引く。空行は送らない。思考のかたまりが終わったときは、
+  間引きに関わらず最後の行を送る。
+- **1 行は 120 文字まで。** 超えた行は先頭を落として `…` を付け、新しいほうの端を残す。
+- 処理が終わると、`line` が空文字の `conversation.thinking` が 1 度届く。これが「思考は終わった」の合図である。
+- 流れるのは、**本人のメッセージを処理しているターンだけ**である。夜の振り返り、合図（ping）、自発的な確認、
+  および設定 `pi.thinking` が `off` のときは流れない。
+- モデル呼び出しが複数回あるターンでは、呼び出しの境目でも最後の行はそのまま残る。
+
+採番と再送の扱いが、ほかの event と違う。
+
+- **seq を消費しない。** envelope には、その stream がいま出している seq（最後に採番した番号）をそのまま付ける。
+- **再送のバッファに入れない。** 受け取れなかった端末に後から届けることはしない。いま書いている行は、
+  いま見えることにだけ意味がある。
+- この event を知らないクライアントは、すでに受け取った seq として黙って捨てる。次の会話の event は今までどおり
+  seq + 1 で届くので、抜けにはならない。
+- 知っているクライアントは、**同じ epoch・同じ stream のときだけ適用し、stream の位置を動かさない。**
+  同期の前や別の stream のものは、再同期を求めずに捨てる。
+- **SQLite に記録しない。`session.snapshot` にも履歴にも入らない。** 再接続しても、前の行は戻らない。
 
 ## 既読と知らせの確認
 

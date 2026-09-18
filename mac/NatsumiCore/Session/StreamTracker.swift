@@ -26,6 +26,13 @@ public struct StreamTracker: Equatable, Sendable {
             position = at
             return .apply
         }
+        // The line she is writing takes no number of its own: it carries the one the stream is already at
+        // (ADR 0017). So it is applied where it is, never moves the position, and never reads as a gap. Before the
+        // stream is established there is nothing to draw it in, so it is dropped rather than resynced for.
+        if case .thinking = envelope.event {
+            guard let current = position, current.epoch == at.epoch, current.streamId == at.streamId else { return .ignore }
+            return .apply
+        }
         if let current = position, current.epoch == at.epoch, current.streamId == at.streamId {
             if at.seq <= current.seq { return .ignore }
             if at.seq != current.seq + 1 { return .resync }

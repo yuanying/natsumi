@@ -33,6 +33,16 @@ export class EventStream {
     this.sink?.(text);
   }
 
+  /**
+   * Sends an event of the moment to whoever is listening now: it takes no number of its own and is not kept for
+   * replay (ADR 0017). It carries the number the stream is at, which a client that does not know the type has
+   * already seen, so an older client ignores it instead of reading a gap into the stream.
+   */
+  publishEphemeral(type: string, payload: Record<string, unknown>): void {
+    if (!this.sink) return;
+    this.sink(JSON.stringify({ v: PROTOCOL_VERSION, epoch: this.epoch, streamId: this.streamId, seq: this.seq, type, payload }));
+  }
+
   /** Every event after `seq`, or undefined when any of them is no longer buffered or `seq` is not one this stream issued. */
   replayAfter(seq: unknown): string[] | undefined {
     if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0 || seq > this.seq) return undefined;
@@ -88,5 +98,10 @@ export class DeviceStreams {
   /** Numbers the event separately on every device stream of this epoch, connected or not. */
   broadcast(type: string, payload: Record<string, unknown>, requestId?: string): void {
     for (const stream of this.streams.values()) stream.publish(type, payload, requestId);
+  }
+
+  /** Sends an event of the moment to every device connected now, without numbering or keeping it (ADR 0017). */
+  broadcastEphemeral(type: string, payload: Record<string, unknown>): void {
+    for (const stream of this.streams.values()) stream.publishEphemeral(type, payload);
   }
 }

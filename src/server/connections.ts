@@ -59,8 +59,12 @@ export class ConnectionHub {
   constructor(options: ConnectionHubOptions) {
     this.options = options;
     this.devices = new DeviceStreams(options.db, this.epoch, options.streamBufferSize ?? DEFAULT_STREAM_BUFFER_SIZE);
-    // Everything the loop shows the owner goes to every device alike.
-    this.unsubscribe = options.loop.subscribe(event => this.devices.broadcast(event.type, event.payload));
+    // Everything the loop shows the owner goes to every device alike. An event of the moment (the line of thinking)
+    // reaches whoever is connected without taking a number or being kept for replay (ADR 0017).
+    this.unsubscribe = options.loop.subscribe(event => {
+      if (event.ephemeral) this.devices.broadcastEphemeral(event.type, event.payload);
+      else this.devices.broadcast(event.type, event.payload);
+    });
   }
 
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {

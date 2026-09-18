@@ -71,6 +71,10 @@ final class RootComponent: Component {
     private var pending: [UIEvent] = []
     private var draining = false
     private var placement = ColumnPlacement()
+    /// What the column was last laid out from, and what came of it. A pass that changes none of this reuses the
+    /// layout instead of measuring the cards again; a new line of thinking is the one thing that changes nothing
+    /// here, because the thought bubble holds one line at its own width whatever it says (ADR 0017).
+    private var laidOut: (inputs: LayoutInputs, layout: OverlayLayout, placement: ColumnPlacement)?
     private var appliedProps: RootProps?
     private var appliedStage: StageProps?
     /// The cards' frames on the screen, as last laid out, for telling a pointer on a card from one on its way past.
@@ -201,24 +205,34 @@ final class RootComponent: Component {
         let placeHistory = placeHistoryNext
         placeHistoryNext = false
 
-        let layout = OverlayLayout.fit(
-            visible: visibleFrame, character: characterFrame,
-            spacing: OverlayLayout.spacing(for: state.characterScale), input: inputSize,
-            history: props.history != nil && (placeHistory || historyOpening) ? history.panel.frame.size : nil,
-            steps: UIProps.budgetSteps(state)
-        ) { budget in
-            placement.budget = budget
-            let stacked = UIProps.root(state, placement: placement)
-            // Each card is measured at its own width: an opened card is wider than the rest of the column.
-            return (
-                notices: stacked.notices.map { fittingSize(of: notices.probe($0), width: $0.width) },
-                balloon: stacked.balloon.map { fittingSize(of: balloon.probe($0), width: $0.width) })
+        let historySize = props.history != nil && (placeHistory || historyOpening) ? history.panel.frame.size : nil
+        let inputs = LayoutInputs(
+            props: props.withoutThinkingLine, character: characterFrame, visible: visibleFrame, input: inputSize,
+            history: historySize)
+        let layout: OverlayLayout
+        if let cached = laidOut, cached.inputs == inputs {
+            layout = cached.layout
+            placement = cached.placement
+        } else {
+            layout = OverlayLayout.fit(
+                visible: visibleFrame, character: characterFrame,
+                spacing: OverlayLayout.spacing(for: state.characterScale), input: inputSize, history: historySize,
+                steps: UIProps.budgetSteps(state)
+            ) { budget in
+                placement.budget = budget
+                let stacked = UIProps.root(state, placement: placement)
+                // Each card is measured at its own width: an opened card is wider than the rest of the column.
+                return (
+                    notices: stacked.notices.map { fittingSize(of: notices.probe($0), width: $0.width) },
+                    balloon: stacked.balloon.map { fittingSize(of: balloon.probe($0), width: $0.width) })
+            }
+            placement.budget = layout.budget
+            placement.tail = layout.tail
+            placement.tailX = layout.tailX
+            placement.balloonHeight = layout.balloon?.height
+            placement.noticesHeight = layout.notices?.height
+            laidOut = (inputs, layout, placement)
         }
-        placement.budget = layout.budget
-        placement.tail = layout.tail
-        placement.tailX = layout.tailX
-        placement.balloonHeight = layout.balloon?.height
-        placement.noticesHeight = layout.notices?.height
         props = UIProps.root(state, placement: placement)
 
         // How this pass is shown. The owner's hand, a new scale, a moved stage and the first drawing are not to be
@@ -679,6 +693,15 @@ final class RootComponent: Component {
         default: "ログインできませんでした（\(error.localizedDescription)）"
         }
     }
+}
+
+/// Everything the column is laid out from. What is equal here lays out the same way, so the work is not repeated.
+struct LayoutInputs: Equatable {
+    var props: RootProps
+    var character: CGRect
+    var visible: CGRect
+    var input: CGSize?
+    var history: CGSize?
 }
 
 /// The window callbacks the root needs. `Component` is not an `NSObject`, so the windows report here.

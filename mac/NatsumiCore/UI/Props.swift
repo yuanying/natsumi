@@ -112,12 +112,31 @@ public struct ReplyProps: Equatable, Sendable {
     }
 }
 
+/// The outline the balloon is drawn with. What she says out loud is a speech balloon; what she is thinking is the
+/// comic thought bubble, with small circles leading to her in place of a tail (ADR 0017).
+public enum BalloonOutline: Equatable, Sendable {
+    case speech
+    case thought
+}
+
+/// The thought bubble: what she is doing, and the line she is writing this moment.
+public struct ThinkingProps: Equatable, Sendable {
+    /// 受付中 before the server has the message, 考え中 once she is handling it.
+    public var label: String
+    /// The newest line of her thinking, or nil until one arrives. It is drawn in one line at the bubble's own
+    /// width, whatever its length, so the bubble never changes size for it.
+    public var line: String?
+
+    public init(label: String, line: String?) {
+        self.label = label
+        self.line = line
+    }
+}
+
 public struct BalloonProps: Equatable, Sendable {
     public enum Body: Equatable, Sendable {
-        /// The owner sent something the server has not accepted yet.
-        case receiving
-        /// natsumi has owner messages still to handle.
-        case thinking
+        /// natsumi is receiving or handling something. Her thinking comes before her replies (ADR 0017).
+        case thinking(ThinkingProps)
         case reply(ReplyProps)
 
         /// Whether the front reply is opened to its whole text.
@@ -128,8 +147,7 @@ public struct BalloonProps: Equatable, Sendable {
     }
 
     public var body: Body
-    /// The small spinner beside an unread reply while natsumi is still working.
-    public var isBusy: Bool
+    public var outline: BalloonOutline
     /// Replies drawn as edges behind the front one.
     public var edges: Int
     public var tail: BalloonTail
@@ -141,11 +159,11 @@ public struct BalloonProps: Equatable, Sendable {
     public var closeHelp: String
 
     public init(
-        body: Body, isBusy: Bool, edges: Int, tail: BalloonTail, tailX: CGFloat, width: CGFloat, textScale: Double,
-        panelHeight: CGFloat? = nil, closeHelp: String
+        body: Body, outline: BalloonOutline, edges: Int, tail: BalloonTail, tailX: CGFloat, width: CGFloat,
+        textScale: Double, panelHeight: CGFloat? = nil, closeHelp: String
     ) {
         self.body = body
-        self.isBusy = isBusy
+        self.outline = outline
         self.edges = edges
         self.tail = tail
         self.tailX = tailX
@@ -332,6 +350,17 @@ public struct RootProps: Equatable, Sendable {
     public var settings: SettingsProps
     public var menu: MenuProps
     public var isSettingsOpen: Bool
+
+    /// The same parameters with the line of thinking taken out: what the column is laid out from. The thought
+    /// bubble holds one line at its own width whatever that line says, so a new line settles nothing and the
+    /// layout is not worked out again for it (ADR 0017).
+    public var withoutThinkingLine: RootProps {
+        guard case .thinking(var thinking) = balloon?.body, thinking.line != nil else { return self }
+        thinking.line = nil
+        var copy = self
+        copy.balloon?.body = .thinking(thinking)
+        return copy
+    }
 }
 
 /// The drawing parameters, derived from the mediator's state by pure functions. Nothing else in the app may build
@@ -346,7 +375,7 @@ public enum UIProps {
         return RootProps(
             character: character(state, stack: noticeStack(conversation)),
             balloon: balloon(
-                conversation, dismissed: state.dismissedIndicator, expanded: state.expanded, placement: placement,
+                conversation, dismissed: state.isIndicatorDismissed, expanded: state.expanded, placement: placement,
                 scale: state.characterScale),
             notices: notices(
                 conversation, hidden: state.noticesHidden, expanded: state.expanded, placement: placement,
@@ -407,33 +436,38 @@ public enum UIProps {
             badge: badge)
     }
 
+    /// What the balloon says. While natsumi is receiving or handling something, the bubble is hers: the unread
+    /// replies wait behind it and come back when she has finished (ADR 0017, which overturns ADR 0010's spinner).
     public static func balloon(
-        _ conversation: ConversationState, dismissed: BalloonIndicator?, expanded: ExpandedCard? = nil,
+        _ conversation: ConversationState, dismissed: Bool, expanded: ExpandedCard? = nil,
         placement: ColumnPlacement, scale: CharacterScale
     ) -> BalloonProps? {
-        let indicator = indicator(conversation)
-        func props(body: BalloonProps.Body, isBusy: Bool, edges: Int, width: CGFloat, closeHelp: String) -> BalloonProps {
+        func props(
+            body: BalloonProps.Body, outline: BalloonOutline, edges: Int, width: CGFloat, closeHelp: String
+        ) -> BalloonProps {
             BalloonProps(
-                body: body, isBusy: isBusy, edges: edges, tail: placement.tail, tailX: placement.tailX,
+                body: body, outline: outline, edges: edges, tail: placement.tail, tailX: placement.tailX,
                 width: width, textScale: scale.textScale, panelHeight: placement.balloonHeight,
                 closeHelp: closeHelp)
         }
-        if let stack = replyStack(conversation) {
-            let isExpanded = expanded == .reply(stack.front.messageId)
-            let shown = card(stack.front.text, isExpanded: isExpanded, budget: placement.budget)
-            let reply = ReplyProps(
-                text: shown.text, lineLimit: shown.lineLimit, isExpanded: isExpanded,
-                showsHistoryLink: shown.showsHistoryLink, more: stack.more,
-                help: isExpanded ? "クリックで畳む" : "クリックで全文を出す")
+        if let indicator = indicator(conversation) {
+            guard !dismissed else { return nil }
+            let thinking = ThinkingProps(
+                label: indicator == .receiving ? "受付中" : "考え中", line: conversation.thinkingLine)
             return props(
-                body: .reply(reply), isBusy: indicator != nil, edges: min(stack.behind, placement.budget.behind),
-                width: isExpanded ? placement.expandedWidth : placement.width,
-                closeHelp: stack.more > 0 ? "この返事を既読にして次へ" : "この返事を既読にして閉じる")
+                body: .thinking(thinking), outline: .thought, edges: 0, width: placement.width, closeHelp: "閉じる")
         }
-        guard let indicator, indicator != dismissed else { return nil }
+        guard let stack = replyStack(conversation) else { return nil }
+        let isExpanded = expanded == .reply(stack.front.messageId)
+        let shown = card(stack.front.text, isExpanded: isExpanded, budget: placement.budget)
+        let reply = ReplyProps(
+            text: shown.text, lineLimit: shown.lineLimit, isExpanded: isExpanded,
+            showsHistoryLink: shown.showsHistoryLink, more: stack.more,
+            help: isExpanded ? "クリックで畳む" : "クリックで全文を出す")
         return props(
-            body: indicator == .receiving ? .receiving : .thinking, isBusy: false, edges: 0,
-            width: placement.width, closeHelp: "閉じる")
+            body: .reply(reply), outline: .speech, edges: min(stack.behind, placement.budget.behind),
+            width: isExpanded ? placement.expandedWidth : placement.width,
+            closeHelp: stack.more > 0 ? "この返事を既読にして次へ" : "この返事を既読にして閉じる")
     }
 
     /// What a card puts on the screen: the preview, or the whole text when the owner opened it, and whether the
