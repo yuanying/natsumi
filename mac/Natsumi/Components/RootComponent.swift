@@ -47,6 +47,8 @@ final class RootComponent: Component {
     private var runToken = 0
     /// This pass changes the size of a card, so the panels grow into their new frames instead of jumping.
     private var animatingLayout = false
+    /// Panels holding a larger frame until their drawing has finished animating into its new size.
+    private var settling: [ObjectIdentifier: Task<Void, Never>] = [:]
 
     private static let avatarDirectoryKey = "avatarDirectory"
     private static let characterFrameName = "natsumi.character"
@@ -189,6 +191,24 @@ final class RootComponent: Component {
         menuBar.props = props.menu
     }
 
+    /// Opens the panel wide enough for both the drawing it has and the drawing it is going to, and takes the exact
+    /// frame once the drawing has arrived.
+    ///
+    /// The window is what clips the drawing, and the drawing is what the owner sees move. Taking the new frame at
+    /// once would clip the old drawing away before it has moved anywhere, which is why folding a card looked like
+    /// nothing at all: the panel was already small, so there was nothing left to see shrink.
+    private func hold(_ panel: NSPanel, until frame: CGRect) {
+        let key = ObjectIdentifier(panel)
+        settling.removeValue(forKey: key)?.cancel()
+        panel.setFrame(panel.frame.union(frame), display: true)
+        settling[key] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(CardAnimation.duration))
+            guard !Task.isCancelled, let self else { return }
+            self.settling.removeValue(forKey: key)
+            if panel.frame != frame { panel.setFrame(frame, display: true) }
+        }
+    }
+
     /// Runs the drawing and the placing together over one time and one curve, when this pass is one the owner should
     /// see move.
     private func animated(_ body: () -> Void) {
@@ -266,8 +286,9 @@ final class RootComponent: Component {
         }
         if panel.frame != frame {
             if animatingLayout, panel.isVisible {
-                panel.animator().setFrame(frame, display: true)
+                hold(panel, until: frame)
             } else {
+                settling.removeValue(forKey: ObjectIdentifier(panel))?.cancel()
                 panel.setFrame(frame, display: true)
             }
         }
