@@ -114,7 +114,9 @@ private struct ThinkingLine: View {
                     .font(Comic.font(13 * scale))
                     .foregroundStyle(Comic.faint)
                     .lineLimit(1)
-                    .truncationMode(.tail)
+                    // The end of the line is where she is writing, so that is the end that is kept. Cutting the
+                    // tail instead would leave the owner reading text she had already gone past.
+                    .truncationMode(.head)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     // The line is the identity: a new one comes in as the one before it goes.
                     .id(line)
