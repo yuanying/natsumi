@@ -5,63 +5,73 @@ import SwiftUI
 /// The text box under the character. Enter sends, Shift+Enter starts a new line, Esc closes, and the grip in the
 /// bottom-right corner changes its size.
 struct InputView: View {
-    let model: AppModel
-    let openHistory: () -> Void
-    let close: () -> Void
+    let props: InputProps?
+    let field: EventSink
+    let historyButton: EventSink
+    let grip: EventSink
+    let send: EventSink
+    /// The text being written. It is drawing-local on purpose: while an input method is composing, the text belongs
+    /// to the text view and must not travel through the tree.
     @State private var draft = ""
-    @State private var resizeStart: (mouse: NSPoint, size: InputBoxSize)?
 
     var body: some View {
-        let scale = model.characterScale.textScale
-        let fontSize = 13 * scale
-        let box = model.inputBoxSize
-        let ink = Comic.outline(scale)
-        let shape = RoundedRectangle(cornerRadius: Comic.radius(scale))
-        VStack(alignment: .leading, spacing: 6 * scale) {
-            if model.status != .connected {
-                StatusRow(model: model, scale: scale)
-            }
-            ForEach(model.conversation.outbox.filter { $0.status != .sending }) { item in
-                FailedRow(item: item, scale: scale) { model.dismiss(requestId: item.requestId) }
-            }
-            HStack(alignment: .bottom, spacing: 6 * scale) {
-                InputTextView(
-                    text: $draft, fontSize: fontSize, onSubmit: send, onCancel: close,
-                    onHeight: { height in if model.inputTextHeight != height { model.inputTextHeight = height } }
-                )
-                .frame(height: box.textHeight(content: model.inputTextHeight, minimum: InputTextView.lineHeight(fontSize: fontSize)))
-                .overlay(alignment: .topLeading) {
-                    if draft.isEmpty {
-                        Text("話しかける（Shift+Enter で改行）")
-                            .font(Comic.font(fontSize))
-                            .foregroundStyle(Comic.faint)
-                            .padding(.leading, InputTextView.inset.width + 5)
-                            .padding(.top, InputTextView.inset.height)
-                            .allowsHitTesting(false)
-                    }
+        if let props {
+            let scale = props.textScale
+            let fontSize = 13 * scale
+            let box = props.boxSize
+            let ink = Comic.outline(scale)
+            let shape = RoundedRectangle(cornerRadius: Comic.radius(scale))
+            VStack(alignment: .leading, spacing: 6 * scale) {
+                if let status = props.status {
+                    StatusRow(props: status, scale: scale, send: send)
                 }
-                Button(action: openHistory) { Image(systemName: "clock.arrow.circlepath") }
+                ForEach(props.failures) { failure in
+                    FailedRow(props: failure, scale: scale) { send(.outgoingDismissed(requestId: failure.requestId)) }
+                }
+                HStack(alignment: .bottom, spacing: 6 * scale) {
+                    InputTextView(
+                        text: $draft, fontSize: fontSize, onSubmit: submit,
+                        onCancel: { field(.inputEscaped) },
+                        onHeight: { height in field(.inputTextHeightMeasured(height)) }
+                    )
+                    .frame(height: box.textHeight(
+                        content: props.measuredTextHeight, minimum: InputTextView.lineHeight(fontSize: fontSize)))
+                    .overlay(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text("話しかける（Shift+Enter で改行）")
+                                .font(Comic.font(fontSize))
+                                .foregroundStyle(Comic.faint)
+                                .padding(.leading, InputTextView.inset.width + 5)
+                                .padding(.top, InputTextView.inset.height)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    Button { historyButton(.historyButtonClicked) } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                    }
                     .buttonStyle(.borderless)
                     .foregroundStyle(Comic.ink)
                     .help("履歴")
+                }
             }
+            .padding(.horizontal, 12 * scale)
+            .padding(.vertical, 8 * scale)
+            .padding(.bottom, 4)
+            .frame(width: box.width - ink * 2)
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                shape.fill(Comic.paper)
+                shape.stroke(Comic.ink, lineWidth: ink)
+            }
+            .overlay(alignment: .bottomTrailing) { gripHandle.padding(2 * scale) }
+            .padding(ink)
+            .environment(\.colorScheme, .light)
         }
-        .padding(.horizontal, 12 * scale)
-        .padding(.vertical, 8 * scale)
-        .padding(.bottom, 4)
-        .frame(width: box.width - ink * 2)
-        .fixedSize(horizontal: false, vertical: true)
-        .background {
-            shape.fill(Comic.paper)
-            shape.stroke(Comic.ink, lineWidth: ink)
-        }
-        .overlay(alignment: .bottomTrailing) { grip.padding(2 * scale) }
-        .padding(ink)
-        .environment(\.colorScheme, .light)
     }
 
-    /// Dragging right widens the box on both sides (it stays centered under the character); dragging down makes it taller.
-    private var grip: some View {
+    /// Dragging right widens the box on both sides; dragging down makes it taller. Where it ends up is the
+    /// mediator's to decide, so only the mouse is reported.
+    private var gripHandle: some View {
         Image(systemName: "arrow.down.right")
             .font(.system(size: 8, weight: .bold))
             .foregroundStyle(Comic.faint)
@@ -70,42 +80,30 @@ struct InputView: View {
             .help("ドラッグで大きさを変える")
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        let mouse = NSEvent.mouseLocation
-                        let start = resizeStart ?? (mouse, model.inputBoxSize)
-                        resizeStart = start
-                        model.inputBoxSize = InputBoxSize(
-                            width: start.size.width + (mouse.x - start.mouse.x) * 2,
-                            height: start.size.height + (start.mouse.y - mouse.y))
-                    }
-                    .onEnded { _ in resizeStart = nil })
+                    .onChanged { _ in grip(.gripDragged(to: NSEvent.mouseLocation)) }
+                    .onEnded { _ in grip(.gripReleased) })
     }
 
-    private func send() {
+    /// An empty draft is not a message: nothing is raised and what was typed stays.
+    private func submit() {
         guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        model.send(draft)
+        field(.inputSubmitted(draft))
         draft = ""
     }
 }
 
-/// The connection state and what to do about it, as the history shows it.
+/// The connection state and what to do about it, as the history shows it too.
 struct StatusRow: View {
-    let model: AppModel
+    let props: StatusProps
     let scale: Double
+    let send: EventSink
 
     var body: some View {
         HStack {
-            Text(model.statusText).foregroundStyle(.secondary)
+            Text(props.text).foregroundStyle(.secondary)
             Spacer()
-            switch model.status {
-            case .needsServer:
-                Button("設定を開く") { model.openSettings() }.controlSize(.small)
-            case .needsLogin:
-                Button("GitHub でログイン") { Task { await model.login() } }.controlSize(.small)
-            case .replaced, .stopped, .unavailable:
-                Button("接続し直す") { model.resume() }.controlSize(.small)
-            default:
-                EmptyView()
+            if let action = props.action {
+                Button(action.title) { send(action.event) }.controlSize(.small)
             }
         }
         .font(Comic.font(11 * scale))
@@ -113,18 +111,13 @@ struct StatusRow: View {
 }
 
 private struct FailedRow: View {
-    let item: OutgoingMessage
+    let props: FailureProps
     let scale: Double
     let dismiss: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
-            switch item.status {
-            case .rejected(let code), .unavailable(let code):
-                Text("「\(item.text)」を送れませんでした（\(code)）").foregroundStyle(.red).lineLimit(2)
-            case .sending:
-                EmptyView()
-            }
+            Text(props.text).foregroundStyle(.red).lineLimit(2)
             Spacer(minLength: 0)
             Button(action: dismiss) { Image(systemName: "xmark.circle") }.buttonStyle(.borderless)
         }

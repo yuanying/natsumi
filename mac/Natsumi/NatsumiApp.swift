@@ -8,48 +8,49 @@ struct NatsumiApp: App {
 
     var body: some Scene {
         MenuBarExtra("natsumi", systemImage: "face.smiling") {
-            MenuContent(
-                model: delegate.model,
-                talk: { delegate.overlay?.openInput() },
-                openHistory: { delegate.overlay?.openHistory() })
+            MenuBarContent(model: delegate.menuBar)
         }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let model: AppModel
-    private(set) var overlay: OverlayController?
-
-    override init() {
-        model = AppModel()
-        super.init()
-    }
+    let menuBar = MenuBarModel()
+    private var root: RootComponent?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        model.launch()
-        overlay = OverlayController(model: model)
+        let root = RootComponent(menuBar: menuBar)
+        self.root = root
+        root.launch()
+    }
+}
+
+/// The menu bar's scene cannot be handed a value the way a panel can, so it reads the props it was last given.
+struct MenuBarContent: View {
+    let model: MenuBarModel
+
+    var body: some View {
+        MenuContent(props: model.props, send: model.send)
     }
 }
 
 struct MenuContent: View {
-    let model: AppModel
-    let talk: () -> Void
-    let openHistory: () -> Void
+    let props: MenuProps
+    let send: EventSink
 
     var body: some View {
-        Text(model.statusText)
-        Button("話しかける", action: talk)
-        Button("履歴を開く", action: openHistory)
-        if model.status == .needsLogin {
-            Button("GitHub でログイン") { Task { await model.login() } }
+        Text(props.statusText)
+        Button("話しかける") { send(.talkRequested) }
+        Button("履歴を開く") { send(.historyOpenRequested) }
+        if props.showsLogin {
+            Button("GitHub でログイン") { send(.loginRequested) }
         }
-        Button("設定…") { model.openSettings() }
+        Button("設定…") { send(.settingsOpenRequested) }
             .keyboardShortcut(",")
-        Button("ログアウト") { Task { await model.logout() } }
-            .disabled(!model.hasSession)
+        Button("ログアウト") { send(.logoutRequested) }
+            .disabled(!props.canLogout)
         Divider()
-        Button("終了") { NSApp.terminate(nil) }
+        Button("終了") { send(.quitRequested) }
             .keyboardShortcut("q")
     }
 }
