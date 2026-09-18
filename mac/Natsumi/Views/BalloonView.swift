@@ -40,6 +40,10 @@ struct BalloonView: View {
             .fixedSize(horizontal: false, vertical: true)
             // The words keep to the top, so the lines on show while it folds are the ones that stay behind.
             .frame(maxHeight: fillsPanel ? .infinity : nil, alignment: .top)
+            // While the balloon is growing or shrinking there is more text than there is balloon to put it in, and
+            // whatever cuts it off is what the owner sees. Left to the window, the cut is the window's own square
+            // corner; cut to the balloon's own outline, the words simply run out at its edge.
+            .clipShape(shape)
             .background {
                 // The replies behind show as outlines a little away from the character.
                 StackedEdges(

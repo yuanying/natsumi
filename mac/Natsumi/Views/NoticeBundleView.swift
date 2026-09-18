@@ -26,6 +26,8 @@ struct NoticeBundleView: View {
             .frame(maxWidth: max(props.width - step * CGFloat(props.edges) - ink * 2, 80), alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxHeight: fillsPanel ? .infinity : nil, alignment: .top)
+            // Cut to the card's own outline, not to the window's square corner (see `BalloonView`).
+            .clipShape(shape)
             .background {
                 StackedEdges(
                     count: props.edges, step: step, upward: props.edgesUpward, fill: Comic.noticePaper,
