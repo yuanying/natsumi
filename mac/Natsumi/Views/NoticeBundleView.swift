@@ -5,8 +5,6 @@ import SwiftUI
 /// behind.
 struct NoticeBundleView: View {
     let props: NoticeBundleProps?
-    /// Draws the card at the size of the panel it is in. See `BalloonView.fillsPanel`.
-    var fillsPanel = true
     let card: EventSink
     let close: EventSink
     let historyLink: EventSink
@@ -25,7 +23,6 @@ struct NoticeBundleView: View {
             .padding(.vertical, 10 * scale)
             .frame(maxWidth: max(props.width - step * CGFloat(props.edges) - ink * 2, 80), alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
-            .frame(maxHeight: fillsPanel ? .infinity : nil, alignment: .top)
             // Cut to the card's own outline, not to the window's square corner (see `BalloonView`).
             .clipShape(shape)
             .background {

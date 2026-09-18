@@ -1,4 +1,5 @@
 import AppKit
+import NatsumiCore
 import SwiftUI
 
 /// The comic look of the character's panels: paper with a bold black outline and rounded lettering. The panels keep
@@ -29,6 +30,26 @@ enum Comic {
 
     static func font(_ size: CGFloat, bold: Bool = false) -> Font {
         Font(nsFont(size, bold: bold))
+    }
+}
+
+/// A card's drawing: it animates itself when its drawing parameters change, and says how big it has become so that
+/// its panel can follow.
+///
+/// The panel is not what animates. Animating the window and swapping the drawing over in one go never worked: the
+/// window is what clips the drawing, so one direction looked like a reveal and the other like nothing at all.
+/// `withAnimation` around the root view of a hosting view does nothing either — the change happens outside that
+/// transaction. `.animation(_:value:)` is attached to the drawing itself, so it animates whenever its parameters
+/// change, however they were handed in.
+struct CardPanel<Value: Equatable, Content: View>: View {
+    let value: Value
+    let content: Content
+    let onSize: (CGSize) -> Void
+
+    var body: some View {
+        content
+            .animation(.easeInOut(duration: CardAnimation.duration), value: value)
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { onSize($0) }
     }
 }
 

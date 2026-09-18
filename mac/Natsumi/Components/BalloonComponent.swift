@@ -10,7 +10,7 @@ final class BalloonComponent: Component {
     private let close = Component(name: "balloon.close")
     private let historyLink = Component(name: "balloon.historyLink")
     private var applied: BalloonProps?
-    private var hosting: FirstMouseHostingView<BalloonView>!
+    private var hosting: FirstMouseHostingView<CardPanel<BalloonProps?, BalloonView>>!
 
     init() {
         super.init(name: "balloon")
@@ -21,13 +21,18 @@ final class BalloonComponent: Component {
         panel.contentView = hosting
     }
 
-    func view(_ props: BalloonProps?) -> BalloonView {
-        BalloonView(props: props, text: text.sink, close: close.sink, historyLink: historyLink.sink)
+    /// The drawing animates itself and reports the size it has reached; the panel follows it (ADR 0016).
+    var onSize: @MainActor (CGSize) -> Void = { _ in }
+
+    func view(_ props: BalloonProps?) -> CardPanel<BalloonProps?, BalloonView> {
+        CardPanel(
+            value: props, content: BalloonView(props: props, text: text.sink, close: close.sink, historyLink: historyLink.sink),
+            onSize: { [weak self] size in self?.onSize(size) })
     }
 
     /// The same drawing, for measuring only: nothing it shows is meant to be acted on.
     func probe(_ props: BalloonProps) -> BalloonView {
-        BalloonView(props: props, fillsPanel: false, text: .ignored, close: .ignored, historyLink: .ignored)
+        BalloonView(props: props, text: .ignored, close: .ignored, historyLink: .ignored)
     }
 
     func render(_ props: BalloonProps?) {

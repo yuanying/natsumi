@@ -5,14 +5,6 @@ import SwiftUI
 /// dots while she is receiving or thinking.
 struct BalloonView: View {
     let props: BalloonProps?
-    /// Draws the balloon at the size of the panel it is in, rather than at the size of what it says.
-    ///
-    /// The two are the same once a card has settled, because the panel is given the size this view measures. They
-    /// are not the same while a card is folding: the frame is taken in first and the words are swapped after it, so
-    /// the balloon has to shrink with the frame. Left at the size of its words, the window would cut it off square
-    /// and the owner would watch a squared-off sheet of paper instead of a balloon. Measuring asks for the size of
-    /// the words, so it passes false.
-    var fillsPanel = true
     let text: EventSink
     let close: EventSink
     let historyLink: EventSink
@@ -38,11 +30,8 @@ struct BalloonView: View {
             .padding(down ? .bottom : .top, tailHeight)
             .frame(maxWidth: max(props.width - step * CGFloat(props.edges) - ink * 2, 80), alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
-            // The words keep to the top, so the lines on show while it folds are the ones that stay behind.
-            .frame(maxHeight: fillsPanel ? .infinity : nil, alignment: .top)
-            // While the balloon is growing or shrinking there is more text than there is balloon to put it in, and
-            // whatever cuts it off is what the owner sees. Left to the window, the cut is the window's own square
-            // corner; cut to the balloon's own outline, the words simply run out at its edge.
+            // A line that has not finished re-setting itself runs out at the balloon's own outline, never at the
+            // window's square corner.
             .clipShape(shape)
             .background {
                 // The replies behind show as outlines a little away from the character.
