@@ -154,7 +154,7 @@ export class ConversationStore {
   /** The row the prompt's line for one event is built from. */
   eventRow(eventId: string): EventRow {
     return this.db.prepare(`SELECT e.kind, e.created_at, m.text, m.created_at AS message_at FROM loop_events e
-      LEFT JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as EventRow;
+      LEFT JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as unknown as EventRow;
   }
 
   eventKind(eventId: string): EventKind | undefined {
