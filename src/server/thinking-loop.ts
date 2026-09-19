@@ -5,12 +5,13 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi-session.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
-import { MemoryShell } from './memory-shell.ts';
 import { MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
-import { MemoryStore } from './memory-store.ts';
+import { DEFAULT_SHELL_WAIT_SECONDS, WorkspaceShell } from './workspace-shell.ts';
+import { DEFAULT_SIZE_WARN_BYTES, WorkspaceSize } from './workspace-size.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { ReadState, type ReadPosition } from './read-state.ts';
 import { localDateTime } from './nightly.ts';
+import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_SELF_CHECK_LIMITS, SelfChecks, type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
 
 /** Model calls one turn may make before it is stopped and its open events fail (the evaluation stopped at 8). */
@@ -30,7 +31,22 @@ export const THINKING_LINE_MAX_CHARS = 120;
 /** The least time between two lines of thinking. What is written in between is thinned out. */
 export const THINKING_MIN_INTERVAL_MS = 250;
 
-const BASE_INSTRUCTION = `あなたは natsumi。一人の本人（オーナー）専属の秘書で、本人の Mac のデスクトップにアバターとして常駐しています。
+/**
+ * Memory and the workspace, as natsumi reads them (ADR 0019). Two fixed alternatives rather than one text built from
+ * the configuration: the system prompt is made once per session and must stay on the prefix cache.
+ */
+const WORKSPACE_SECTION = `## 記憶と作業場
+- あなたには自分の作業環境があります。run_shell でコマンドを動かして、記憶を読み書きし、調べものも下書きも集計もそこで行います。
+- 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、本人のことや以前の約束が関係しそうなら、まず run_shell で探して読みます。
+- 本人に「覚えておいて」と言われたこと、本人について今後も役立つこと、本人との約束は、/memory のファイルに書きます。ターンの終わりに、サーバーが検査して git にコミットします。
+- 記憶は会話の写しではありません。要点を 1 件ずつ、短く書きます。
+- 手を動かす場所は /work、あなたのホームは /home/natsumi です。どちらも残りますが、コミットされず、本人の目にも触れません。残したいものは必ず /memory に書きます。`;
+
+const NO_WORKSPACE_SECTION = `## 記憶と作業場
+- いまは作業環境につながっていないので、記憶を読むことも書くこともできません。
+- 覚えておきたいことは、そのときの返事に織り込むか、夜の振り返りで引き継ぎのメモに書いてください。`;
+
+const BASE_INSTRUCTION = (workspace: string) => `あなたは natsumi。一人の本人（オーナー）専属の秘書で、本人の Mac のデスクトップにアバターとして常駐しています。
 
 ## 動き方
 - あなたは一本の思考ループとして動いています。外で起きた出来事は <events> の中に 1 行 1 件の JSON で届きます。
@@ -44,10 +60,7 @@ const BASE_INSTRUCTION = `あなたは natsumi。一人の本人（オーナー�
 - 何もしなかったことや内心は、本人に報告しません。
 - 本人には日本語で書きます。
 
-## 記憶
-- 長期記憶はあなたの外に置いてあり、いつも見えているわけではありません。本人のことや以前の約束が関係しそうなら、recall で探し、read_memory で読みます。
-- 本人に「覚えておいて」と言われたこと、本人について今後も役立つこと、本人との約束は、remember で残します。忘れてと言われたら forget で消します。
-- 記憶は会話の写しではありません。要点を 1 件ずつ、短く書きます。
+${workspace}
 
 ## 出来事の種類
 - mac_message: 本人との一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、本人がまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。
@@ -55,15 +68,13 @@ const BASE_INSTRUCTION = `あなたは natsumi。一人の本人（オーナー�
 - self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの reason と予定の時刻（scheduled_for）があります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。本人には何も送りません。`;
 
-const SHELL_INSTRUCTION = '- run_memory_shell で、rg などのコマンドを使って記憶のファイルを探すこともできます（読むだけ）。';
-
 const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思考の記録は新しくなり、今日の細かいやりとりは見えなくなります。'
-  + '(1) 今日の出来事を振り返り、本人に覚えておいてと言われたこと、本人について今後も役立つこと、本人との約束で、まだ記憶にないものを remember で残してください（recall で重複を確かめられます）。'
+  + '(1) 今日の出来事を振り返り、本人に覚えておいてと言われたこと、本人について今後も役立つこと、本人との約束で、まだ記憶にないものを /memory に書き足してください（先に run_shell で探すと、同じことを二度書かずに済みます）。'
   + '(2) write_handoff_note で、明日の自分への引き継ぎを書いてください。対応中のこと、本人の返事を待っていること、本人の最近の様子など、記憶に書くほどではないが明日知っておきたいことを短くまとめます。'
   + '(3) 最後に finish_event を呼んでください。本人への返事や知らせは送りません。';
 
 const COMPACTION_INSTRUCTIONS = 'これは natsumi（本人専属の秘書）の思考の記録です。要約は日本語で書いてください。'
-  + '本人との約束、本人に頼まれて対応中のこと、本人の返事を待っていること、本人の最近の様子、覚えておいてと言われたこと（remember で記憶に書いたかどうか）を必ず残してください。'
+  + '本人との約束、本人に頼まれて対応中のこと、本人の返事を待っていること、本人の最近の様子、覚えておいてと言われたこと（/memory に書いたかどうか）を必ず残してください。'
   + 'ファイルやコードに関する項目は「なし」で構いません。';
 
 export type UnavailableCode = 'pi-unavailable' | 'conversation-restore-failed' | 'stopping';
@@ -144,8 +155,12 @@ export interface LoopOptions {
   timeZone?: string;
   compactAtTokens?: number;
   keepRecentTokens?: number;
-  /** The tools container's runner socket. The run_memory_shell tool exists only with it (ADR 0011). */
-  memoryShellSocket?: string;
+  /** The workspace container's runner socket. The run_shell tool exists only with it (ADR 0019). */
+  workspaceSocket?: string;
+  /** `loop.shellWaitSeconds`: how long the server waits for the runner's answer. */
+  shellWaitSeconds?: number;
+  /** `loop.workspaceSizeWarnBytes`: past this, the next turn is told what the persistent places hold. */
+  workspaceSizeWarnBytes?: number;
   /** The memory repository (ADR 0018). `memory/` in the data directory when omitted. */
   memoryRepository?: string;
   /** The longest one memory file may be, in characters. */
@@ -193,10 +208,10 @@ interface Turn {
 export class ThinkingLoop {
   private readonly options: LoopOptions;
   private readonly now: () => number;
-  private readonly memory: MemoryStore;
   private readonly memoryRepository: MemoryRepository;
+  private readonly workspaceSize: WorkspaceSize;
   private readonly readState: ReadState;
-  private readonly shell: MemoryShell | undefined;
+  private readonly shell: WorkspaceShell | undefined;
   private readonly listeners = new Set<(event: LoopClientEvent) => void>();
   private readonly queue: string[] = [];
   private readonly handling = new Map<string, Handling>();
@@ -224,20 +239,36 @@ export class ThinkingLoop {
   private unwatch: (() => void) | undefined;
   /** What the last commit put back, waiting to be told to natsumi in the next prompt (ADR 0018). */
   private memoryNotice = '';
+  /** What the persistent places hold, when they are past the warning; it waits for the next prompt (ADR 0019). */
+  private workspaceNotice = '';
 
   private constructor(options: LoopOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
-    // One directory, two ways in: the memory tools write the files, and the repository is what commits them.
+    // One directory, two ways in: the shell writes the files, and the repository is what commits them.
     const memoryDirectory = options.memoryRepository ?? join(options.dataDirectory, 'memory');
-    this.memory = new MemoryStore({ directory: memoryDirectory, timeZone: options.timeZone ?? 'UTC', now: this.now });
     this.memoryRepository = new MemoryRepository({
       directory: memoryDirectory, dataDirectory: options.dataDirectory,
       ...(options.memoryFileMaxChars === undefined ? {} : { fileMaxChars: options.memoryFileMaxChars }),
       log: line => this.log(line),
     });
     this.readState = new ReadState(options.db, this.now);
-    this.shell = options.memoryShellSocket ? new MemoryShell({ socketPath: options.memoryShellSocket }) : undefined;
+    this.shell = options.workspaceSocket
+      ? new WorkspaceShell({
+        socketPath: options.workspaceSocket,
+        timeoutMs: (options.shellWaitSeconds ?? DEFAULT_SHELL_WAIT_SECONDS) * 1000,
+        timeZone: options.timeZone ?? 'UTC',
+        memoryChanges: () => this.memoryRepository.changeSummary(),
+      })
+      : undefined;
+    // The three places that survive a restart, under the names natsumi sees inside the container (ADR 0019).
+    this.workspaceSize = new WorkspaceSize({
+      places: [{ label: '/memory', path: memoryDirectory },
+        { label: '/work', path: join(options.dataDirectory, WORK_DIRECTORY) },
+        { label: '/home/natsumi', path: join(options.dataDirectory, HOME_DIRECTORY) }],
+      warnBytes: options.workspaceSizeWarnBytes ?? DEFAULT_SIZE_WARN_BYTES,
+      now: this.now,
+    });
     this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: options.timeZone ?? 'UTC',
       limits: options.selfCheckLimits ?? DEFAULT_SELF_CHECK_LIMITS, awakeHours: options.awakeHours ?? DEFAULT_AWAKE_HOURS });
     this.activityAt = this.now();
@@ -555,7 +586,7 @@ export class ThinkingLoop {
   private async systemPrompt(handoff?: string): Promise<string> {
     let personality = '';
     try { personality = (await readFile(join(this.memoryRepository.directory, PERSONALITY_FILE), 'utf8')).trim(); } catch { /* none */ }
-    const instruction = this.shell ? BASE_INSTRUCTION.replace('\n\n## 出来事の種類', `\n${SHELL_INSTRUCTION}\n\n## 出来事の種類`) : BASE_INSTRUCTION;
+    const instruction = BASE_INSTRUCTION(this.shell ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
     let prompt = personality ? `${instruction}\n\n# 性格・話し方\n\n${personality}` : instruction;
     if (handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n昨夜の振り返りで、あなた自身が書いたメモです。\n\n${handoff}`;
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
@@ -569,6 +600,29 @@ export class ThinkingLoop {
     const notice = this.memoryNotice;
     this.memoryNotice = '';
     return notice;
+  }
+
+  /**
+   * The note about how much the persistent places hold, taken once. It only ever rides on a turn's prompt, never in
+   * the instructions: what changes every turn must stay off the prefix cache (ADR 0019).
+   */
+  private takeWorkspaceNotice(): string {
+    const notice = this.workspaceNotice;
+    this.workspaceNotice = '';
+    return notice;
+  }
+
+  /** Measures the persistent places, at most once every ten minutes, and keeps the line for the next turn. */
+  private async checkWorkspaceSize(): Promise<void> {
+    try {
+      const notice = await this.workspaceSize.check();
+      if (notice) {
+        this.workspaceNotice = notice;
+        this.log('workspace: the persistent directories are past the size warning');
+      }
+    } catch {
+      // Measuring is a courtesy; a directory that cannot be walked never stops a turn.
+    }
   }
 
   /**
@@ -637,8 +691,8 @@ export class ThinkingLoop {
     }
     const before = session.messages.length;
     const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, this.options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
-    const notice = this.takeMemoryNotice();
-    const prompt = formatEvents(eventIds.map(id => this.eventLine(id))) + (notice ? `\n\n${notice}` : '');
+    const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice()].filter(Boolean).join('\n\n');
+    const prompt = formatEvents(eventIds.map(id => this.eventLine(id))) + (notices ? `\n\n${notices}` : '');
     try {
       await session.prompt(prompt, { expandPromptTemplates: false });
     } catch {
@@ -658,6 +712,7 @@ export class ThinkingLoop {
 
     // Whatever ended the turn, what memory holds now is checked and committed before the next event (ADR 0018).
     await this.commitMemory(eventIds, kind);
+    await this.checkWorkspaceSize();
 
     const last = session.messages.slice(before).filter(message => message.role === 'assistant').at(-1) as { stopReason?: string } | undefined;
     const failure = turn.limited ? 'model-call-limit' : turn.timedOut ? 'timeout' : this.closing ? 'stopped'
@@ -860,15 +915,11 @@ export class ThinkingLoop {
         this.setAvatar(expression, 'model');
         return { ok: true, text: `アバターの表情を ${expression} にしました。` };
       },
-      remember: (topic, note) => this.memory.remember(topic, note),
-      recall: query => this.memory.recall(query),
-      readMemory: topic => this.memory.read(topic),
-      forget: (topic, text) => this.memory.forget(topic, text),
       writeHandoff: (eventId, text) => this.writeHandoff(eventId, text),
       scheduleSelfCheck: (reason, when) => this.selfChecks.schedule(reason, when),
       listSelfChecks: () => this.selfChecks.list(),
       cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
-      ...(this.shell ? { runMemoryShell: (command: string) => this.shell!.run(command) } : {}),
+      ...(this.shell ? { runShell: (command: string) => this.shell!.run(command) } : {}),
     };
   }
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +13,7 @@ import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FIXED_FILES } from '../src/server/memory-repository.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
+import { startFakeRunner } from './support/fake-runner.ts';
 import { ScriptedModel, type ScriptedStep } from './support/scripted-model.ts';
 
 // Fictional memories only.
@@ -47,8 +49,15 @@ async function setup() {
   const memory = join(data, 'memory');
   const git = (...args: string[]) =>
     execFileSync('git', ['-C', memory, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8' }).trim();
+  const runners: { close(): Promise<void> }[] = [];
   const f = {
     root, data, memory, sessionDirectory, db, model, sessions, git,
+    /** A runner that really runs bash in the memory repository, for the path from run_shell to a committed file. */
+    async runner(options: { responseLimitMs?: number } = {}) {
+      const runner = await startFakeRunner({ dir: memory, ...options });
+      runners.push(runner);
+      return runner;
+    },
     commits: () => Number(git('rev-list', '--count', 'HEAD')),
     /** Writes a memory file the way the model's shell would, in the middle of a turn. */
     writeMemory: (name: string, text: string) => writeFile(join(memory, name), text),
@@ -73,6 +82,7 @@ async function setup() {
     sessionFiles: async () => (await readdir(sessionDirectory)).filter(name => name.endsWith('.jsonl')).sort(),
     async cleanup() {
       for (const loop of opened) await loop.close();
+      for (const runner of runners) await runner.close();
       db.close();
       await rm(root, { recursive: true, force: true });
     },
@@ -116,66 +126,76 @@ function behave(f: Awaited<ReturnType<typeof setup>>, handlers: {
   };
 }
 
-test('remember writes under memory/, recall reads it back, and memories never ride in the system prompt', async () => {
+test('run_shell writes memory and reads it back, and memories never ride in the system prompt', async () => {
   const f = await setup();
   try {
-    const { loop, events } = await f.open();
+    const runner = await f.runner();
+    const { loop, events } = await f.open({ workspaceSocket: runner.path });
     const first = f.send(loop, `合言葉は ${PASSPHRASE}。覚えておいて`);
     const call1 = await f.model.next();
-    call1.call('remember', { topic: '合言葉', note: `合言葉は ${PASSPHRASE}` });
+    // The tool is registered and described, and the memory tools of ADR 0009 are gone.
+    assert.match(call1.context.systemPrompt ?? '', /run_shell/);
+    assert.doesNotMatch(call1.context.systemPrompt ?? '', /remember|recall|read_memory/);
+    call1.call('run_shell', { command: `printf '# 合言葉\\n\\n- 2026-09-19: 合言葉は ${PASSPHRASE}\\n' > 合言葉.md` });
     call1.finish();
     const call2 = await f.model.next();
-    const [remembered] = toolResults(call2.context);
-    assert.equal(remembered!.isError, false);
-    assert.match(remembered!.text, /合言葉/);
+    const [written] = toolResults(call2.context);
+    assert.equal(written!.isError, false);
+    assert.match(written!.text, /終了コード 0/);
+    // Memory moved, and the result says so: nothing else would tell her it was kept (ADR 0019).
+    assert.match(written!.text, /記憶の変更: 合言葉\.md（追加）/);
     call2.call('reply_to_mac', { event_id: first.eventId, text: '覚えました' });
     call2.call('finish_event', { event_id: first.eventId });
     call2.finish();
     await completed(events, first.eventId);
-    assert.match(await readFile(join(f.data, 'memory', '合言葉.md'), 'utf8'), new RegExp(`^- \\d{4}-\\d{2}-\\d{2}: 合言葉は ${PASSPHRASE}$`, 'm'));
+    assert.match(await readFile(join(f.memory, '合言葉.md'), 'utf8'), new RegExp(PASSPHRASE));
+    // The turn committed it, so the next command has nothing to report.
+    assert.equal(f.git('status', '--porcelain'), '');
 
-    // A later question is answered from what recall returns.
+    // A later question is answered from what the shell finds.
     await loop.close();
-    const again = await f.open();
+    const again = await f.open({ workspaceSocket: runner.path });
     const asked = f.send(again.loop, '合言葉は何だっけ');
     const call3 = await f.model.next();
     assert.equal(call3.context.systemPrompt?.includes(PASSPHRASE), false);
-    call3.call('recall', { query: '合言葉' });
-    call3.call('read_memory', { topic: '合言葉' });
+    call3.call('run_shell', { command: 'grep -r 合言葉 . --include=*.md' });
     call3.finish();
     const call4 = await f.model.next();
-    const results = toolResults(call4.context);
-    assert.deepEqual(results.map(r => r.isError), [false, false]);
-    for (const result of results) assert.match(result.text, new RegExp(PASSPHRASE));
+    const [found] = toolResults(call4.context);
+    assert.equal(found!.isError, false);
+    assert.match(found!.text, new RegExp(PASSPHRASE));
+    assert.doesNotMatch(found!.text, /記憶の変更/, 'reading memory is not changing it');
     call4.call('reply_to_mac', { event_id: asked.eventId, text: PASSPHRASE });
     call4.call('finish_event', { event_id: asked.eventId });
     call4.finish();
     await completed(again.events, asked.eventId);
     for (const context of f.model.contexts) assert.equal((context.systemPrompt ?? '').includes(PASSPHRASE), false);
-    // What the owner sees is only the conversation; the memory tools stay inside.
-    assert.equal(JSON.stringify(again.loop.snapshot()).includes('remember'), false);
+    // What the owner sees is only the conversation; the workspace stays inside.
+    assert.equal(JSON.stringify(again.loop.snapshot()).includes('run_shell'), false);
   } finally { await f.cleanup(); }
 });
 
-test('the memory tools refuse path tricks and forget removes a memory', async () => {
+test('the shell runs in the owner time zone, and a command too long never leaves the server', async () => {
   const f = await setup();
   try {
-    const { loop, events } = await f.open();
-    const sent = f.send(loop, '整理して');
+    const runner = await f.runner();
+    const { loop, events } = await f.open({ workspaceSocket: runner.path });
+    const sent = f.send(loop, '今日の日付で書いておいて');
     const call1 = await f.model.next();
-    call1.call('remember', { topic: '../../escape', note: '外に出ない' });
-    call1.call('remember', { topic: '予定', note: '歯医者は金曜' });
-    call1.call('forget', { topic: '予定', text: '歯医者' });
-    call1.call('remember', { topic: '予定', note: '<tool_call>' });
+    call1.call('run_shell', { command: 'date +%Z' });
+    call1.call('run_shell', { command: `echo ${'あ'.repeat(8000)}` });
     call1.finish();
     const call2 = await f.model.next();
-    assert.deepEqual(toolResults(call2.context).map(r => r.isError), [false, false, false, true]);
+    const [dated, refused] = toolResults(call2.context);
+    assert.equal(dated!.isError, false);
+    assert.match(dated!.text, /JST/);
+    assert.deepEqual(runner.timeZones, ['Asia/Tokyo']);
+    assert.equal(refused!.isError, true);
+    assert.match(refused!.text, /8000/);
+    assert.equal(runner.commands.length, 1, 'the long command never reached the runner');
     call2.call('finish_event', { event_id: sent.eventId });
     call2.finish();
     await completed(events, sent.eventId);
-    // The topic lost its only memory, so its file is gone; what is left is the repository's own three files.
-    assert.deepEqual((await readdir(f.memory)).filter(name => name !== '.git' && !isFixed(name)).sort(), ['escape.md']);
-    assert.deepEqual((await readdir(f.root)).filter(name => !name.startsWith('state.sqlite')).sort(), ['data', 'pi']);
   } finally { await f.cleanup(); }
 });
 
@@ -212,7 +232,9 @@ test('a turn that changed memory ends in one commit; a turn that changed nothing
 
     const first = f.send(loop, `\u5408\u8a00\u8449\u306f ${PASSPHRASE}`);
     const call1 = await f.model.next();
-    call1.call('remember', { topic: '\u5408\u8a00\u8449', note: `\u5408\u8a00\u8449\u306f ${PASSPHRASE}` });
+    // Written the way the shell writes it, in the middle of the turn, which then goes on for another model call.
+    await f.writeMemory('\u5408\u8a00\u8449.md', `# \u5408\u8a00\u8449\n\n- 2026-09-19: \u5408\u8a00\u8449\u306f ${PASSPHRASE}\n`);
+    call1.call('set_mac_avatar_expression', { expression: 'happy' });
     call1.finish();
     const call2 = await f.model.next();
     call2.call('reply_to_mac', { event_id: first.eventId, text: '\u899a\u3048\u307e\u3057\u305f' });
@@ -321,8 +343,8 @@ test('the nightly switch reviews the day, starts a new session with the handoff,
     behave(f, {
       review: (event, context) => {
         reviewedWith = context;
+        writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER} を覚えた\n`);
         return { calls: [
-          call('remember', { topic: '一日の記録', note: `${EARLIER} を覚えた` }),
           call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 明日は資料の続きを確認する` }),
           call('finish_event', { event_id: event.event_id }),
         ] };
@@ -550,15 +572,16 @@ test('a stop during the switch never silently starts a new conversation: it resu
   } finally { await f.cleanup(); }
 });
 
-test('run_memory_shell is offered only with a runner socket, and an unreachable runner does not stop the loop', async () => {
+test('run_shell is offered only with a runner socket, and an unreachable runner does not stop the loop', async () => {
   const f = await setup();
   try {
-    // Without a socket the tool is not registered and the instructions do not mention it.
+    // Without a socket the tool is not registered, and the instructions say memory is out of reach.
     const plain = await f.open();
     const first = f.send(plain.loop, '鍵の番号を探して');
     const call1 = await f.model.next();
-    assert.doesNotMatch(call1.context.systemPrompt ?? '', /run_memory_shell/);
-    call1.call('run_memory_shell', { command: 'rg 鍵' });
+    assert.doesNotMatch(call1.context.systemPrompt ?? '', /run_shell/);
+    assert.match(call1.context.systemPrompt ?? '', /作業環境につながっていない/);
+    call1.call('run_shell', { command: 'rg 鍵 /memory' });
     call1.finish();
     const call2 = await f.model.next();
     const [unregistered] = toolResults(call2.context);
@@ -570,11 +593,11 @@ test('run_memory_shell is offered only with a runner socket, and an unreachable 
     await plain.loop.close();
 
     // With a socket nobody listens on, the tool answers with the reason and the turn goes on.
-    const shelled = await f.open({ memoryShellSocket: join(f.root, 'missing.sock') });
+    const shelled = await f.open({ workspaceSocket: join(f.root, 'missing.sock') });
     const asked = f.send(shelled.loop, 'もう一度探して');
     const call3 = await f.model.next();
-    assert.match(call3.context.systemPrompt ?? '', /run_memory_shell/);
-    call3.call('run_memory_shell', { command: 'rg 鍵' });
+    assert.match(call3.context.systemPrompt ?? '', /run_shell/);
+    call3.call('run_shell', { command: 'rg 鍵 /memory' });
     call3.finish();
     const call4 = await f.model.next();
     const [unreachable] = toolResults(call4.context);
@@ -584,6 +607,48 @@ test('run_memory_shell is offered only with a runner socket, and an unreachable 
     call4.call('finish_event', { event_id: asked.eventId });
     call4.finish();
     assert.equal((await completed(shelled.events, asked.eventId)).payload.status, 'replied');
+  } finally { await f.cleanup(); }
+});
+
+/**
+ * The size of the persistent places is told on the input side of a turn, never in the instructions: what changes
+ * every turn must stay off the prefix cache (ADR 0019).
+ */
+test('past the size warning the next turn is told, with the breakdown, and no sooner than every ten minutes', async () => {
+  const f = await setup();
+  try {
+    let clock = Date.parse('2026-09-19T10:00:00+09:00');
+    await mkdir(join(f.data, 'work'), { recursive: true });
+    await writeFile(join(f.data, 'work', 'big.csv'), 'x'.repeat(60_000));
+    const { loop, events } = await f.open({ workspaceSizeWarnBytes: 20_000, now: () => clock });
+    behave(f, {});
+
+    // The turn that measures is not the turn that is told: the line waits for the next prompt.
+    const first = f.send(loop, 'まとめて');
+    await completed(events, first.eventId);
+    await loop.idle();
+    const second = f.send(loop, 'ありがとう');
+    await completed(events, second.eventId);
+    const told = f.model.contexts.map(lastUserText).find(text => /永続する書き場所/.test(text));
+    assert.ok(told, 'the notice reached a prompt');
+    assert.match(told!, /\/work/);
+    assert.match(told!, /\/memory/);
+    assert.match(told!, /\/home\/natsumi/);
+    // It never rides in the instructions, where it would break the prefix cache.
+    for (const context of f.model.contexts) assert.doesNotMatch(context.systemPrompt ?? '', /永続する書き場所/);
+
+    // Told once. The places are not walked again until ten minutes have gone by.
+    const third = f.send(loop, 'わかった');
+    await completed(events, third.eventId);
+    assert.doesNotMatch(lastUserText(f.model.contexts.at(-1)!), /永続する書き場所/);
+
+    clock += 10 * 60_000;
+    const fourth = f.send(loop, 'その後は');
+    await completed(events, fourth.eventId);
+    await loop.idle();
+    const fifth = f.send(loop, 'まだ大きい');
+    await completed(events, fifth.eventId);
+    assert.match(lastUserText(f.model.contexts.at(-1)!), /永続する書き場所/);
   } finally { await f.cleanup(); }
 });
 

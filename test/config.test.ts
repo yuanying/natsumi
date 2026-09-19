@@ -23,6 +23,8 @@ const github = () => ({
 });
 const SCHEDULE_DEFAULTS = {
   memoryFileMaxChars: 32000,
+  shellWaitSeconds: 75,
+  workspaceSizeWarnBytes: 1073741824,
   awakeHours: { start: '08:00', end: '23:00' },
   pingIntervalMinutes: 30,
   selfCheck: { minDelayMinutes: 5, maxDelayDays: 7, maxPending: 5, maxPerDay: 20 },
@@ -117,12 +119,30 @@ test('the loop section sets the awake hours, the ping, the self-check limits and
   rejects({ ...base(), loop: { selfCheck: { perHour: 3 } } }, 'loop.selfCheck.perHour', /unknown/);
 });
 
-test('the memory shell is off unless the loop names the runner socket by absolute path', () => {
-  assert.equal('memoryShellSocket' in parseConfig(base()).loop, false);
-  assert.equal(parseConfig({ ...base(), loop: { memoryShellSocket: '/run/natsumi-tools/runner.sock' } }).loop.memoryShellSocket,
-    '/run/natsumi-tools/runner.sock');
-  for (const socket of ['run/runner.sock', '', 42]) rejects({ ...base(), loop: { memoryShellSocket: socket } }, 'loop.memoryShellSocket');
+test('the workspace shell is off unless the loop names the runner socket by absolute path', () => {
+  assert.equal('workspaceSocket' in parseConfig(base()).loop, false);
+  assert.equal(parseConfig({ ...base(), loop: { workspaceSocket: '/run/natsumi-workspace/runner.sock' } }).loop.workspaceSocket,
+    '/run/natsumi-workspace/runner.sock');
+  for (const socket of ['run/runner.sock', '', 42]) rejects({ ...base(), loop: { workspaceSocket: socket } }, 'loop.workspaceSocket');
   rejects({ ...base(), loop: { rotateAt: '04:00' } }, 'loop.rotateAt', /unknown/);
+});
+
+// The rename of ADR 0019. Ignoring the old name would leave the shell silently switched off.
+test('the old memoryShellSocket name stops startup and says what it became', () => {
+  rejects({ ...base(), loop: { memoryShellSocket: '/run/natsumi-tools/runner.sock' } }, 'loop.memoryShellSocket',
+    /renamed to workspaceSocket/);
+});
+
+test('the shell wait and the size warning have defaults and bounds', () => {
+  const defaults = parseConfig(base()).loop;
+  assert.equal(defaults.shellWaitSeconds, 75);
+  assert.equal(defaults.workspaceSizeWarnBytes, 1073741824);
+  const set = parseConfig({ ...base(), loop: { shellWaitSeconds: 120, workspaceSizeWarnBytes: 2 * 1024 * 1024 } }).loop;
+  assert.equal(set.shellWaitSeconds, 120);
+  assert.equal(set.workspaceSizeWarnBytes, 2 * 1024 * 1024);
+  // Shorter than the runner's own response limit, and the answer never comes back.
+  for (const seconds of [0, 9, 1.5, '75', true]) rejects({ ...base(), loop: { shellWaitSeconds: seconds } }, 'loop.shellWaitSeconds');
+  for (const bytes of [0, 1023, 1.5, '1024']) rejects({ ...base(), loop: { workspaceSizeWarnBytes: bytes } }, 'loop.workspaceSizeWarnBytes');
 });
 
 test('the memory repository defaults to the data directory, and a file limit too small is refused', () => {

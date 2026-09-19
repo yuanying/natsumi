@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
 import { DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
+import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
+import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES, DEFAULT_SELF_CHECK_LIMITS,
   type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
@@ -78,8 +80,12 @@ export interface LoopConfig {
   compactionThreshold: number;
   /** Recent context tokens a compaction keeps as they are. */
   compactionKeepRecent: number;
-  /** The Unix socket of the tools container's runner (ADR 0011). Without it the model gets no shell. */
-  memoryShellSocket?: string;
+  /** The Unix socket of the workspace container's runner (ADR 0019). Without it the model gets no shell. */
+  workspaceSocket?: string;
+  /** Seconds the server waits for the runner's answer. Longer than the runner's own response limit (ADR 0019). */
+  shellWaitSeconds: number;
+  /** Past this many bytes across the three persistent places, the next turn is told, with the breakdown (ADR 0019). */
+  workspaceSizeWarnBytes: number;
   /** The git repository holding memory (ADR 0018). `memory/` in the data directory when omitted. */
   memoryRepository?: string;
   /** The longest one memory file may be, in characters. A file over it goes back to the previous commit. */
@@ -96,7 +102,8 @@ export interface LoopConfig {
 
 export const LOOP_DEFAULTS: LoopConfig = {
   timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
-  memoryFileMaxChars: DEFAULT_FILE_MAX_CHARS,
+  memoryFileMaxChars: DEFAULT_FILE_MAX_CHARS, shellWaitSeconds: DEFAULT_SHELL_WAIT_SECONDS,
+  workspaceSizeWarnBytes: DEFAULT_SIZE_WARN_BYTES,
   awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES, selfCheck: DEFAULT_SELF_CHECK_LIMITS,
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
 };
@@ -105,6 +112,10 @@ export const LOOP_DEFAULTS: LoopConfig = {
 const MIN_PING_INTERVAL_MINUTES = 5;
 /** Below this a memory file could not hold a topic, and every night's work would go back. */
 const MIN_MEMORY_FILE_MAX_CHARS = 1000;
+/** Under the runner's own response limit (60 seconds, ADR 0019) the answer would never reach the server. */
+const MIN_SHELL_WAIT_SECONDS = 10;
+/** A warning under a kibibyte would fire on an empty workspace. */
+const MIN_SIZE_WARN_BYTES = 1024;
 
 export interface ServerConfig {
   pi: PiConfig;
@@ -130,6 +141,11 @@ const SECTIONS = {
   github: parseGitHub,
   loop: parseLoop,
 } satisfies { [K in keyof ServerConfig]: Section<ServerConfig[K]> };
+
+/** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
+const RENAMED_LOOP_KEYS: Record<string, string> = {
+  memoryShellSocket: 'workspaceSocket',
+};
 
 const MOVED: Record<string, string> = {
   dataDirectory: 'the data directory is chosen with --data-dir or the launch directory, not in the config',
@@ -307,8 +323,12 @@ function parseGitHub(value: unknown, path: string): GitHubConfig {
 
 function parseLoop(value: unknown, path: string): LoopConfig {
   const loop = object(value, path);
-  onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'memoryShellSocket',
-    'memoryRepository', 'memoryFileMaxChars', 'awakeHours', 'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes']);
+  for (const [old, now] of Object.entries(RENAMED_LOOP_KEYS)) {
+    if (old in loop) throw new ConfigError(`${path}.${old}`, `renamed to ${now} (ADR 0019)`);
+  }
+  onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
+    'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'awakeHours',
+    'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -324,7 +344,15 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     throw new ConfigError(`${path}.compactionKeepRecent`, 'must be an integer of at least 1000');
   }
   if (keep >= threshold) throw new ConfigError(`${path}.compactionKeepRecent`, 'must be smaller than compactionThreshold');
-  const socket = loop.memoryShellSocket === undefined ? undefined : absolutePath(loop.memoryShellSocket, `${path}.memoryShellSocket`);
+  const socket = loop.workspaceSocket === undefined ? undefined : absolutePath(loop.workspaceSocket, `${path}.workspaceSocket`);
+  const wait = loop.shellWaitSeconds ?? LOOP_DEFAULTS.shellWaitSeconds;
+  if (!positiveInteger(wait, MIN_SHELL_WAIT_SECONDS)) {
+    throw new ConfigError(`${path}.shellWaitSeconds`, `must be an integer of at least ${MIN_SHELL_WAIT_SECONDS}`);
+  }
+  const warnBytes = loop.workspaceSizeWarnBytes ?? LOOP_DEFAULTS.workspaceSizeWarnBytes;
+  if (!positiveInteger(warnBytes, MIN_SIZE_WARN_BYTES)) {
+    throw new ConfigError(`${path}.workspaceSizeWarnBytes`, `must be an integer of at least ${MIN_SIZE_WARN_BYTES}`);
+  }
   const repository = loop.memoryRepository === undefined ? undefined : absolutePath(loop.memoryRepository, `${path}.memoryRepository`);
   const fileMax = loop.memoryFileMaxChars ?? LOOP_DEFAULTS.memoryFileMaxChars;
   if (!positiveInteger(fileMax, MIN_MEMORY_FILE_MAX_CHARS)) {
@@ -337,7 +365,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   const reset = loop.expressionResetMinutes ?? LOOP_DEFAULTS.expressionResetMinutes;
   if (!positiveInteger(reset, 1)) throw new ConfigError(`${path}.expressionResetMinutes`, 'must be a positive integer');
   return {
-    timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep, ...(socket ? { memoryShellSocket: socket } : {}),
+    timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep,
+    ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, workspaceSizeWarnBytes: warnBytes as number,
     ...(repository ? { memoryRepository: repository } : {}), memoryFileMaxChars: fileMax as number,
     awakeHours: parseAwakeHours(loop.awakeHours ?? LOOP_DEFAULTS.awakeHours, `${path}.awakeHours`),
     pingIntervalMinutes: ping as number | false,

@@ -1,6 +1,13 @@
 import { readFile, realpath } from 'node:fs/promises';
 import { basename, dirname, join, relative, isAbsolute } from 'node:path';
 
+/**
+ * Where `/work` and `/home/natsumi` live inside the data directory. The workspace container mounts them from the
+ * same volume by subpath (ADR 0019); the server makes them and then never looks inside.
+ */
+export const WORK_DIRECTORY = 'work';
+export const HOME_DIRECTORY = 'home';
+
 /** Real path of `path`, following symlinks of the longest existing prefix; the rest need not exist yet. */
 export async function realPathAllowingMissing(path: string): Promise<string> {
   try { return await realpath(path); } catch (error) {
