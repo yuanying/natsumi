@@ -8,10 +8,14 @@ import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { isAwake, Scheduler, SelfChecks } from '../src/server/scheduler.ts';
+import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { ScriptedModel } from './support/scripted-model.ts';
+
+/** What a test may replace when it opens a loop: loop settings are overlaid on `LOOP_DEFAULTS`. */
+type OpenOptions = Partial<Omit<LoopOptions, 'loop'>> & { loop?: Partial<LoopConfig> };
 
 const MINUTE = 60_000;
 /** Tokyo is UTC+9 all year, so local times read directly. */
@@ -49,10 +53,11 @@ async function setup(start: string) {
     clock: tokyo(start),
     at(local: string) { f.clock = tokyo(local); },
     advance(minutes: number) { f.clock += minutes * MINUTE; },
-    async open(options: Partial<LoopOptions> = {}) {
+    async open({ loop: settings, ...options }: OpenOptions = {}) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-        runtime: fixtureRuntime, maxModelCalls: 6, timeZone: TZ, now: () => f.clock, awakeHours: AWAKE, selfCheckLimits: LIMITS,
+        runtime: fixtureRuntime, maxModelCalls: 6, now: () => f.clock,
+        loop: { ...LOOP_DEFAULTS, timeZone: TZ, awakeHours: AWAKE, selfCheck: LIMITS, ...settings },
         configureSession: (session: AgentSession) => { session.agent.streamFunction = model.streamFunction; },
         ...options,
       });

@@ -8,11 +8,15 @@ import type { Context } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
+import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { THINKING_LINE_MAX_CHARS, THINKING_MIN_INTERVAL_MS, ThinkingLoop,
   type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { PRIVATE_DETAIL, ScriptedModel } from './support/scripted-model.ts';
+
+/** What a test may replace when it opens a loop: loop settings are overlaid on `LOOP_DEFAULTS`. */
+type OpenOptions = Partial<Omit<LoopOptions, 'loop'>> & { loop?: Partial<LoopConfig> };
 
 const PERSONALITY_MARKER = 'FIXTURE-PERSONALITY-5521';
 const TOKEN = 'SYNTHETIC-ORCHID-731';
@@ -49,10 +53,10 @@ async function setup(beforeReadState?: (db: DatabaseSync) => void) {
   let counter = 0;
   const f = {
     root, data, sessionDirectory, db, model, sessions,
-    async open(options: Partial<LoopOptions> = {}) {
+    async open({ loop: settings, ...options }: OpenOptions = {}) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-        runtime: fixtureRuntime, maxModelCalls: 4,
+        runtime: fixtureRuntime, maxModelCalls: 4, loop: { ...LOOP_DEFAULTS, ...settings },
         configureSession: session => { session.agent.streamFunction = model.streamFunction; sessions.push(session); },
         ...options,
       });

@@ -9,12 +9,16 @@ import type { Context } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
+import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { FIXED_FILES } from '../src/server/memory-repository.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { startFakeRunner } from './support/fake-runner.ts';
 import { ScriptedModel, type ScriptedStep } from './support/scripted-model.ts';
+
+/** What a test may replace when it opens a loop: loop settings are overlaid on `LOOP_DEFAULTS`. */
+type OpenOptions = Partial<Omit<LoopOptions, 'loop'>> & { loop?: Partial<LoopConfig> };
 
 // Fictional memories only.
 const PASSPHRASE = 'SYNTHETIC-HERON-208';
@@ -61,10 +65,10 @@ async function setup() {
     commits: () => Number(git('rev-list', '--count', 'HEAD')),
     /** Writes a memory file the way the model's shell would, in the middle of a turn. */
     writeMemory: (name: string, text: string) => writeFile(join(memory, name), text),
-    async open(options: Partial<LoopOptions> = {}) {
+    async open({ loop: settings, ...options }: OpenOptions = {}) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-        runtime: fixtureRuntime, maxModelCalls: 4, timeZone: 'Asia/Tokyo',
+        runtime: fixtureRuntime, maxModelCalls: 4, loop: { ...LOOP_DEFAULTS, timeZone: 'Asia/Tokyo', ...settings },
         configureSession: session => { session.agent.streamFunction = model.streamFunction; sessions.push(session); },
         ...options,
       });
@@ -130,7 +134,7 @@ test('run_shell writes memory and reads it back, and memories never ride in the 
   const f = await setup();
   try {
     const runner = await f.runner();
-    const { loop, events } = await f.open({ workspaceSocket: runner.path });
+    const { loop, events } = await f.open({ loop: { workspaceSocket: runner.path } });
     const first = f.send(loop, `合言葉は ${PASSPHRASE}。覚えておいて`);
     const call1 = await f.model.next();
     // The tool is registered and described, and the memory tools of ADR 0009 are gone.
@@ -154,7 +158,7 @@ test('run_shell writes memory and reads it back, and memories never ride in the 
 
     // A later question is answered from what the shell finds.
     await loop.close();
-    const again = await f.open({ workspaceSocket: runner.path });
+    const again = await f.open({ loop: { workspaceSocket: runner.path } });
     const asked = f.send(again.loop, '合言葉は何だっけ');
     const call3 = await f.model.next();
     assert.equal(call3.context.systemPrompt?.includes(PASSPHRASE), false);
@@ -179,7 +183,7 @@ test('the shell runs in the owner time zone, and a command too long never leaves
   const f = await setup();
   try {
     const runner = await f.runner();
-    const { loop, events } = await f.open({ workspaceSocket: runner.path });
+    const { loop, events } = await f.open({ loop: { workspaceSocket: runner.path } });
     const sent = f.send(loop, '今日の日付で書いておいて');
     const call1 = await f.model.next();
     call1.call('run_shell', { command: 'date +%Z' });
@@ -327,7 +331,7 @@ test('handoff.md is seeded from the newest handoff SQLite holds, wherever the re
     // A repository somewhere else entirely: loop.memoryRepository names it, and the newest handoff is written in.
     const elsewhere = join(f.root, 'memory-elsewhere');
     await mkdir(elsewhere, { recursive: true });
-    await f.open({ memoryRepository: elsewhere });
+    await f.open({ loop: { memoryRepository: elsewhere } });
     assert.match(await readFile(join(elsewhere, 'handoff.md'), 'utf8'), new RegExp(HANDOFF));
     assert.deepEqual((await readdir(elsewhere)).filter(name => name !== '.git').sort(), [...FIXED_FILES].sort());
     // The data directory's own memory/ is untouched: it still carries the template it was seeded with.
@@ -593,7 +597,7 @@ test('run_shell is offered only with a runner socket, and an unreachable runner 
     await plain.loop.close();
 
     // With a socket nobody listens on, the tool answers with the reason and the turn goes on.
-    const shelled = await f.open({ workspaceSocket: join(f.root, 'missing.sock') });
+    const shelled = await f.open({ loop: { workspaceSocket: join(f.root, 'missing.sock') } });
     const asked = f.send(shelled.loop, 'もう一度探して');
     const call3 = await f.model.next();
     assert.match(call3.context.systemPrompt ?? '', /run_shell/);
@@ -620,7 +624,7 @@ test('past the size warning the next turn is told, with the breakdown, and no so
     let clock = Date.parse('2026-09-19T10:00:00+09:00');
     await mkdir(join(f.data, 'work'), { recursive: true });
     await writeFile(join(f.data, 'work', 'big.csv'), 'x'.repeat(60_000));
-    const { loop, events } = await f.open({ workspaceSizeWarnBytes: 20_000, now: () => clock });
+    const { loop, events } = await f.open({ loop: { workspaceSizeWarnBytes: 20_000 }, now: () => clock });
     behave(f, {});
 
     // The turn that measures is not the turn that is told: the line waits for the next prompt.
@@ -655,7 +659,7 @@ test('past the size warning the next turn is told, with the breakdown, and no so
 test('past the context limit the loop compacts between turns and the conversation goes on, also after a restart', async () => {
   const f = await setup();
   try {
-    const options = { compactAtTokens: 1_500, keepRecentTokens: 400 };
+    const options = { loop: { compactionThreshold: 1_500, compactionKeepRecent: 400 } };
     const { loop, events } = await f.open(options);
     behave(f, {});
     const long = 'あ'.repeat(1_500);

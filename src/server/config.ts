@@ -3,6 +3,8 @@ import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
 import { COMPATIBLE_PROVIDER } from '../pi/auth.ts';
 import { isLoopbackHost } from '../pi/loopback.ts';
+// The only thing this file takes from the server modules above it is their `DEFAULT_*` constants, for LOOP_DEFAULTS below.
+// Applying a default is this parser's job alone: nothing downstream falls back again (see LoopOptions.loop).
 import { DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
