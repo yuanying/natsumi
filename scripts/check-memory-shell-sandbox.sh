@@ -90,7 +90,7 @@ host_check "memory is limited" "$(inspect '{{.HostConfig.Memory}}')" 268435456
 host_check "cpu is limited" "$(inspect '{{.HostConfig.NanoCpus}}')" 1000000000
 host_check "only memory (writable), its .git (read-only) and the socket are mounted" \
   "$(inspect '{{range .Mounts}}{{.Destination}}:{{.RW}} {{end}}' | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')" \
-  "/memory:true /memory/.git:false /run/natsumi-tools:true "
+  "/memory/.git:false /memory:true /run/natsumi-tools:true "
 host_check "no environment beyond PATH" "$(inspect '{{range .Config.Env}}{{.}} {{end}}' | tr ' ' '\n' | sed '/^$/d;s/=.*//' | sort | tr '\n' ' ')" "PATH "
 
 check "commands run as a non-root user" 'grep "^Uid:" /proc/self/status' '/^Uid:\s+[1-9]\d*\s/.test(r.stdout)'
@@ -101,9 +101,10 @@ check "commands see no environment but PATH and PWD" 'cat /proc/self/environ' \
   'r.stdout.split("\0").filter(Boolean).map(v => v.split("=")[0]).sort().join(",") === "PATH,PWD"'
 check "installed commands are exactly the list" 'ls /bin' \
   "r.stdout.trim().split('\\n').sort().join(',') === '$(grep -v '^#' docker/tools-commands.txt | sed '/^$/d' | sort | paste -sd, -)'"
-# /sbin/docker-init (init: true) and /.dockerenv are put in by Docker, not by the image.
+# What the image carries. /sbin/docker-init (init: true) and /.dockerenv are put in by Docker, not by the image;
+# /memory is the owner's data (git leaves executable hook samples in .git), and nothing there is on PATH.
 check "no other executables outside the libraries" \
-  'find / \( -path /proc -o -path /sys -o -path /dev \) -prune -o -type f -perm -u+x -print' \
+  'find / \( -path /proc -o -path /sys -o -path /dev -o -path /memory \) -prune -o -type f -perm -u+x -print' \
   'r.stdout.trim().split("\n").filter(p => !p.startsWith("/bin/") && !/^\/(lib|lib64|usr\/lib)\//.test(p)).sort().join(",") === "/.dockerenv,/sbin/docker-init,/usr/libexec/natsumi-tools-runner"'
 check "secrets, SQLite, Pi state and config are not visible" \
   'ls /run/secrets /data /var/lib/natsumi-pi /etc/natsumi 2>&1; find / \( -path /proc -o -path /sys \) -prune -o \( -name "*.sqlite*" -o -name auth.json -o -name "*.jsonl" -o -name "*secret*" -o -name "*.pem" \) -print' \
@@ -123,8 +124,8 @@ check "root is not writable" 'echo x > /bin/x; echo x > /x' 'r.exitCode !== 0 &&
 # One command may be 8000 characters (ADR 0018); in Japanese that is three bytes each, past the old request limit.
 long="$(awk 'BEGIN { while (i++ < 7000) printf "あ" }')"
 check "a command of thousands of Japanese characters arrives whole" \
-  "printf '%s' '$long' > 長い.md; wc -m < 長い.md" \
-  'r.exitCode === 0 && Number(r.stdout.trim()) === 7000'
+  "printf '%s' '$long' > 長い.md; wc -c < 長い.md" \
+  'r.exitCode === 0 && Number(r.stdout.trim()) === 21000'
 check "the socket directory cannot be changed" 'echo x > /run/natsumi-tools/x; find /run/natsumi-tools -delete' \
   'r.exitCode !== 0 && /Permission denied/.test(r.stderr)'
 check "only the small /tmp is writable" 'echo ok > /tmp/t && cat /tmp/t' 'r.exitCode === 0 && r.stdout === "ok\n"'
