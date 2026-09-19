@@ -1,7 +1,7 @@
 # 0018. 記憶を git で持ち、shell で読み書きし、夜に組み直す
 
 - Date: 2026-09-18
-- Status: Accepted
+- Status: Accepted（足すコマンドの列挙と `git` を入れないこと、1 コマンドの長さの上限の理由づけ、閉じ込めの条件のうち資源と `/tmp` と 1 コマンドの時間、ツールの説明の中身は [ADR 0019](0019-a-workspace-not-a-memory-tool.md) で置き換え、夜の再構成に作業場の棚卸しを同 ADR で追加）
 
 ## Context
 
