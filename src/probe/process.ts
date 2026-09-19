@@ -2,7 +2,7 @@ import { fork } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { COMPATIBLE_KEY_ENV } from '../pi/auth.ts';
+import { COMPATIBLE_KEY_ENV } from './auth.ts';
 
 export function runChild(worker: URL, args: string[], root: string, timeout = 150_000): Promise<unknown> {
   return new Promise((resolve, reject) => {

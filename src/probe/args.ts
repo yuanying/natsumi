@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { parseArgs } from 'node:util';
-import { COMPATIBLE_KEY_ENV } from '../pi/auth.ts';
+import { COMPATIBLE_KEY_ENV } from './auth.ts';
 
 export type ProbeRoute =
   | { kind: 'subscription'; authPath: string }
