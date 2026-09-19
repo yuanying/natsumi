@@ -7,6 +7,8 @@ export type OutputCheck =
 
 // Chat-template markers that leak when the model's output is parsed out of step (seen in the loop evaluation).
 const CONTROL = /<\/?think>|<\/?tool_call>|<\/?tool_response>|<\/?parameter(?:=[^>]*)?>|<\/?function(?:=[^>]*)?>|<\|[a-z_]+\|>/gi;
+// C0 controls and DEL, except the tab, carriage return and newline a Markdown file is written with.
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힯]/gu;
 // Simplified Chinese characters that Japanese text does not use. A heuristic: shared kanji cannot be told apart.
 const SIMPLIFIED = /[这个们说还过时见长轻为对问题么东车应该实现开关边话语让给钱认识经处头两发样简洁记忆读书习继续请谢爱门马鱼鸟电脑网务员场钟间业专从众买卖虽节气听视觉须预顺页]/gu;
@@ -29,6 +31,11 @@ export function checkOutgoingText(text: string): OutputCheck {
 /** Chat-template markers in the text, each once. */
 export function findControlStrings(text: string): string[] {
   return unique(text.match(CONTROL));
+}
+
+/** True when the text carries a control character. Tab, carriage return and newline are text, not control. */
+export function hasControlCharacters(text: string): boolean {
+  return CONTROL_CHARACTERS.test(text);
 }
 
 /** Hangul and simplified Chinese characters Japanese does not use, each once. */

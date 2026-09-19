@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +9,7 @@ import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/pi-session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
+import { FIXED_FILES } from '../src/server/memory-repository.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { ScriptedModel, type ScriptedStep } from './support/scripted-model.ts';
@@ -42,8 +44,14 @@ async function setup() {
   const sessions: AgentSession[] = [];
   const opened: ThinkingLoop[] = [];
   let counter = 0;
+  const memory = join(data, 'memory');
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', memory, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8' }).trim();
   const f = {
-    root, data, sessionDirectory, db, model, sessions,
+    root, data, memory, sessionDirectory, db, model, sessions, git,
+    commits: () => Number(git('rev-list', '--count', 'HEAD')),
+    /** Writes a memory file the way the model's shell would, in the middle of a turn. */
+    writeMemory: (name: string, text: string) => writeFile(join(memory, name), text),
     async open(options: Partial<LoopOptions> = {}) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
@@ -85,6 +93,7 @@ const toolResults = (context: Context) => {
     .map(m => ({ text: textOf(m), isError: (m as { isError: boolean }).isError }));
 };
 const call = (name: string, args: Record<string, unknown>) => ({ name, arguments: args });
+const isFixed = (name: string) => (FIXED_FILES as readonly string[]).includes(name);
 const isSummary = (context: Context) => (context.systemPrompt ?? '').includes('summarization');
 const completed = (events: LoopClientEvent[], eventId: string) =>
   until(() => events.find(e => e.type === 'conversation.event.completed' && e.payload.eventId === eventId));
@@ -164,9 +173,143 @@ test('the memory tools refuse path tricks and forget removes a memory', async ()
     call2.call('finish_event', { event_id: sent.eventId });
     call2.finish();
     await completed(events, sent.eventId);
-    // The topic lost its only memory, so its file is gone.
-    assert.deepEqual((await readdir(join(f.data, 'memory'))).sort(), ['escape.md']);
+    // The topic lost its only memory, so its file is gone; what is left is the repository's own three files.
+    assert.deepEqual((await readdir(f.memory)).filter(name => name !== '.git' && !isFixed(name)).sort(), ['escape.md']);
     assert.deepEqual((await readdir(f.root)).filter(name => !name.startsWith('state.sqlite')).sort(), ['data', 'pi']);
+  } finally { await f.cleanup(); }
+});
+
+test('the first start makes the memory repository and moves personality.md into it', async () => {
+  const f = await setup();
+  try {
+    await f.writeMemory('\u5408\u8a00\u8449.md', `# \u5408\u8a00\u8449\n\n- 2026-09-15: ${PASSPHRASE}\n`);
+    const { loop } = await f.open();
+    const sent = f.send(loop, '\u3053\u3093\u306b\u3061\u306f');
+    const call1 = await f.model.next();
+
+    // The personality is in the prompt, read from the repository; memory itself never is.
+    assert.match(call1.context.systemPrompt ?? '', /\u843d\u3061\u7740\u3044\u305f\u8a71\u3057\u65b9/);
+    assert.equal((call1.context.systemPrompt ?? '').includes(PASSPHRASE), false);
+    call1.call('finish_event', { event_id: sent.eventId });
+    call1.finish();
+    await loop.idle();
+
+    assert.equal(f.git('symbolic-ref', '--short', 'HEAD'), 'main');
+    assert.equal(f.commits(), 1);
+    // What was already there rides into the first commit under its own name, beside the three fixed files.
+    assert.deepEqual(f.git('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort(),
+      [...FIXED_FILES, '\u5408\u8a00\u8449.md'].sort());
+    assert.deepEqual((await readdir(f.data)).sort(), ['memory']);
+    assert.match(await readFile(join(f.memory, '\u5408\u8a00\u8449.md'), 'utf8'), new RegExp(PASSPHRASE));
+  } finally { await f.cleanup(); }
+});
+
+test('a turn that changed memory ends in one commit; a turn that changed nothing ends in none', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const base = f.commits();
+
+    const first = f.send(loop, `\u5408\u8a00\u8449\u306f ${PASSPHRASE}`);
+    const call1 = await f.model.next();
+    call1.call('remember', { topic: '\u5408\u8a00\u8449', note: `\u5408\u8a00\u8449\u306f ${PASSPHRASE}` });
+    call1.finish();
+    const call2 = await f.model.next();
+    call2.call('reply_to_mac', { event_id: first.eventId, text: '\u899a\u3048\u307e\u3057\u305f' });
+    call2.call('finish_event', { event_id: first.eventId });
+    call2.finish();
+    await completed(events, first.eventId);
+
+    // One commit for the turn, whatever it took to get there, with a message the server made.
+    assert.equal(f.commits(), base + 1);
+    assert.match(f.git('log', '-1', '--format=%s'), /^mac_message: .*\u5408\u8a00\u8449\.md/);
+    assert.equal(f.git('status', '--porcelain'), '');
+
+    const second = f.send(loop, '\u3042\u308a\u304c\u3068\u3046');
+    const call3 = await f.model.next();
+    call3.call('finish_event', { event_id: second.eventId });
+    call3.finish();
+    await completed(events, second.eventId);
+    assert.equal(f.commits(), base + 1);
+  } finally { await f.cleanup(); }
+});
+
+test('a file the check catches goes back, and the reason reaches the next turn once', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const first = f.send(loop, '\u307e\u3068\u3081\u3066');
+    const call1 = await f.model.next();
+    await f.writeMemory('\u4e88\u5b9a.md', '# \u4e88\u5b9a\n\n- 2026-09-19: \u6b6f\u533b\u8005\u306f\u91d1\u66dc\n');
+    await f.writeMemory('\u3081\u3082.md', '# \u3081\u3082\n\n\u8fd9\u4e2a\u662f\u7b80\u4f53\u5b57\n');
+    call1.call('finish_event', { event_id: first.eventId });
+    call1.finish();
+    await completed(events, first.eventId);
+
+    // The bad one is gone, the good one is committed.
+    assert.deepEqual((await readdir(f.memory)).filter(name => name !== '.git' && !isFixed(name)).sort(), ['\u4e88\u5b9a.md']);
+    assert.equal(f.git('status', '--porcelain'), '');
+
+    const second = f.send(loop, '\u3069\u3046\u3060\u3063\u305f');
+    const call2 = await f.model.next();
+    const told = lastUserText(call2.context);
+    assert.match(told, /\u3081\u3082\.md/);
+    assert.match(told, /\u65e5\u672c\u8a9e\u4ee5\u5916/);
+    call2.call('finish_event', { event_id: second.eventId });
+    call2.finish();
+    await completed(events, second.eventId);
+
+    // Told once, not again.
+    const third = f.send(loop, '\u308f\u304b\u3063\u305f');
+    const call3 = await f.model.next();
+    assert.doesNotMatch(lastUserText(call3.context), /\u3081\u3082\.md/);
+    call3.call('finish_event', { event_id: third.eventId });
+    call3.finish();
+    await completed(events, third.eventId);
+  } finally { await f.cleanup(); }
+});
+
+test('a turn stopped at the model-call limit still commits what memory holds', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open({ maxModelCalls: 1 });
+    const base = f.commits();
+    const sent = f.send(loop, '\u9577\u3044\u4f5c\u696d');
+    const call1 = await f.model.next();
+    await f.writeMemory('\u9014\u4e2d.md', '# \u9014\u4e2d\n\n- 2026-09-19: \u66f8\u304d\u304b\u3051\n');
+    // No finish_event: the turn is cut at the model-call limit.
+    call1.call('set_mac_avatar_expression', { expression: 'thinking' });
+    call1.finish();
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'failed');
+    assert.equal(f.commits(), base + 1);
+    assert.match(await readFile(join(f.memory, '\u9014\u4e2d.md'), 'utf8'), /\u66f8\u304d\u304b\u3051/);
+  } finally { await f.cleanup(); }
+});
+
+test('handoff.md is seeded from the newest handoff SQLite holds, wherever the repository is put', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    behave(f, {
+      review: event => ({ calls: [
+        call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} \u660e\u65e5\u306f\u8cc7\u6599\u306e\u7d9a\u304d` }),
+        call('finish_event', { event_id: event.event_id }),
+      ] }),
+    });
+    const day = f.send(loop, '\u4eca\u65e5\u306e\u8a71');
+    await completed(events, day.eventId);
+    await loop.idle();
+    assert.equal((await loop.rotate()).result, 'switched');
+    await loop.close();
+
+    // A repository somewhere else entirely: loop.memoryRepository names it, and the newest handoff is written in.
+    const elsewhere = join(f.root, 'memory-elsewhere');
+    await mkdir(elsewhere, { recursive: true });
+    await f.open({ memoryRepository: elsewhere });
+    assert.match(await readFile(join(elsewhere, 'handoff.md'), 'utf8'), new RegExp(HANDOFF));
+    assert.deepEqual((await readdir(elsewhere)).filter(name => name !== '.git').sort(), [...FIXED_FILES].sort());
+    // The data directory's own memory/ is untouched: it still carries the template it was seeded with.
+    assert.doesNotMatch(await readFile(join(f.memory, 'handoff.md'), 'utf8'), new RegExp(HANDOFF));
   } finally { await f.cleanup(); }
 });
 
