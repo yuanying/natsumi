@@ -5,6 +5,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
 import type { LoopConfig } from './config.ts';
+import { ConversationStore, type EventKind, type EventState, type MessageRow,
+  type RotationRow } from './conversation-store.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REVIEW_INSTRUCTIONS,
   WORKSPACE_SECTION } from './prompts.ts';
@@ -32,7 +34,7 @@ export const THINKING_LINE_MAX_CHARS = 120;
 export const THINKING_MIN_INTERVAL_MS = 250;
 
 export type UnavailableCode = 'pi-unavailable' | 'conversation-restore-failed' | 'stopping';
-export type EventState = 'queued' | 'processing' | 'replied' | 'no-reply' | 'failed';
+export type { EventKind, EventState };
 
 /** How a nightly switch ended. A failed switch leaves the current session in place. */
 export type RotationOutcome =
@@ -92,6 +94,7 @@ export interface LoopSnapshot {
 }
 
 export interface LoopOptions {
+  /** Handed straight to the stores the loop opens on it; the loop itself never reads a table. */
   db: DatabaseSync;
   dataDirectory: string;
   sessionDirectory: string;
@@ -117,16 +120,6 @@ export interface LoopOptions {
 
 type StopContext = Parameters<NonNullable<AgentSession['agent']['shouldStopAfterTurn']>>[0];
 
-interface MessageRow {
-  message_id: string; position: number; role: ShownMessage['role']; kind: ShownMessage['kind']; text: string;
-  event_id: string | null; about_event_ids: string | null; request_id: string | null; device_id: string | null; created_at: string;
-}
-interface ConversationRow { conversation_id: string; pi_session_id: string; pi_session_file: string; created_at: string }
-interface RotationRow {
-  rotation_id: string; event_id: string; conversation_id: string; from_session_id: string; from_session_file: string;
-  state: string; handoff: string | null;
-}
-
 /** An event handed to Pi in the current turn. Only owner messages have a message. */
 interface Handling { eventId: string; messageId?: string; replied: boolean; finished: boolean }
 interface Turn {
@@ -141,7 +134,8 @@ interface Turn {
  *
  * Owner messages are recorded before they are acknowledged, shown to every device at once, and handed to Pi as
  * events. A message that arrives while Pi is working is steered into the running turn at the next model-call boundary.
- * What the owner sees is kept in SQLite; the Pi session is the separate record of thinking.
+ * What the owner sees is kept in SQLite; the Pi session is the separate record of thinking. The rows themselves
+ * belong to `ConversationStore` and `ReadState`: what is left here is the state machine over them.
  *
  * Long-term memory lives in `memory/`, reached through tools, and is a git repository: at the end of every turn the
  * server checks what changed there, puts back what fails, and commits the rest (ADR 0018). Each night the session is
@@ -152,6 +146,7 @@ export class ThinkingLoop {
   private readonly options: LoopOptions;
   private readonly now: () => number;
   private readonly memoryRepository: MemoryRepository;
+  private readonly store: ConversationStore;
   private readonly workspaceSize: WorkspaceSize;
   private readonly readState: ReadState;
   private readonly shell: WorkspaceShell | undefined;
@@ -195,6 +190,7 @@ export class ThinkingLoop {
       directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
       log: line => this.log(line),
     });
+    this.store = new ConversationStore(options.db, this.now);
     this.readState = new ReadState(options.db, this.now);
     this.shell = loop.workspaceSocket
       ? new WorkspaceShell({
@@ -225,16 +221,9 @@ export class ThinkingLoop {
    */
   static async open(options: LoopOptions): Promise<ThinkingLoop> {
     const loop = new ThinkingLoop(options);
-    await loop.memoryRepository.initialize(loop.latestHandoff());
+    await loop.memoryRepository.initialize(loop.store.latestHandoff());
     await loop.start();
     return loop;
-  }
-
-  /** The newest handoff SQLite holds, to seed `handoff.md` on the first start (ADR 0018). */
-  private latestHandoff(): string | undefined {
-    const row = this.options.db.prepare(`SELECT handoff FROM session_rotations
-      WHERE handoff IS NOT NULL ORDER BY updated_at DESC, rotation_id DESC LIMIT 1`).get() as { handoff: string } | undefined;
-    return row?.handoff;
   }
 
   get unavailable(): UnavailableCode | undefined {
@@ -253,25 +242,13 @@ export class ThinkingLoop {
   send(input: { requestId: string; deviceId: string; text: string }): SendOutcome {
     const unavailable = this.unavailable;
     if (unavailable) return { kind: 'unavailable', code: unavailable };
-    const { db } = this.options;
-    const existing = db.prepare(`SELECT m.message_id, m.device_id, m.text, m.event_id, e.state FROM conversation_messages m
-      JOIN loop_events e ON e.event_id = m.event_id WHERE m.request_id = ?`).get(input.requestId) as
-      { message_id: string; device_id: string; text: string; event_id: string; state: EventState } | undefined;
+    const existing = this.store.existingByRequest(input.requestId);
     if (existing) {
       if (existing.text !== input.text || existing.device_id !== input.deviceId) return { kind: 'rejected', code: 'request-conflict' };
       return { kind: 'accepted', messageId: existing.message_id, eventId: existing.event_id, state: existing.state };
     }
 
-    const eventId = `event-${randomUUID()}`;
-    const row = this.transaction(() => {
-      const message = this.insertMessage({ role: 'owner', kind: 'message', text: input.text, eventId,
-        requestId: input.requestId, deviceId: input.deviceId });
-      const now = this.iso();
-      db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
-        VALUES (?, 'mac-message', ?, 'queued', ?, ?)`).run(eventId, message.message_id, now, now);
-      return message;
-    });
-
+    const { row, eventId } = this.store.insertOwnerMessage(input);
     this.activityAt = this.now();
     let state: EventState = 'queued';
     const session = this.session!;
@@ -328,12 +305,9 @@ export class ThinkingLoop {
   rotate(): Promise<RotationOutcome> {
     const unavailable = this.unavailable;
     if (unavailable) return Promise.resolve({ result: 'failed', reason: unavailable });
-    const { db } = this.options;
-    const pending = db.prepare(`SELECT event_id FROM loop_events WHERE kind = 'nightly-review' AND state IN ('queued', 'processing')`)
-      .get() as { event_id: string } | undefined;
-    let eventId = pending?.event_id;
+    let eventId = this.store.pendingRotation();
     if (!eventId) {
-      eventId = this.insertEvent('nightly-review');
+      eventId = this.store.insertEvent('nightly-review');
       this.queue.push(eventId);
     }
     const id = eventId;
@@ -345,24 +319,16 @@ export class ThinkingLoop {
 
   /** When the current Pi session began: its switch, or the conversation's creation. */
   sessionStartedAt(): number | undefined {
-    const row = this.conversation();
+    const row = this.store.conversation();
     if (!row) return undefined;
-    const switched = this.options.db.prepare(`SELECT updated_at FROM session_rotations WHERE state = 'switched' AND to_session_id = ?`)
-      .get(row.pi_session_id) as { updated_at: string } | undefined;
-    return Date.parse(switched?.updated_at ?? row.created_at);
+    return Date.parse(this.store.switchedAt(row.pi_session_id) ?? row.created_at);
   }
 
   /** The conversation shown to the owner, built from SQLite only. Pi's record never appears here. */
   snapshot(): LoopSnapshot {
-    const { db } = this.options;
-    const rows = db.prepare(`SELECT * FROM (SELECT * FROM conversation_messages ORDER BY position DESC LIMIT ?) ORDER BY position`)
-      .all(SNAPSHOT_MESSAGE_LIMIT) as unknown as MessageRow[];
-    const pending = db.prepare(`SELECT e.event_id, e.message_id, e.state FROM loop_events e
-      JOIN conversation_messages m ON m.message_id = e.message_id
-      WHERE e.state IN ('queued', 'processing') ORDER BY m.position`).all() as { event_id: string; message_id: string; state: EventState }[];
     return {
-      messages: rows.map(shown),
-      pendingEvents: pending.map(row => ({ eventId: row.event_id, messageId: row.message_id, state: row.state })),
+      messages: this.store.snapshotRows(SNAPSHOT_MESSAGE_LIMIT).map(shown),
+      pendingEvents: this.store.pendingEvents(),
       avatar: { expression: this.avatar.expression },
       ...this.readState.position(),
       unacknowledgedNotificationIds: this.readState.unacknowledgedNotificationIds(),
@@ -384,9 +350,9 @@ export class ThinkingLoop {
     if (!this.quiet) return false;
     const due = this.selfChecks.due();
     if (due.length === 0) return false;
-    const eventId = this.transaction(() => {
-      const id = this.insertEvent('self-check');
-      this.selfChecks.deliver(due.map(check => check.checkId), id);
+    const eventId = this.store.transaction(transaction => {
+      const id = this.store.insertEvent('self-check');
+      this.selfChecks.deliver(due.map(check => check.checkId), id, transaction);
       return id;
     });
     this.queue.push(eventId);
@@ -397,7 +363,7 @@ export class ThinkingLoop {
   /** Hands the loop a ping: the "anything you want to do?" of a quiet moment (ADR 0014). */
   ping(): boolean {
     if (!this.quiet) return false;
-    this.queue.push(this.insertEvent('ping'));
+    this.queue.push(this.store.insertEvent('ping'));
     this.pump();
     return true;
   }
@@ -439,16 +405,14 @@ export class ThinkingLoop {
   }
 
   private async start() {
-    const { db, sessionDirectory } = this.options;
+    const { sessionDirectory } = this.options;
     try { this.modelRuntime = await this.options.runtime(); } catch { return this.fail('pi-unavailable'); }
     this.closeInterruptedReviews();
-    const row = this.conversation();
+    const row = this.store.conversation();
     let created: AgentSession | undefined;
     try {
       if (row) {
-        const unfinished = db.prepare(`SELECT * FROM session_rotations WHERE state IN ('reviewing', 'switching')
-          AND handoff IS NOT NULL AND conversation_id = ? AND from_session_id = ?`).get(row.conversation_id, row.pi_session_id) as
-          RotationRow | undefined;
+        const unfinished = this.store.unfinishedRotation(row.conversation_id, row.pi_session_id);
         if (unfinished) {
           // A switch stopped after its handoff was written: finish it rather than lose the review or start blank.
           created = await createPersistedPiSession(await this.sessionOptions(unfinished.handoff!));
@@ -459,13 +423,12 @@ export class ThinkingLoop {
           const file = resolve(sessionDirectory, row.pi_session_file);
           const rel = relative(sessionDirectory, file);
           if (rel.startsWith('..') || isAbsolute(rel)) throw new PiSessionRestoreError('Pi session reference outside the session directory');
-          this.session = await openPiSession({ ...await this.sessionOptions(this.handoffFor(row.pi_session_id)),
+          this.session = await openPiSession({ ...await this.sessionOptions(this.store.handoffFor(row.pi_session_id)),
             file, expectedSessionId: row.pi_session_id });
         }
       } else {
         created = await createPersistedPiSession(await this.sessionOptions());
-        db.prepare('INSERT INTO conversations (conversation_id, pi_session_id, pi_session_file, created_at) VALUES (?, ?, ?, ?)')
-          .run(`conversation-${randomUUID()}`, created.sessionId, relative(sessionDirectory, created.sessionFile!), this.iso());
+        this.store.insertConversation(created.sessionId, relative(sessionDirectory, created.sessionFile!));
         this.session = created;
       }
     } catch (error) {
@@ -507,20 +470,6 @@ export class ThinkingLoop {
   }
 
   private log(line: string) { this.options.log?.(line); }
-
-  private iso() { return new Date(this.now()).toISOString(); }
-
-  private conversation(): ConversationRow | undefined {
-    return this.options.db.prepare('SELECT conversation_id, pi_session_id, pi_session_file, created_at FROM conversations ORDER BY created_at LIMIT 1')
-      .get() as ConversationRow | undefined;
-  }
-
-  /** The handoff a session was started with, if it came from a nightly switch. */
-  private handoffFor(sessionId: string): string | undefined {
-    const row = this.options.db.prepare(`SELECT handoff FROM session_rotations WHERE state = 'switched' AND to_session_id = ?`)
-      .get(sessionId) as { handoff: string } | undefined;
-    return row?.handoff;
-  }
 
   /**
    * The instructions: natsumi's base, the personality, and the handoff of the night this session began with.
@@ -573,34 +522,24 @@ export class ThinkingLoop {
    * twice: it counts as replied if its reply was recorded, and as failed otherwise.
    */
   private recover() {
-    const { db } = this.options;
-    const now = this.iso();
-    const stopped = db.prepare(`UPDATE loop_events SET
-        state = CASE WHEN EXISTS (SELECT 1 FROM conversation_messages r WHERE r.kind = 'reply' AND r.event_id = loop_events.event_id)
-          THEN 'replied' ELSE 'failed' END,
-        reason = CASE WHEN EXISTS (SELECT 1 FROM conversation_messages r WHERE r.kind = 'reply' AND r.event_id = loop_events.event_id)
-          THEN NULL ELSE 'interrupted' END,
-        updated_at = ?
-      WHERE state = 'processing'`).run(now);
-    if (Number(stopped.changes) > 0) this.log(`thinking loop: ${stopped.changes} interrupted event(s) closed`);
-    const queued = db.prepare(`SELECT event_id FROM loop_events WHERE state = 'queued' ORDER BY created_at, event_id`).all() as { event_id: string }[];
-    this.queue.push(...queued.map(row => row.event_id));
+    const { closed, queued } = this.store.recover();
+    if (closed > 0) this.log(`thinking loop: ${closed} interrupted event(s) closed`);
+    this.queue.push(...queued);
   }
 
   /** Reviews stopped before writing a handoff, and switches that no longer start from the current session, have failed. */
   private closeInterruptedReviews() {
-    const { db } = this.options;
-    const row = this.conversation();
-    const closed = db.prepare(`UPDATE session_rotations SET state = 'failed', reason = 'interrupted', updated_at = ?
-      WHERE state IN ('reviewing', 'switching') AND (handoff IS NULL OR from_session_id IS NOT ?)`).run(this.iso(), row?.pi_session_id ?? null);
-    if (Number(closed.changes) > 0) this.log('thinking loop: an interrupted nightly switch left the session as it was');
+    const row = this.store.conversation();
+    if (this.store.closeInterruptedReviews(row?.pi_session_id ?? null) > 0) {
+      this.log('thinking loop: an interrupted nightly switch left the session as it was');
+    }
   }
 
   private pump() {
     if (this.running || this.closing || this.unavailableCode || !this.session) { this.settle(); return; }
     const eventId = this.queue.shift();
     if (!eventId) { this.settle(); return; }
-    const kind = (this.options.db.prepare('SELECT kind FROM loop_events WHERE event_id = ?').get(eventId) as { kind: string }).kind;
+    const kind = this.store.eventKind(eventId);
     const work = kind === 'nightly-review' ? this.runRotation(eventId) : this.runTurn([eventId], 'events').then(() => this.maintain());
     this.running = work.finally(() => {
       this.running = undefined;
@@ -617,8 +556,7 @@ export class ThinkingLoop {
   private isRotationQueuedFirst(): boolean {
     const first = this.queue[0];
     if (!first || this.running) return false;
-    const row = this.options.db.prepare('SELECT kind FROM loop_events WHERE event_id = ?').get(first) as { kind: string } | undefined;
-    return row?.kind === 'nightly-review';
+    return this.store.eventKind(first) === 'nightly-review';
   }
 
   /** Runs one turn and records how its events ended. Returns the turn, with the failure if it did not end cleanly. */
@@ -628,10 +566,7 @@ export class ThinkingLoop {
       ? this.options.reviewModelCalls ?? DEFAULT_REVIEW_MODEL_CALLS : this.options.maxModelCalls ?? DEFAULT_MAX_MODEL_CALLS;
     const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId };
     this.turn = turn;
-    for (const eventId of eventIds) {
-      const row = this.options.db.prepare('SELECT message_id FROM loop_events WHERE event_id = ?').get(eventId) as { message_id: string | null };
-      this.beginHandling(eventId, row.message_id ?? undefined);
-    }
+    for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId));
     const before = session.messages.length;
     const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, this.options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
     const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice()].filter(Boolean).join('\n\n');
@@ -648,7 +583,7 @@ export class ThinkingLoop {
       const eventId = this.steered.get(text);
       if (!eventId) continue;
       this.handling.delete(eventId);
-      this.setEventState(eventId, 'queued');
+      this.store.setEventState(eventId, 'queued');
       this.queue.unshift(eventId);
     }
     this.steered.clear();
@@ -662,7 +597,7 @@ export class ThinkingLoop {
       : !last || (last.stopReason !== 'stop' && last.stopReason !== 'toolUse') ? 'model-error' : undefined;
     for (const handling of this.handling.values()) {
       const status: EventState = handling.replied ? 'replied' : handling.finished || !failure ? 'no-reply' : 'failed';
-      this.setEventState(handling.eventId, status, status === 'failed' ? failure : undefined);
+      this.store.setEventState(handling.eventId, status, status === 'failed' ? failure : undefined);
       if (!handling.messageId) continue;
       if (status === 'failed') this.log(`thinking loop: an event failed (${failure})`);
       this.emit('conversation.event.completed', {
@@ -695,10 +630,7 @@ export class ThinkingLoop {
 
   /** The event kinds of a turn, in the names the model sees, for the machine-made commit message. */
   private eventLabel(eventIds: string[]): string {
-    const kinds = eventIds.map(eventId => {
-      const row = this.options.db.prepare('SELECT kind FROM loop_events WHERE event_id = ?').get(eventId) as { kind: string } | undefined;
-      return (row?.kind ?? 'event').replace(/-/g, '_');
-    });
+    const kinds = this.store.eventKinds(eventIds).map(kind => (kind ?? 'event').replace(/-/g, '_'));
     return [...new Set(kinds)].join('+');
   }
 
@@ -707,7 +639,7 @@ export class ThinkingLoop {
    * session starts from that handoff. The old session file is kept. The shown conversation is untouched.
    */
   private async runRotation(eventId: string): Promise<void> {
-    const { db, sessionDirectory } = this.options;
+    const { sessionDirectory } = this.options;
     const session = this.session!;
     const finish = (outcome: RotationOutcome) => {
       if (outcome.result === 'failed') this.log(`thinking loop: the nightly switch failed (${outcome.reason})`);
@@ -716,32 +648,29 @@ export class ThinkingLoop {
       for (const resolve of waiters) resolve(outcome);
     };
     if (session.messages.length === 0) {
-      this.setEventState(eventId, 'no-reply');
+      this.store.setEventState(eventId, 'no-reply');
       return finish({ result: 'skipped', reason: 'empty-session' });
     }
     this.rotating = true;
-    const conversation = this.conversation()!;
+    const conversation = this.store.conversation()!;
     const rotationId = `rotation-${randomUUID()}`;
-    const now = this.iso();
-    db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 'reviewing', ?, ?)`)
-      .run(rotationId, eventId, conversation.conversation_id, conversation.pi_session_id, conversation.pi_session_file, now, now);
+    this.store.insertRotation({ rotationId, eventId, conversationId: conversation.conversation_id,
+      fromSessionId: conversation.pi_session_id, fromSessionFile: conversation.pi_session_file });
     this.setAvatar('sleepy', 'server');
 
     const outcome = await (async (): Promise<RotationOutcome> => {
       const turn = await this.runTurn([eventId], 'review', rotationId);
-      const setRotation = (state: string, reason?: string) => db.prepare('UPDATE session_rotations SET state = ?, reason = ?, updated_at = ? WHERE rotation_id = ?')
-        .run(state, reason ?? null, this.iso(), rotationId);
+      const setRotation = (state: string, reason?: string) => this.store.setRotation(rotationId, state, reason);
       if (!turn.handoff) {
         const reason = this.closing ? 'stopped' : turn.failure ?? 'no-handoff';
         setRotation('failed', reason);
-        this.setEventState(eventId, 'failed', reason);
+        this.store.setEventState(eventId, 'failed', reason);
         return { result: 'failed', reason };
       }
       setRotation('switching');
       if (this.closing) {
         // The handoff is kept; the next start finishes this switch.
-        this.setEventState(eventId, 'failed', 'stopped');
+        this.store.setEventState(eventId, 'failed', 'stopped');
         return { result: 'failed', reason: 'stopped' };
       }
       let created: AgentSession | undefined;
@@ -751,13 +680,13 @@ export class ThinkingLoop {
       } catch {
         created?.dispose();
         setRotation('failed', 'session-create-failed');
-        this.setEventState(eventId, 'failed', 'session-create-failed');
+        this.store.setEventState(eventId, 'failed', 'session-create-failed');
         return { result: 'failed', reason: 'session-create-failed' };
       }
       this.attach(created);
       session.dispose();
       this.compactionRetryAbove = undefined;
-      this.setEventState(eventId, 'no-reply');
+      this.store.setEventState(eventId, 'no-reply');
       this.log(`thinking loop: switched to a new session (the old one is kept as ${relative(sessionDirectory, session.sessionFile!)})`);
       return { result: 'switched' };
     })();
@@ -768,14 +697,8 @@ export class ThinkingLoop {
 
   /** Points the conversation at the new session and marks the switch done, together. */
   private commitSwitch(rotation: Pick<RotationRow, 'rotation_id' | 'conversation_id' | 'handoff'>, created: AgentSession) {
-    const { db, sessionDirectory } = this.options;
-    const file = relative(sessionDirectory, created.sessionFile!);
-    this.transaction(() => {
-      db.prepare('UPDATE conversations SET pi_session_id = ?, pi_session_file = ? WHERE conversation_id = ?')
-        .run(created.sessionId, file, rotation.conversation_id);
-      db.prepare(`UPDATE session_rotations SET state = 'switched', handoff = ?, to_session_id = ?, to_session_file = ?, reason = NULL, updated_at = ?
-        WHERE rotation_id = ?`).run(rotation.handoff, created.sessionId, file, this.iso(), rotation.rotation_id);
-    });
+    this.store.commitSwitch(rotation,
+      { sessionId: created.sessionId, sessionFile: relative(this.options.sessionDirectory, created.sessionFile!) });
   }
 
   /** Between turns: compacts a session past its limit, so compaction never cuts into a turn (ADR 0009). */
@@ -813,24 +736,13 @@ export class ThinkingLoop {
   }
 
   private beginHandling(eventId: string, messageId: string | undefined) {
-    this.handling.set(eventId, { eventId, messageId, replied: this.hasReply(eventId), finished: false });
-    this.setEventState(eventId, 'processing');
-  }
-
-  private hasReply(eventId: string): boolean {
-    return this.options.db.prepare(`SELECT 1 FROM conversation_messages WHERE kind = 'reply' AND event_id = ?`).get(eventId) !== undefined;
-  }
-
-  private setEventState(eventId: string, state: EventState, reason?: string) {
-    this.options.db.prepare('UPDATE loop_events SET state = ?, reason = ?, updated_at = ? WHERE event_id = ?')
-      .run(state, reason ?? null, this.iso(), eventId);
+    this.handling.set(eventId, { eventId, messageId, replied: this.store.hasReply(eventId), finished: false });
+    this.store.setEventState(eventId, 'processing');
   }
 
   /** The line one event becomes inside `<events>`. New event kinds add their own shape here. */
   private eventLine(eventId: string): Record<string, unknown> {
-    const row = this.options.db.prepare(`SELECT e.kind, e.created_at, m.text, m.created_at AS message_at FROM loop_events e
-      LEFT JOIN conversation_messages m ON m.message_id = e.message_id WHERE e.event_id = ?`).get(eventId) as
-      { kind: string; created_at: string; text: string | null; message_at: string | null };
+    const row = this.store.eventRow(eventId);
     if (row.kind === 'nightly-review') {
       return { event_id: eventId, type: 'nightly_review', received_at: row.created_at, instructions: REVIEW_INSTRUCTIONS };
     }
@@ -876,20 +788,19 @@ export class ThinkingLoop {
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
-    const row = this.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId });
+    const row = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId });
     handling.replied = true;
     this.emit('conversation.message', shown(row));
     return { ok: true, text: `本人の Mac に返事を送りました（event_id: ${eventId}）。この返事は確定し、このメッセージにはもう返事を送れません。対応を終えるなら finish_event を呼んでください。` };
   }
 
   private notify(text: string, about: string[]): ToolOutcome {
-    const { db } = this.options;
     const turn = this.turn;
     if (turn?.kind === 'review') {
       return { ok: false, text: '送信していません。夜の振り返りの間は、本人に知らせを送りません。明日に伝えたいことは write_handoff_note に書いてください。' };
     }
     for (const eventId of about) {
-      if (db.prepare('SELECT 1 FROM loop_events WHERE event_id = ?').get(eventId) === undefined) {
+      if (!this.store.eventExists(eventId)) {
         return { ok: false, text: `送信していません。about_event_ids の ${eventId} は存在しないイベントです。` };
       }
     }
@@ -897,14 +808,12 @@ export class ThinkingLoop {
     if (turn && turn.notices >= limits.perTurn) {
       return { ok: false, text: `送信していません。1 回の処理で本人に送れる知らせの上限（${limits.perTurn} 件）に達しました。` };
     }
-    const hour = db.prepare(`SELECT COUNT(*) AS n FROM conversation_messages WHERE kind = 'notice' AND created_at >= ?`)
-      .get(new Date(this.now() - 3_600_000).toISOString()) as { n: number };
-    if (hour.n >= limits.perHour) {
+    if (this.store.noticesInLastHour() >= limits.perHour) {
       return { ok: false, text: `送信していません。1 時間に本人に送れる知らせの上限（${limits.perHour} 件）に達しました。急ぎでなければ後でまとめて伝えてください。` };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
-    const row = this.insertMessage({ role: 'natsumi', kind: 'notice', text, about: [...new Set(about)] });
+    const row = this.store.insertMessage({ role: 'natsumi', kind: 'notice', text, about: [...new Set(about)] });
     if (turn) turn.notices += 1;
     this.emit('conversation.message', shown(row));
     return { ok: true, text: '本人に知らせを送りました。返事を待つ必要はありません。同じ内容を繰り返し送らないでください。' };
@@ -930,43 +839,8 @@ export class ThinkingLoop {
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '書いていません') };
     turn.handoff = text;
     // Saved at once, so a stop after this point finishes the switch instead of losing the review.
-    this.options.db.prepare('UPDATE session_rotations SET handoff = ?, updated_at = ? WHERE rotation_id = ?').run(text, this.iso(), turn.rotationId);
+    this.store.saveHandoff(turn.rotationId, text);
     return { ok: true, text: '引き継ぎのメモを保存しました。明日の新しい思考の記録は、このメモから始まります。書き直すなら、もう一度呼んでください。' };
-  }
-
-  /** A loop event without an owner message, queued but not yet handed to the queue. */
-  private insertEvent(kind: 'nightly-review' | 'ping' | 'self-check'): string {
-    const eventId = `event-${randomUUID()}`;
-    const now = this.iso();
-    this.options.db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
-      VALUES (?, ?, NULL, 'queued', ?, ?)`).run(eventId, kind, now, now);
-    return eventId;
-  }
-
-  private insertMessage(message: { role: ShownMessage['role']; kind: ShownMessage['kind']; text: string; eventId?: string;
-    about?: string[]; requestId?: string; deviceId?: string }): MessageRow {
-    const { db } = this.options;
-    const messageId = `message-${randomUUID()}`;
-    db.prepare(`INSERT INTO conversation_messages
-      (message_id, position, role, kind, text, event_id, about_event_ids, request_id, device_id, created_at)
-      VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM conversation_messages), ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      messageId, message.role, message.kind, message.text, message.eventId ?? null,
-      message.about && message.about.length > 0 ? JSON.stringify(message.about) : null,
-      message.requestId ?? null, message.deviceId ?? null, this.iso());
-    return db.prepare('SELECT * FROM conversation_messages WHERE message_id = ?').get(messageId) as unknown as MessageRow;
-  }
-
-  private transaction<T>(fn: () => T): T {
-    const { db } = this.options;
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      const value = fn();
-      db.exec('COMMIT');
-      return value;
-    } catch (error) {
-      if (db.isTransaction) db.exec('ROLLBACK');
-      throw error;
-    }
   }
 
   /**

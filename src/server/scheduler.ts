@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import type { Transaction } from './conversation-store.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { clockMinutes, instant, localDateTime, localParts, minutesOfDay, previousOccurrence } from './nightly.ts';
 
@@ -134,8 +135,11 @@ export class SelfChecks {
     return rows.map(row => ({ checkId: row.check_id, reason: row.reason, dueAt: Date.parse(row.due_at) }));
   }
 
-  /** Marks bookings as handed to an event. Runs inside the caller's transaction. */
-  deliver(checkIds: string[], eventId: string): void {
+  /**
+   * Marks bookings as handed to an event. The event and these rows have to be written together, or a check is
+   * handed over twice or never: the `Transaction` the caller must pass is the proof that they are.
+   */
+  deliver(checkIds: string[], eventId: string, _transaction: Transaction): void {
     const update = this.db.prepare(`UPDATE self_checks SET state = 'delivered', event_id = ?, updated_at = ? WHERE check_id = ? AND state = 'pending'`);
     const iso = new Date(this.now()).toISOString();
     for (const checkId of checkIds) update.run(eventId, iso, checkId);
