@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { Context } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { SUBSCRIPTION_TARGET } from '../src/pi-session.ts';
+import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { isAwake, Scheduler, SelfChecks } from '../src/server/scheduler.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';

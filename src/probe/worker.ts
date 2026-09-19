@@ -1,13 +1,14 @@
-import { COMPATIBLE_PROVIDER, compatibleRuntime, subscriptionRuntime } from './pi-auth.ts';
-import type { ProbeRoute } from './probe-args.ts';
-import { probeRound, probeTool } from './probe-round.ts';
-import { SUBSCRIPTION_TARGET } from './pi-session.ts';
+import { COMPATIBLE_PROVIDER, subscriptionRuntime } from '../pi/auth.ts';
+import { compatibleRuntime } from './auth.ts';
+import type { ProbeRoute } from './args.ts';
+import { probeRound, probeTool } from './round.ts';
+import { SUBSCRIPTION_TARGET } from './session.ts';
 // argv: root, route JSON (no secrets), session file or '', operation.
 try {
   const [root, json, file, op] = process.argv.slice(2) as [string, string, string, string];
   const route = JSON.parse(json) as ProbeRoute;
   const runtime = route.kind === 'subscription'
-    ? await subscriptionRuntime(root, route.authPath) : await compatibleRuntime(root, route);
+    ? await subscriptionRuntime(root, route.authPath, SUBSCRIPTION_TARGET.provider) : await compatibleRuntime(root, route);
   const target = route.kind === 'subscription' ? SUBSCRIPTION_TARGET : { provider: COMPATIBLE_PROVIDER, model: route.model };
   const result = op === 'tool'
     ? await probeTool(root, runtime, undefined, target)

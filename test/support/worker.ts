@@ -1,4 +1,4 @@
-import { probeRound, probeTool } from '../../src/probe-round.ts';
+import { probeRound, probeTool } from '../../src/probe/round.ts';
 import { fixtureRuntime, fixtureStream } from './fixture.ts';
 // argv: root, route (ignored: always fixture), session file or '', operation.
 try {

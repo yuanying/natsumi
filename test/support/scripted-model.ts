@@ -1,7 +1,7 @@
 import type { AssistantMessage, AssistantMessageEvent, Context } from '@earendil-works/pi-ai';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { SUBSCRIPTION_TARGET } from '../../src/pi-session.ts';
+import { SUBSCRIPTION_TARGET } from '../../src/probe/session.ts';
 
 /** Carried by every failed reply. It must never reach a client. */
 export const PRIVATE_DETAIL = 'synthetic private provider detail';

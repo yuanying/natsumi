@@ -11,7 +11,7 @@
     "test": "node --test test/*.test.ts",
     "build": "tsc",
     "start": "node dist/src/server/main.js serve",
-    "probe:live": "node src/live-probe.ts"
+    "probe:live": "node src/probe/live.ts"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
