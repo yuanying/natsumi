@@ -7,7 +7,7 @@ import type { Context } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
-import { isAwake, Scheduler, SelfChecks } from '../src/server/scheduler.ts';
+import { isAwake, Scheduler, SelfChecks, type ScheduledLoop } from '../src/server/scheduler.ts';
 import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
@@ -64,7 +64,8 @@ async function setup(start: string) {
       opened.push(loop);
       const events: LoopClientEvent[] = [];
       loop.subscribe(event => { events.push(event); });
-      const scheduler = new Scheduler({ loop, now: () => f.clock, timeZone: TZ, awakeHours: AWAKE, pingIntervalMinutes: 30, expressionResetMinutes: 3 });
+      const scheduler = new Scheduler({ loop, now: () => f.clock, timeZone: TZ, awakeHours: AWAKE, pingIntervalMinutes: 30,
+        expressionResetMinutes: 3, nightlyRotationAt: false });
       return { loop, events, scheduler };
     },
     send(loop: ThinkingLoop, text: string) {
@@ -442,4 +443,94 @@ test('thinking ends with the handling whoever set it; other expressions return t
     assert.equal((await rotating).result, 'switched');
     assert.equal(loop.snapshot().avatar.expression, 'neutral');
   } finally { await f.cleanup(); }
+});
+
+/** A loop the scheduler can drive on its own: it counts the switches asked of it and ends them when the test says so. */
+class FakeLoop implements ScheduledLoop {
+  unavailable: string | undefined = undefined;
+  quiet = true;
+  lastActivityAt = 0;
+  startedAt: number | undefined = undefined;
+  rotations = 0;
+  private waiting: ((outcome: { result: string; reason?: string }) => void)[] = [];
+  relaxExpression(): void {}
+  deliverDueSelfChecks(): boolean { return false; }
+  ping(): boolean { return false; }
+  sessionStartedAt(): number | undefined { return this.startedAt; }
+  rotate(): Promise<{ result: string; reason?: string }> {
+    this.rotations += 1;
+    return new Promise(resolve => { this.waiting.push(resolve); });
+  }
+  /** Ends every switch in flight, as the thinking loop does once the review turn is over. */
+  async settle(outcome: { result: string; reason?: string }): Promise<void> {
+    for (const resolve of this.waiting.splice(0)) resolve(outcome);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
+
+function nightly(start: string, at: string | false = '04:00') {
+  const loop = new FakeLoop();
+  const logs: string[] = [];
+  const clock = { now: tokyo(start), at(local: string) { this.now = tokyo(local); } };
+  const scheduler = new Scheduler({ loop, now: () => clock.now, timeZone: TZ, awakeHours: AWAKE, pingIntervalMinutes: false,
+    expressionResetMinutes: 3, nightlyRotationAt: at, log: line => { logs.push(line); } });
+  return { loop, logs, clock, scheduler };
+}
+
+test('the nightly switch is asked for when the session began before the last switching time, whatever the hour and however busy the loop is', () => {
+  const f = nightly('2026-09-18 10:00');
+  // A session from after this morning's switching time has nothing to catch up.
+  f.loop.startedAt = tokyo('2026-09-18 08:00');
+  assert.equal(f.scheduler.tick(), undefined);
+  assert.equal(f.loop.rotations, 0);
+
+  // One from before it is switched, even in the middle of a turn and outside the awake hours.
+  f.loop.startedAt = tokyo('2026-09-17 20:00');
+  f.loop.quiet = false;
+  f.clock.at('2026-09-18 05:00');
+  f.scheduler.tick();
+  assert.equal(f.loop.rotations, 1);
+});
+
+test('one switch is asked for per night: none while it runs, none again afterwards, and one more the next night', async () => {
+  const f = nightly('2026-09-18 10:00');
+  f.loop.startedAt = tokyo('2026-09-17 20:00');
+  f.scheduler.tick();
+  assert.equal(f.loop.rotations, 1);
+
+  // A switch queues an event and resolves only once the review turn is over; until then nothing more is asked for.
+  f.clock.at('2026-09-18 10:01');
+  f.scheduler.tick();
+  f.scheduler.tick();
+  assert.equal(f.loop.rotations, 1);
+
+  // A switch that changed nothing leaves the session where it was, and is still not repeated for the same night.
+  await f.loop.settle({ result: 'skipped', reason: 'empty-session' });
+  assert.deepEqual(f.logs, ['thinking loop: nightly switch skipped (empty-session)']);
+  f.clock.at('2026-09-18 23:00');
+  f.scheduler.tick();
+  assert.equal(f.loop.rotations, 1);
+
+  // The next night asks once more.
+  f.clock.at('2026-09-19 04:00');
+  f.scheduler.tick();
+  f.scheduler.tick();
+  assert.equal(f.loop.rotations, 2);
+  await f.loop.settle({ result: 'switched' });
+  assert.deepEqual(f.logs.at(-1), 'thinking loop: nightly switch switched');
+});
+
+test('no nightly switch is asked for when it is turned off, or while the loop is unavailable', () => {
+  const off = nightly('2026-09-18 10:00', false);
+  off.loop.startedAt = tokyo('2026-09-17 20:00');
+  off.scheduler.tick();
+  off.clock.at('2026-09-19 04:00');
+  off.scheduler.tick();
+  assert.equal(off.loop.rotations, 0);
+
+  const down = nightly('2026-09-18 10:00');
+  down.loop.startedAt = tokyo('2026-09-17 20:00');
+  down.loop.unavailable = 'pi-unavailable';
+  down.scheduler.tick();
+  assert.equal(down.loop.rotations, 0);
 });

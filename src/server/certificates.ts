@@ -14,6 +14,8 @@ export const RENEW_BEFORE_MS = 30 * DAY;
 export const CHECK_INTERVAL_MS = 12 * HOUR;
 const RETRY_FIRST_MS = 15 * MINUTE;
 const RETRY_MAX_MS = 12 * HOUR;
+/** The shortest wait between background checks, so a schedule surprise cannot spin. */
+const MIN_CHECK_MS = 60_000;
 
 const PRIVATE_KEY_PEM = /-----BEGIN PRIVATE KEY-----\r?\n[\s\S]+?-----END PRIVATE KEY-----/;
 
@@ -32,6 +34,7 @@ export interface CertificateManagerOptions {
 /**
  * The ACME account key and the certificate for one host, kept in `.natsumi/acme/<CA>/` (directories 0700, files 0600).
  * A stored certificate is reused across restarts until it is due; a failed renewal keeps it and backs off.
+ * Once started it owns the whole state of a certificate: when to look, when to retry, and handing each new one over.
  */
 export class CertificateManager {
   /** Pending HTTP-01 answers, for the plaintext listener. */
@@ -43,6 +46,13 @@ export class CertificateManager {
   private readonly aborter = new AbortController();
   private failures = 0;
   private retryAt = 0;
+  /** Set by `start`: what a new certificate is handed to. */
+  private onCertificate: ((certificate: Certificate) => Promise<void>) | undefined;
+  /** The certificate already handed over, so the same one never goes twice. */
+  private served: Certificate | undefined;
+  private checking: Promise<void> | undefined;
+  private renewal: NodeJS.Timeout | undefined;
+  private closed = false;
 
   private constructor(options: CertificateManagerOptions, file: string, accountKey: KeyObject) {
     this.options = options;
@@ -60,13 +70,61 @@ export class CertificateManager {
     return manager;
   }
 
+  /**
+   * Hands over a stored certificate, then keeps one: a check now, and another whenever the next one is due or a
+   * back-off ends. Nothing is handed over before this is awaited, so the caller decides the state it starts in.
+   */
+  async start(onCertificate: (certificate: Certificate) => Promise<void>): Promise<void> {
+    this.onCertificate = onCertificate;
+    if (this.current) await this.hand(this.current);
+    this.background();
+  }
+
+  /**
+   * Obtains or renews the certificate when due and hands over what comes back. Concurrent callers join the check
+   * in flight rather than starting a second order. Called by the background timer and for an operation check.
+   */
+  checkCertificate(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    this.checking ??= (async () => {
+      await this.obtain();
+      if (this.current && this.current !== this.served && !this.closed) await this.hand(this.current);
+    })().finally(() => { this.checking = undefined; });
+    return this.checking;
+  }
+
+  /** Stops the background checks, abandons an order in progress and waits for the check in flight. */
+  async close(): Promise<void> {
+    this.closed = true;
+    clearTimeout(this.renewal);
+    this.aborter.abort();
+    await this.checking?.catch(() => {});
+  }
+
   /** When a check next has work to do: the renewal time, or the end of a failure's back-off. */
-  nextCheckAt(): number {
+  private nextCheckAt(): number {
     return Math.max(this.current ? renewalTime(this.current) : 0, this.retryAt);
   }
 
+  private async hand(certificate: Certificate): Promise<void> {
+    await this.onCertificate?.(certificate);
+    this.served = certificate;
+  }
+
+  /** A check whose failure only gets logged, and which books the one after it. */
+  private background(): void {
+    if (this.closed) return;
+    void this.checkCertificate().catch(error => {
+      this.options.log(`acme: the certificate could not be served (${(error as NodeJS.ErrnoException).code ?? (error as Error).name ?? 'error'})`);
+    }).finally(() => {
+      if (this.closed) return;
+      const wait = Math.min(Math.max(this.nextCheckAt() - this.options.now(), MIN_CHECK_MS), CHECK_INTERVAL_MS);
+      this.renewal = setTimeout(() => this.background(), wait);
+    });
+  }
+
   /** Obtains a certificate when there is none or the current one is due, unless a back-off is running. True when one was obtained. */
-  async check(): Promise<boolean> {
+  private async obtain(): Promise<boolean> {
     const now = this.options.now();
     if (now < this.retryAt || (this.current && now < renewalTime(this.current))) return false;
     const { log, acme, hostname } = this.options;
@@ -94,9 +152,6 @@ export class CertificateManager {
       return false;
     }
   }
-
-  /** Abandons an order in progress. */
-  close() { this.aborter.abort(); }
 
   private async load(): Promise<Certificate | undefined> {
     let pem: string;
