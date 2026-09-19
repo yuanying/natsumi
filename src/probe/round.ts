@@ -1,5 +1,5 @@
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { PiConversation, createPiSession, type PiTarget } from './pi-session.ts';
+import { PiConversation, createPiSession, type PiTarget } from '../pi/session.ts';
 
 const MARKER = 'SYNTHETIC-ORCHID-731';
 

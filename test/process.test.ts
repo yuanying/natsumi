@@ -4,8 +4,8 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { COMPATIBLE_KEY_ENV } from '../src/pi-auth.ts';
-import { exerciseRestart, runChild } from '../src/probe-process.ts';
+import { COMPATIBLE_KEY_ENV } from '../src/pi/auth.ts';
+import { exerciseRestart, runChild } from '../src/probe/process.ts';
 
 test('two separate Pi SDK processes create and resume the same persisted session', async () => {
   await exerciseRestart(new URL('./support/worker.ts', import.meta.url), JSON.stringify({ kind: 'fixture' }));

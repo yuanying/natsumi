@@ -2,7 +2,7 @@ import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { SUBSCRIPTION_TARGET } from './pi-session.ts';
+import { SUBSCRIPTION_TARGET } from './session.ts';
 
 export const COMPATIBLE_PROVIDER = 'natsumi-compatible';
 export const COMPATIBLE_KEY_ENV = 'NATSUMI_PI_API_KEY';

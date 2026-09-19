@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, rm, writeFile, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { COMPATIBLE_KEY_ENV, COMPATIBLE_PROVIDER, compatibleRuntime, subscriptionRuntime } from '../src/pi-auth.ts';
+import { COMPATIBLE_KEY_ENV, COMPATIBLE_PROVIDER, compatibleRuntime, subscriptionRuntime } from '../src/pi/auth.ts';
 
 test('missing auth does not create credentials or fall back to environment API keys', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-auth-fixture-'));

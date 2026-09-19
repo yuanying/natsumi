@@ -1,7 +1,7 @@
-import { COMPATIBLE_PROVIDER, compatibleRuntime, subscriptionRuntime } from './pi-auth.ts';
-import type { ProbeRoute } from './probe-args.ts';
-import { probeRound, probeTool } from './probe-round.ts';
-import { SUBSCRIPTION_TARGET } from './pi-session.ts';
+import { COMPATIBLE_PROVIDER, compatibleRuntime, subscriptionRuntime } from '../pi/auth.ts';
+import type { ProbeRoute } from './args.ts';
+import { probeRound, probeTool } from './round.ts';
+import { SUBSCRIPTION_TARGET } from '../pi/session.ts';
 // argv: root, route JSON (no secrets), session file or '', operation.
 try {
   const [root, json, file, op] = process.argv.slice(2) as [string, string, string, string];

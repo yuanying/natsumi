@@ -1,6 +1,6 @@
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { compatibleRuntimeWithKey, subscriptionRuntime } from '../pi-auth.ts';
-import type { PiTarget } from '../pi-session.ts';
+import { compatibleRuntimeWithKey, subscriptionRuntime } from '../pi/auth.ts';
+import type { PiTarget } from '../pi/session.ts';
 import type { PiConfig } from './config.ts';
 import { readSecret } from './secrets.ts';
 
