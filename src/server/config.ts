@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
+import { DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES, DEFAULT_SELF_CHECK_LIMITS,
   type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
@@ -79,6 +80,10 @@ export interface LoopConfig {
   compactionKeepRecent: number;
   /** The Unix socket of the tools container's runner (ADR 0011). Without it the model gets no shell. */
   memoryShellSocket?: string;
+  /** The git repository holding memory (ADR 0018). `memory/` in the data directory when omitted. */
+  memoryRepository?: string;
+  /** The longest one memory file may be, in characters. A file over it goes back to the previous commit. */
+  memoryFileMaxChars: number;
   /** Local hours natsumi is up. Pings and self-checks come only inside them (ADR 0014). */
   awakeHours: AwakeHours;
   /** Quiet minutes before a ping, or false for no pings. */
@@ -91,12 +96,15 @@ export interface LoopConfig {
 
 export const LOOP_DEFAULTS: LoopConfig = {
   timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
+  memoryFileMaxChars: DEFAULT_FILE_MAX_CHARS,
   awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES, selfCheck: DEFAULT_SELF_CHECK_LIMITS,
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
 };
 
 /** The shortest ping interval, so a typo cannot make natsumi think all day. */
 const MIN_PING_INTERVAL_MINUTES = 5;
+/** Below this a memory file could not hold a topic, and every night's work would go back. */
+const MIN_MEMORY_FILE_MAX_CHARS = 1000;
 
 export interface ServerConfig {
   pi: PiConfig;
@@ -300,7 +308,7 @@ function parseGitHub(value: unknown, path: string): GitHubConfig {
 function parseLoop(value: unknown, path: string): LoopConfig {
   const loop = object(value, path);
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'memoryShellSocket',
-    'awakeHours', 'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes']);
+    'memoryRepository', 'memoryFileMaxChars', 'awakeHours', 'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -317,6 +325,11 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   }
   if (keep >= threshold) throw new ConfigError(`${path}.compactionKeepRecent`, 'must be smaller than compactionThreshold');
   const socket = loop.memoryShellSocket === undefined ? undefined : absolutePath(loop.memoryShellSocket, `${path}.memoryShellSocket`);
+  const repository = loop.memoryRepository === undefined ? undefined : absolutePath(loop.memoryRepository, `${path}.memoryRepository`);
+  const fileMax = loop.memoryFileMaxChars ?? LOOP_DEFAULTS.memoryFileMaxChars;
+  if (!positiveInteger(fileMax, MIN_MEMORY_FILE_MAX_CHARS)) {
+    throw new ConfigError(`${path}.memoryFileMaxChars`, `must be an integer of at least ${MIN_MEMORY_FILE_MAX_CHARS}`);
+  }
   const ping = loop.pingIntervalMinutes ?? LOOP_DEFAULTS.pingIntervalMinutes;
   if (ping !== false && !positiveInteger(ping, MIN_PING_INTERVAL_MINUTES)) {
     throw new ConfigError(`${path}.pingIntervalMinutes`, `must be an integer of at least ${MIN_PING_INTERVAL_MINUTES}, or false`);
@@ -325,6 +338,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!positiveInteger(reset, 1)) throw new ConfigError(`${path}.expressionResetMinutes`, 'must be a positive integer');
   return {
     timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep, ...(socket ? { memoryShellSocket: socket } : {}),
+    ...(repository ? { memoryRepository: repository } : {}), memoryFileMaxChars: fileMax as number,
     awakeHours: parseAwakeHours(loop.awakeHours ?? LOOP_DEFAULTS.awakeHours, `${path}.awakeHours`),
     pingIntervalMinutes: ping as number | false,
     selfCheck: parseSelfCheck(loop.selfCheck ?? {}, `${path}.selfCheck`),

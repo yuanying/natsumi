@@ -125,6 +125,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       configureSession: options.pi?.configureSession, maxModelCalls: options.pi?.maxModelCalls,
       runTimeoutMs: options.pi?.runTimeoutMs, now, log, timeZone: config.loop.timeZone,
       compactAtTokens: config.loop.compactionThreshold, keepRecentTokens: config.loop.compactionKeepRecent, memoryShellSocket: config.loop.memoryShellSocket,
+      memoryRepository: config.loop.memoryRepository, memoryFileMaxChars: config.loop.memoryFileMaxChars,
       awakeHours: config.loop.awakeHours, selfCheckLimits: config.loop.selfCheck,
     });
 

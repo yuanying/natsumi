@@ -57,9 +57,8 @@ test('initialization creates the private layout with minimal permissions', () =>
     assert.ok(info.isDirectory());
     assert.equal(info.mode & 0o777, 0o700, dir);
   }
-  const personality = await stat(join(root, 'personality.md'));
-  assert.equal(personality.mode & 0o777, 0o600);
-  assert.match(await readFile(join(root, 'personality.md'), 'utf8'), /\S/);
+  // personality.md is not made here: it belongs to the memory repository (ADR 0018).
+  await assert.rejects(stat(join(root, 'personality.md')));
 }));
 
 test('initialization never overwrites or re-permissions existing personal files', () => withRoot(async root => {
