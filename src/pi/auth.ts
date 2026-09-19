@@ -32,7 +32,7 @@ export async function compatibleRuntimeWithKey(root: string, endpoint: Compatibl
   return runtime;
 }
 
-/** Exported for the probe's own variant, which reads the key from the environment instead (src/probe/auth.ts). */
+/** Exported for the live harness's own variant, which reads the key from the environment instead. */
 export async function emptyRuntime(root: string, endpoint: CompatibleEndpoint): Promise<ModelRuntime> {
   let url: URL;
   try { url = new URL(endpoint.baseUrl); } catch { throw new Error('Compatible endpoint must use https'); }
@@ -44,7 +44,7 @@ export async function emptyRuntime(root: string, endpoint: CompatibleEndpoint): 
     modelsStorePath: join(root, 'models-store.json'), allowModelNetwork: false, refreshOnCreate: false });
 }
 
-/** Exported for the same reason as `emptyRuntime`: both routes must describe the endpoint identically. */
+/** Exported for the same reason as `emptyRuntime`: every route must describe the endpoint identically. */
 export function compatibleProvider(endpoint: CompatibleEndpoint): Parameters<ModelRuntime['registerProvider']>[1] {
   return {
     name: 'OpenAI-compatible endpoint', baseUrl: endpoint.baseUrl, api: 'openai-completions',

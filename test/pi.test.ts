@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createPiSession, PiConversation } from '../src/pi/session.ts';
+import { createPiSession, PiConversation } from '../src/probe/session.ts';
 import { probeRound, probeTool } from '../src/probe/round.ts';
 import { fixtureRuntime, fixtureStream } from './support/fixture.ts';
 

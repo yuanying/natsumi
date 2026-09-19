@@ -6,7 +6,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import type { Context } from '@earendil-works/pi-ai';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { SUBSCRIPTION_TARGET } from '../src/pi/session.ts';
+import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { THINKING_LINE_MAX_CHARS, THINKING_MIN_INTERVAL_MS, ThinkingLoop,

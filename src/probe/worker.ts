@@ -2,7 +2,7 @@ import { COMPATIBLE_PROVIDER, subscriptionRuntime } from '../pi/auth.ts';
 import { compatibleRuntime } from './auth.ts';
 import type { ProbeRoute } from './args.ts';
 import { probeRound, probeTool } from './round.ts';
-import { SUBSCRIPTION_TARGET } from '../pi/session.ts';
+import { SUBSCRIPTION_TARGET } from './session.ts';
 // argv: root, route JSON (no secrets), session file or '', operation.
 try {
   const [root, json, file, op] = process.argv.slice(2) as [string, string, string, string];

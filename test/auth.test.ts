@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { COMPATIBLE_PROVIDER, subscriptionRuntime } from '../src/pi/auth.ts';
 import { COMPATIBLE_KEY_ENV, compatibleRuntime } from '../src/probe/auth.ts';
-import { SUBSCRIPTION_TARGET } from '../src/pi/session.ts';
+import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 
 test('missing auth does not create credentials or fall back to environment API keys', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-auth-fixture-'));
