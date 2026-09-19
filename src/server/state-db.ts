@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { isoAt } from './nightly.ts';
 
 export interface Migration {
   /** Positive, strictly increasing. Never renumber or edit a released migration; add a new one. */
@@ -48,7 +49,7 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[]): { a
     try {
       db.exec(migration.sql);
       db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
-        .run(migration.version, migration.name, new Date().toISOString());
+        .run(migration.version, migration.name, isoAt(Date.now()));
       db.exec('COMMIT');
     } catch (error) {
       if (db.isTransaction) db.exec('ROLLBACK');

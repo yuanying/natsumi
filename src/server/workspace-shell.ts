@@ -7,7 +7,12 @@ import type { ToolOutcome } from './loop-tools.ts';
  * text that goes back to the model, and turns the runner's answer into sentences she can act on.
  */
 
-/** ADR 0018's limit, refused here so a long command never costs a turn in the model (ADR 0019). */
+/**
+ * ADR 0018's limit, refused here so a long command never costs a turn in the model (ADR 0019).
+ * `RUN_SHELL_DESCRIPTION` in `prompts.ts` states this number to natsumi and must be changed with it. It cannot be
+ * built from this constant: the tool description is what the prefix cache holds, and a generated one would be a
+ * different string whenever the number moved, undoing the cache for the rest of the session.
+ */
 export const MAX_COMMAND_CHARS = 8000;
 /** The most stdout characters one result carries, whatever the runner sent. */
 export const SHELL_OUTPUT_CHARS = 8000;

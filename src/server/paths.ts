@@ -1,4 +1,4 @@
-import { readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, isAbsolute } from 'node:path';
 
 /**
@@ -33,4 +33,16 @@ export async function findCodeCheckout(path: string): Promise<string | undefined
     } catch { /* not a checkout root */ }
     if (dirname(dir) === dir) return undefined;
   }
+}
+
+/**
+ * Replaces `path` with a new file of `mode`, atomically: written under a temporary name beside it and renamed over.
+ * A reader sees the old file or the new one, never a half-written one, and never a file whose mode came from
+ * somewhere else — the temporary name is made fresh, so a leftover from an earlier crash cannot be written through.
+ */
+export async function writeFileAtomically(path: string, text: string, mode: number): Promise<void> {
+  const temporary = `${path}.${process.pid}.tmp`;
+  await rm(temporary, { force: true });
+  await writeFile(temporary, text, { flag: 'wx', mode });
+  await rename(temporary, path);
 }

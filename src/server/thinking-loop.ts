@@ -45,7 +45,7 @@ export type RotationOutcome =
 /** An event for clients. `conversation.message`, `avatar.expression` and `conversation.event.completed`. */
 export interface LoopClientEvent {
   type: string;
-  payload: Record<string, any>;
+  payload: Record<string, unknown>;
   /** Of the moment: sent to whoever is connected, never numbered on a stream and never kept for replay (ADR 0017). */
   ephemeral?: boolean;
 }
@@ -81,7 +81,8 @@ export interface ShownMessage {
   about?: string[];
 }
 
-export interface LoopSnapshot {
+/** A type rather than an interface: it is a client event's payload, and is spread into one whole. */
+export type LoopSnapshot = {
   messages: ShownMessage[];
   /** Owner messages not handled yet. */
   pendingEvents: { eventId: string; messageId: string; state: EventState }[];
@@ -91,7 +92,7 @@ export interface LoopSnapshot {
   unreadReplyCount: number;
   /** Every notice the owner has not checked, oldest first, including those older than `messages`. */
   unacknowledgedNotificationIds: string[];
-}
+};
 
 export interface LoopOptions {
   /** Handed straight to the stores the loop opens on it; the loop itself never reads a table. */

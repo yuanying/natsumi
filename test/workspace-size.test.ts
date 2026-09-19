@@ -51,17 +51,17 @@ test('the places are walked at most once every ten minutes, however many turns e
     let clock = 1_000_000;
     const workspace = size(root, { warnBytes: 20_000, now: () => clock });
     assert.equal(MIN_MEASURE_INTERVAL_MS, 10 * 60_000);
-    assert.notEqual(await workspace.check(), '');
-    assert.equal(workspace.measurements, 1);
+    assert.match(await workspace.check(), /\/work 40\.0 KiB/);
+
+    // What a walk would now find, so a later line that still says 40 KiB is a line from a walk that did not happen.
+    await writeFile(join(root, 'work', 'bigger.csv'), 'x'.repeat(40_960));
 
     // Between turns nothing is walked again, and nothing is repeated either.
     clock += MIN_MEASURE_INTERVAL_MS - 1;
     assert.equal(await workspace.check(), '');
-    assert.equal(workspace.measurements, 1);
 
     clock += 1;
-    assert.notEqual(await workspace.check(), '');
-    assert.equal(workspace.measurements, 2);
+    assert.match(await workspace.check(), /\/work 80\.0 KiB/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

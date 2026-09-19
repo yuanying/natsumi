@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { COMPATIBLE_PROVIDER } from '../src/pi/auth.ts';
+import { COMPATIBLE_PROVIDER } from '../src/pi/compatible.ts';
 import { openPiSession } from '../src/pi/session.ts';
 import type { PiConfig } from '../src/server/config.ts';
 import { createModelRuntime, PiUnavailableError } from '../src/server/pi-runtime.ts';

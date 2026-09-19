@@ -10,6 +10,7 @@ import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-lo
 import { bearerToken, openListener, type Listener } from './http.ts';
 import { acquireProcessLock, type ProcessLock } from './lock.ts';
 import { MIGRATIONS } from './migrations.ts';
+import { isoAt } from './nightly.ts';
 import { createModelRuntime } from './pi-runtime.ts';
 import { preparePiState } from './pi-state.ts';
 import { readSecret, readTlsFiles } from './secrets.ts';
@@ -140,7 +141,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log });
 
-    const started = new Date().toISOString();
+    const started = isoAt(Date.now());
     const status: ServerStatus = { state: 'running', pid: process.pid, startedAt: started, updatedAt: started, schemaVersion: version };
     let opened!: (address: Address) => void;
     const listening = new Promise<Address>(resolve => { opened = resolve; });
@@ -152,7 +153,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       if (listener) return listener.updateCertificate(files);
       listener = await open(files);
       status.state = 'running';
-      await writeStatus(dataDirectory, { ...status, updatedAt: new Date().toISOString() }).catch(() => {});
+      await writeStatus(dataDirectory, { ...status, updatedAt: isoAt(Date.now()) }).catch(() => {});
       log('listen: HTTPS is open');
       opened(listener.address);
     };
@@ -176,7 +177,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const manager = certificates;
     await writeStatus(dataDirectory, status);
     timers.push(setInterval(() => {
-      void writeStatus(dataDirectory, { ...status, updatedAt: new Date().toISOString() }).catch(() => {});
+      void writeStatus(dataDirectory, { ...status, updatedAt: isoAt(Date.now()) }).catch(() => {});
     }, HEARTBEAT_MS));
     timers.push(setInterval(() => connections.expireSessions(), SESSION_SWEEP_MS));
 
@@ -193,7 +194,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         stopping ??= (async () => {
           try {
             await closeAll();
-            await writeStatus(dataDirectory, { ...status, state: 'stopped', updatedAt: new Date().toISOString() });
+            await writeStatus(dataDirectory, { ...status, state: 'stopped', updatedAt: isoAt(Date.now()) });
           } finally { shutdown(database, lock); }
         })();
         return stopping;

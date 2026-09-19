@@ -1,5 +1,6 @@
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { COMPATIBLE_PROVIDER, compatibleProvider, emptyRuntime, type CompatibleEndpoint } from '../pi/auth.ts';
+import { compatibleProvider, emptyRuntime } from '../pi/auth.ts';
+import { COMPATIBLE_PROVIDER, type CompatibleEndpoint } from '../pi/compatible.ts';
 
 export const COMPATIBLE_KEY_ENV = 'NATSUMI_PI_API_KEY';
 

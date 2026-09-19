@@ -22,8 +22,6 @@ export interface WorkspaceSizeOptions {
 }
 
 export class WorkspaceSize {
-  /** Walks done, for the tests that pin the interval. */
-  measurements = 0;
   private readonly options: WorkspaceSizeOptions;
   private readonly now: () => number;
   private measuredAt = 0;
@@ -41,7 +39,6 @@ export class WorkspaceSize {
     const now = this.now();
     if (this.measuredAt !== 0 && now - this.measuredAt < MIN_MEASURE_INTERVAL_MS) return '';
     this.measuredAt = now;
-    this.measurements += 1;
     const sizes = await Promise.all(this.options.places.map(async place => ({ label: place.label, bytes: await total(place.path) })));
     const bytes = sizes.reduce((sum, place) => sum + place.bytes, 0);
     if (bytes <= this.options.warnBytes) return '';

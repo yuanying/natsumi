@@ -1,4 +1,5 @@
-import { COMPATIBLE_PROVIDER, subscriptionRuntime } from '../pi/auth.ts';
+import { subscriptionRuntime } from '../pi/auth.ts';
+import { COMPATIBLE_PROVIDER } from '../pi/compatible.ts';
 import { compatibleRuntime } from './auth.ts';
 import type { ProbeRoute } from './args.ts';
 import { probeRound, probeTool } from './round.ts';

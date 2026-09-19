@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { isoAt } from './nightly.ts';
 
 /** Where the read cursor stands, and the unread replies after it. */
 export interface ReadPosition {
@@ -62,5 +63,5 @@ export class ReadState {
     return { acknowledgedAt: row.acknowledged_at, changed };
   }
 
-  private iso() { return new Date(this.now()).toISOString(); }
+  private iso() { return isoAt(this.now()); }
 }
