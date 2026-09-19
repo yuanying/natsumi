@@ -350,9 +350,9 @@ export class ThinkingLoop {
     if (!this.quiet) return false;
     const due = this.selfChecks.due();
     if (due.length === 0) return false;
-    const eventId = this.store.transaction(() => {
+    const eventId = this.store.transaction(transaction => {
       const id = this.store.insertEvent('self-check');
-      this.selfChecks.deliver(due.map(check => check.checkId), id);
+      this.selfChecks.deliver(due.map(check => check.checkId), id, transaction);
       return id;
     });
     this.queue.push(eventId);
