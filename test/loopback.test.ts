@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { COMPATIBLE_PROVIDER, compatibleRuntimeWithKey } from '../src/pi/auth.ts';
-import { ConfigError, parseConfig } from '../src/server/config.ts';
+import { COMPATIBLE_PROVIDER as CONFIG_COMPATIBLE_PROVIDER, ConfigError, parseConfig } from '../src/server/config.ts';
 
 // One rule decides which plaintext endpoints are allowed, so a baseUrl the config accepts is one the runtime can open.
 const LOOPBACK = ['http://127.0.0.2:8080/v1', 'http://[::1]:8080/v1'];
@@ -56,4 +56,8 @@ test('a plaintext endpoint off loopback is refused by the config and by the runt
       await assert.rejects(compatibleRuntimeWithKey(root, { baseUrl, model: 'fixture-model' }, 'fixture-key'), /https/);
     });
   }
+});
+
+test('the config and the Pi runtime name the compatible provider with one value', () => {
+  assert.equal(CONFIG_COMPATIBLE_PROVIDER, COMPATIBLE_PROVIDER);
 });

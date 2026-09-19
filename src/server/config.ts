@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
+import { COMPATIBLE_PROVIDER } from '../pi/auth.ts';
 import { isLoopbackHost } from '../pi/loopback.ts';
 import { DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
@@ -38,7 +39,7 @@ export interface CompatibleConfig {
   apiKey: SecretReference;
 }
 
-export const COMPATIBLE_PROVIDER = 'natsumi-compatible';
+export { COMPATIBLE_PROVIDER };
 
 export interface TlsConfig { certFile: string; keyFile: string }
 
