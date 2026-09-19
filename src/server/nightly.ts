@@ -1,7 +1,12 @@
 /**
- * Wall-clock times in the owner's time zone, for the nightly session switch (ADR 0009) and the scheduler (ADR 0014).
- * Nothing here keeps state.
+ * Times: the UTC form every stored instant takes, and wall-clock times in the owner's time zone, for the nightly
+ * session switch (ADR 0009) and the scheduler (ADR 0014). Nothing here keeps state, and nothing here imports.
  */
+
+/** An instant in the form every stored time takes: UTC, milliseconds, `Z`. */
+export function isoAt(ms: number): string {
+  return new Date(ms).toISOString();
+}
 
 const formatters = new Map<string, Intl.DateTimeFormat>();
 

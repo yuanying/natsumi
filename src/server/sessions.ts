@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { isoAt as iso } from './nightly.ts';
 
 /** Client sessions are short-lived; when one ends the client logs in through GitHub again (ADR 0006). */
 export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -10,7 +11,6 @@ export interface VerifiedSession { sessionId: string; githubUserId: number; expi
 interface Row { session_id: string; github_user_id: number; expires_at: string; revoked_at: string | null }
 
 const hashToken = (token: string) => createHash('sha256').update(token).digest('hex');
-const iso = (ms: number) => new Date(ms).toISOString();
 
 /**
  * Bearer sessions in `client_sessions`. The token is 256 random bits and only its SHA-256 is stored,

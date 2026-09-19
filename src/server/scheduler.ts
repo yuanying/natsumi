@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Transaction } from './conversation-store.ts';
 import type { ToolOutcome } from './loop-tools.ts';
-import { clockMinutes, instant, localDateTime, localParts, minutesOfDay, previousOccurrence } from './nightly.ts';
+import { clockMinutes, instant, isoAt, localDateTime, localParts, minutesOfDay, previousOccurrence } from './nightly.ts';
 
 /** The local hours natsumi is up. Pings and self-checks happen only inside them; `end` may be past midnight. */
 export interface AwakeHours { start: string; end: string }
@@ -99,13 +99,13 @@ export class SelfChecks {
     }
     const today = localParts(now, this.timeZone);
     const midnight = instant(today.year, today.month, today.day, 0, 0, this.timeZone);
-    const booked = this.db.prepare('SELECT COUNT(*) AS n FROM self_checks WHERE created_at >= ?').get(new Date(midnight).toISOString()) as { n: number };
+    const booked = this.db.prepare('SELECT COUNT(*) AS n FROM self_checks WHERE created_at >= ?').get(isoAt(midnight)) as { n: number };
     if (booked.n >= maxPerDay) return refuse(`1 日に予約できるのは ${maxPerDay} 件までです。今日はもう予約できません。`);
 
     const checkId = `check-${randomUUID()}`;
-    const iso = new Date(now).toISOString();
+    const iso = isoAt(now);
     this.db.prepare(`INSERT INTO self_checks (check_id, reason, reason_key, due_at, state, event_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)`).run(checkId, trimmed, key, new Date(dueAt).toISOString(), iso, iso);
+      VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?)`).run(checkId, trimmed, key, isoAt(dueAt), iso, iso);
     const local = localDateTime(dueAt, this.timeZone);
     const night = isAwake(dueAt, this.awakeHours, this.timeZone) ? ''
       : `起きている時間帯（${this.awakeHours.start}〜${this.awakeHours.end}）の外なので、実際に届くのは ${this.awakeHours.start} 以降です。`;
@@ -123,7 +123,7 @@ export class SelfChecks {
 
   cancel(checkId: string): ToolOutcome {
     const changed = this.db.prepare(`UPDATE self_checks SET state = 'cancelled', updated_at = ? WHERE check_id = ? AND state = 'pending'`)
-      .run(new Date(this.now()).toISOString(), checkId).changes;
+      .run(isoAt(this.now()), checkId).changes;
     if (Number(changed) === 0) return { ok: false, text: `取り消していません。${checkId} は待っている予約ではありません。` };
     return { ok: true, text: `予約 ${checkId} を取り消しました。` };
   }
@@ -131,7 +131,7 @@ export class SelfChecks {
   /** Bookings whose time has come, oldest first. */
   due(): DueCheck[] {
     const rows = this.db.prepare(`SELECT check_id, reason, due_at FROM self_checks WHERE state = 'pending' AND due_at <= ? ORDER BY due_at, check_id`)
-      .all(new Date(this.now()).toISOString()) as { check_id: string; reason: string; due_at: string }[];
+      .all(isoAt(this.now())) as { check_id: string; reason: string; due_at: string }[];
     return rows.map(row => ({ checkId: row.check_id, reason: row.reason, dueAt: Date.parse(row.due_at) }));
   }
 
@@ -141,7 +141,7 @@ export class SelfChecks {
    */
   deliver(checkIds: string[], eventId: string, _transaction: Transaction): void {
     const update = this.db.prepare(`UPDATE self_checks SET state = 'delivered', event_id = ?, updated_at = ? WHERE check_id = ? AND state = 'pending'`);
-    const iso = new Date(this.now()).toISOString();
+    const iso = isoAt(this.now());
     for (const checkId of checkIds) update.run(eventId, iso, checkId);
   }
 

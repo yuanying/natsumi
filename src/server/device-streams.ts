@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { isoAt } from './nightly.ts';
 
 export const PROTOCOL_VERSION = 1;
 export const DEFAULT_STREAM_BUFFER_SIZE = 256;
@@ -71,7 +72,7 @@ export class DeviceStreams {
    * to the same GitHub account; anything else gets a new registration rather than being adopted.
    */
   register(requested: unknown, githubUserId: number, clientSessionId: string): string {
-    const now = new Date().toISOString();
+    const now = isoAt(Date.now());
     if (typeof requested === 'string') {
       const row = this.db.prepare('SELECT github_user_id FROM devices WHERE device_id = ?').get(requested) as { github_user_id: number } | undefined;
       if (row?.github_user_id === githubUserId) {

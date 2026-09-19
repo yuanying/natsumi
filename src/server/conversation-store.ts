@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { isoAt } from './nightly.ts';
 
 /** The kinds of event the loop takes. The column is free text in SQLite; these are the only values written. */
 export type EventKind = 'mac-message' | 'nightly-review' | 'ping' | 'self-check';
@@ -117,7 +118,7 @@ export class ConversationStore {
   /** Notices sent in the rolling hour behind now, for the limit on notify_owner (ADR 0008). */
   noticesInLastHour(): number {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM conversation_messages WHERE kind = 'notice' AND created_at >= ?`)
-      .get(new Date(this.now() - 3_600_000).toISOString()) as { n: number }).n;
+      .get(isoAt(this.now() - 3_600_000)) as { n: number }).n;
   }
 
   /** The newest messages, oldest first. */
@@ -284,5 +285,5 @@ export class ConversationStore {
     return Number(closed.changes);
   }
 
-  private iso() { return new Date(this.now()).toISOString(); }
+  private iso() { return isoAt(this.now()); }
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { localDate, nextOccurrence, previousOccurrence } from '../src/server/nightly.ts';
+import { isoAt, localDate, nextOccurrence, previousOccurrence } from '../src/server/nightly.ts';
 
 const at = (iso: string) => Date.parse(iso);
 
@@ -25,4 +25,11 @@ test('a time zone with daylight saving time still lands on the local time', () =
 test('dates are the calendar date in the time zone', () => {
   assert.equal(localDate(at('2026-09-15T20:30:00Z'), 'Asia/Tokyo'), '2026-09-16');
   assert.equal(localDate(at('2026-09-15T20:30:00Z'), 'UTC'), '2026-09-15');
+});
+
+test('an instant is written as the UTC instant the database stores', () => {
+  assert.equal(isoAt(at('2026-09-15T20:30:00Z')), '2026-09-15T20:30:00.000Z');
+  assert.equal(isoAt(0), '1970-01-01T00:00:00.000Z');
+  // The time zone never enters into it: the stored form is UTC whatever the owner's zone is.
+  assert.equal(isoAt(at('2026-09-15T20:30:00+09:00')), '2026-09-15T11:30:00.000Z');
 });
