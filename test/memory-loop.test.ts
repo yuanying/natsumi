@@ -691,3 +691,99 @@ test('past the context limit the loop compacts between turns and the conversatio
     assert.deepEqual(await f.sessionFiles(), [file]);
   } finally { await f.cleanup(); }
 });
+
+test('the nightly review gets forty model calls by default, and a turn cut at its call limit says so in the log', async () => {
+  const f = await setup();
+  try {
+    const logs: string[] = [];
+    const { loop, events } = await f.open({ log: line => { logs.push(line); } });
+    // Unlike `behave`, this answers every call of a turn, not only the first: the review keeps working until it is done or cut.
+    let reviewCalls = 0;
+    let finishAt: number | undefined = 40;
+    const keepWorking = (context: Context): ScriptedStep => {
+      const [event] = eventLines(lastUserText(context));
+      if (event?.type !== 'nightly_review') return { calls: [call('set_mac_avatar_expression', { expression: 'thinking' })] };
+      reviewCalls += 1;
+      // Work on every call but the last, and the handoff on that one: the old limit of sixteen would have cut this short.
+      if (reviewCalls !== finishAt) return { calls: [call('set_mac_avatar_expression', { expression: 'sleepy' })] };
+      return { calls: [call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 長い夜` }),
+        call('finish_event', { event_id: event.event_id })] };
+    };
+    behave(f, {});
+    const day = f.send(loop, '今日の話');
+    await completed(events, day.eventId);
+    await loop.idle();
+    f.model.auto = keepWorking;
+    assert.equal((await loop.rotate()).result, 'switched');
+    assert.equal(reviewCalls, 40);
+    assert.equal(logs.some(line => line.includes('limit')), false, logs.join('\n'));
+    await loop.close();
+
+    // A tighter limit from the config cuts the review, and the log names the turn, the limit and the count.
+    const second = await f.open({ loop: { reviewModelCalls: 3 }, log: line => { logs.push(line); } });
+    reviewCalls = 0;
+    finishAt = undefined;
+    const stuck = f.send(second.loop, '止まらない昼');
+    assert.equal((await completed(second.events, stuck.eventId)).payload.status, 'failed');
+    assert.ok(logs.includes('thinking loop: the events turn was stopped at the model-call limit (4 calls)'), logs.join('\n'));
+    await second.loop.idle();
+    assert.deepEqual(await second.loop.rotate(), { result: 'failed', reason: 'model-call-limit' });
+    assert.equal(reviewCalls, 3);
+    assert.ok(logs.includes('thinking loop: the review turn was stopped at the model-call limit (3 calls)'), logs.join('\n'));
+  } finally { await f.cleanup(); }
+});
+
+test('the review turn has thirty minutes where an ordinary turn has ten, and a turn cut by time says so in the log', async t => {
+  const f = await setup();
+  try {
+    const logs: string[] = [];
+    const { loop, events } = await f.open({ log: line => { logs.push(line); } });
+    behave(f, {});
+    const day = f.send(loop, `昼の話 ${EARLIER}`);
+    await completed(events, day.eventId);
+    await loop.idle();
+    const settledEvent = (eventId: string) => events.find(e => e.type === 'conversation.event.completed' && e.payload.eventId === eventId);
+    const flush = () => new Promise(resolve => setImmediate(resolve));
+
+    // From here only setTimeout is faked: the model answers when the test says, and the clock moves when the test ticks.
+    f.model.takeOver();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const rotating = loop.rotate();
+    const review = await f.model.next();
+    const [reviewEvent] = eventLines(lastUserText(review.context));
+    // Ten minutes in, an ordinary turn would be over. The review goes on, and finishes.
+    t.mock.timers.tick(10 * 60_000);
+    review.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 遅い夜` });
+    review.call('finish_event', { event_id: reviewEvent!.event_id });
+    review.finish();
+    assert.equal((await rotating).result, 'switched');
+    assert.equal(logs.some(line => line.includes('time limit')), false, logs.join('\n'));
+
+    // An ordinary turn in the new session is cut at ten minutes, not a moment sooner.
+    const stuck = f.send(loop, '返事のない昼');
+    const reply = await f.model.next();
+    t.mock.timers.tick(10 * 60_000 - 1);
+    await flush();
+    assert.equal(settledEvent(stuck.eventId), undefined);
+    t.mock.timers.tick(1);
+    await loop.idle();
+    assert.deepEqual([settledEvent(stuck.eventId)?.payload.status, settledEvent(stuck.eventId)?.payload.reason], ['failed', 'timeout']);
+    assert.ok(logs.includes('thinking loop: the events turn was stopped by the time limit (600 seconds)'), logs.join('\n'));
+    reply.finish();
+
+    // The review is cut at thirty minutes, not a moment sooner.
+    const rotatingAgain = loop.rotate();
+    let settled = false;
+    void rotatingAgain.then(() => { settled = true; });
+    await f.model.next();
+    t.mock.timers.tick(30 * 60_000 - 1);
+    await flush();
+    assert.equal(settled, false);
+    t.mock.timers.tick(1);
+    assert.deepEqual(await rotatingAgain, { result: 'failed', reason: 'timeout' });
+    assert.ok(logs.includes('thinking loop: the review turn was stopped by the time limit (1800 seconds)'), logs.join('\n'));
+  } finally {
+    t.mock.timers.reset();
+    await f.cleanup();
+  }
+});

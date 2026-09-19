@@ -29,6 +29,8 @@ const SCHEDULE_DEFAULTS = {
   pingIntervalMinutes: 30,
   selfCheck: { minDelayMinutes: 5, maxDelayDays: 7, maxPending: 5, maxPerDay: 20 },
   expressionResetMinutes: 3,
+  reviewModelCalls: 40,
+  reviewTimeoutMinutes: 30,
 };
 const base = () => ({ pi: pi(), publicOrigin: 'https://natsumi.example.test', listen: listen(), github: github() });
 
@@ -117,6 +119,17 @@ test('the loop section sets the awake hours, the ping, the self-check limits and
   }
   rejects({ ...base(), loop: { selfCheck: { minDelayMinutes: 1440 * 7, maxDelayDays: 7 } } }, 'loop.selfCheck.minDelayMinutes', /shorter/);
   rejects({ ...base(), loop: { selfCheck: { perHour: 3 } } }, 'loop.selfCheck.perHour', /unknown/);
+});
+
+test('the loop section sets the nightly review limits, each with a default (ADR 0018)', () => {
+  // The review reads and rewrites memory file by file, so it gets more calls and more time than an ordinary turn.
+  const defaults = parseConfig(base()).loop;
+  assert.equal(defaults.reviewModelCalls, 40);
+  assert.equal(defaults.reviewTimeoutMinutes, 30);
+  const set = parseConfig({ ...base(), loop: { reviewModelCalls: 12, reviewTimeoutMinutes: 5 } }).loop;
+  assert.deepEqual([set.reviewModelCalls, set.reviewTimeoutMinutes], [12, 5]);
+  for (const calls of [0, -1, 1.5, '40', true]) rejects({ ...base(), loop: { reviewModelCalls: calls } }, 'loop.reviewModelCalls');
+  for (const minutes of [0, -1, 2.5, '30', false]) rejects({ ...base(), loop: { reviewTimeoutMinutes: minutes } }, 'loop.reviewTimeoutMinutes');
 });
 
 test('the workspace shell is off unless the loop names the runner socket by absolute path', () => {

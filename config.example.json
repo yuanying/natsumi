@@ -28,6 +28,8 @@
     "pingIntervalMinutes": 30,
     "selfCheck": { "minDelayMinutes": 5, "maxDelayDays": 7, "maxPending": 5, "maxPerDay": 20 },
     "expressionResetMinutes": 3,
+    "reviewModelCalls": 40,
+    "reviewTimeoutMinutes": 30,
     "workspaceSocket": "/run/natsumi-workspace/runner.sock",
     "memoryFileMaxChars": 32000
   }
