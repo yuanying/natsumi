@@ -123,12 +123,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       target: { provider: config.pi.model.provider, model: config.pi.model.id }, thinking: config.pi.thinking,
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
       configureSession: options.pi?.configureSession, maxModelCalls: options.pi?.maxModelCalls,
-      runTimeoutMs: options.pi?.runTimeoutMs, now, log, timeZone: config.loop.timeZone,
-      compactAtTokens: config.loop.compactionThreshold, keepRecentTokens: config.loop.compactionKeepRecent,
-      workspaceSocket: config.loop.workspaceSocket, shellWaitSeconds: config.loop.shellWaitSeconds,
-      workspaceSizeWarnBytes: config.loop.workspaceSizeWarnBytes,
-      memoryRepository: config.loop.memoryRepository, memoryFileMaxChars: config.loop.memoryFileMaxChars,
-      awakeHours: config.loop.awakeHours, selfCheckLimits: config.loop.selfCheck,
+      runTimeoutMs: options.pi?.runTimeoutMs, now, log, loop: config.loop,
     });
 
     // The nightly switch at the configured local time (ADR 0009). A night missed while stopped is caught up at start.

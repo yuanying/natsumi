@@ -4,17 +4,18 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
+import type { LoopConfig } from './config.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REVIEW_INSTRUCTIONS,
   WORKSPACE_SECTION } from './prompts.ts';
 import { MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
-import { DEFAULT_SHELL_WAIT_SECONDS, WorkspaceShell } from './workspace-shell.ts';
-import { DEFAULT_SIZE_WARN_BYTES, WorkspaceSize } from './workspace-size.ts';
+import { WorkspaceShell } from './workspace-shell.ts';
+import { WorkspaceSize } from './workspace-size.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { ReadState, type ReadPosition } from './read-state.ts';
 import { localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
-import { DEFAULT_AWAKE_HOURS, DEFAULT_SELF_CHECK_LIMITS, SelfChecks, type AwakeHours, type SelfCheckLimits } from './scheduler.ts';
+import { SelfChecks } from './scheduler.ts';
 
 /** Model calls one turn may make before it is stopped and its open events fail (the evaluation stopped at 8). */
 export const DEFAULT_MAX_MODEL_CALLS = 8;
@@ -23,9 +24,6 @@ export const DEFAULT_REVIEW_MODEL_CALLS = 16;
 export const DEFAULT_RUN_TIMEOUT_MS = 10 * 60_000;
 /** notify_owner is limited per turn and per rolling hour (ADR 0008). */
 export const DEFAULT_NOTIFY_LIMITS = { perTurn: 3, perHour: 12 };
-/** Past this estimated context size the session is compacted between turns (ADR 0009). */
-export const DEFAULT_COMPACT_AT_TOKENS = 60_000;
-export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 /** The newest messages a snapshot carries. */
 export const SNAPSHOT_MESSAGE_LIMIT = 500;
 /** The longest the line of thinking sent to the Mac may be; a longer one keeps its newest end (ADR 0017). */
@@ -103,27 +101,16 @@ export interface LoopOptions {
   runtime: () => Promise<ModelRuntime>;
   /** Called with every Pi session before its first prompt. Tests replace the model stream here. */
   configureSession?: (session: AgentSession) => void;
+  /**
+   * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
+   * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
+   * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
+   */
+  loop: LoopConfig;
   maxModelCalls?: number;
   reviewModelCalls?: number;
   runTimeoutMs?: number;
   notifyLimits?: { perTurn: number; perHour: number };
-  /** The owner's time zone, for memory dates. UTC when omitted. */
-  timeZone?: string;
-  compactAtTokens?: number;
-  keepRecentTokens?: number;
-  /** The workspace container's runner socket. The run_shell tool exists only with it (ADR 0019). */
-  workspaceSocket?: string;
-  /** `loop.shellWaitSeconds`: how long the server waits for the runner's answer. */
-  shellWaitSeconds?: number;
-  /** `loop.workspaceSizeWarnBytes`: past this, the next turn is told what the persistent places hold. */
-  workspaceSizeWarnBytes?: number;
-  /** The memory repository (ADR 0018). `memory/` in the data directory when omitted. */
-  memoryRepository?: string;
-  /** The longest one memory file may be, in characters. */
-  memoryFileMaxChars?: number;
-  /** The hours natsumi is up, in `timeZone`: a self-check booked outside them waits for the morning (ADR 0014). */
-  awakeHours?: AwakeHours;
-  selfCheckLimits?: SelfCheckLimits;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -201,19 +188,19 @@ export class ThinkingLoop {
   private constructor(options: LoopOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
+    const loop = options.loop;
     // One directory, two ways in: the shell writes the files, and the repository is what commits them.
-    const memoryDirectory = options.memoryRepository ?? join(options.dataDirectory, 'memory');
+    const memoryDirectory = loop.memoryRepository ?? join(options.dataDirectory, 'memory');
     this.memoryRepository = new MemoryRepository({
-      directory: memoryDirectory, dataDirectory: options.dataDirectory,
-      ...(options.memoryFileMaxChars === undefined ? {} : { fileMaxChars: options.memoryFileMaxChars }),
+      directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
       log: line => this.log(line),
     });
     this.readState = new ReadState(options.db, this.now);
-    this.shell = options.workspaceSocket
+    this.shell = loop.workspaceSocket
       ? new WorkspaceShell({
-        socketPath: options.workspaceSocket,
-        timeoutMs: (options.shellWaitSeconds ?? DEFAULT_SHELL_WAIT_SECONDS) * 1000,
-        timeZone: options.timeZone ?? 'UTC',
+        socketPath: loop.workspaceSocket,
+        timeoutMs: loop.shellWaitSeconds * 1000,
+        timeZone: loop.timeZone,
         memoryChanges: () => this.memoryRepository.changeSummary(),
       })
       : undefined;
@@ -222,11 +209,11 @@ export class ThinkingLoop {
       places: [{ label: '/memory', path: memoryDirectory },
         { label: '/work', path: join(options.dataDirectory, WORK_DIRECTORY) },
         { label: '/home/natsumi', path: join(options.dataDirectory, HOME_DIRECTORY) }],
-      warnBytes: options.workspaceSizeWarnBytes ?? DEFAULT_SIZE_WARN_BYTES,
+      warnBytes: loop.workspaceSizeWarnBytes,
       now: this.now,
     });
-    this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: options.timeZone ?? 'UTC',
-      limits: options.selfCheckLimits ?? DEFAULT_SELF_CHECK_LIMITS, awakeHours: options.awakeHours ?? DEFAULT_AWAKE_HOURS });
+    this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: loop.timeZone,
+      limits: loop.selfCheck, awakeHours: loop.awakeHours });
     this.activityAt = this.now();
     this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };
   }
@@ -499,7 +486,7 @@ export class ThinkingLoop {
       systemPrompt: await this.systemPrompt(handoff),
       thinkingLevel: this.options.thinking === 'on' ? 'medium' as const : 'off' as const,
       tools: { names: tools.map(tool => tool.name), definitions: tools },
-      keepRecentTokens: this.options.keepRecentTokens ?? DEFAULT_KEEP_RECENT_TOKENS,
+      keepRecentTokens: this.options.loop.compactionKeepRecent,
     };
   }
 
@@ -796,7 +783,7 @@ export class ThinkingLoop {
     const session = this.session;
     if (this.closing || !session) return;
     const tokens = session.getContextUsage()?.tokens;
-    const limit = this.options.compactAtTokens ?? DEFAULT_COMPACT_AT_TOKENS;
+    const limit = this.options.loop.compactionThreshold;
     if (tokens === undefined || tokens === null || tokens <= limit) return;
     if (this.compactionRetryAbove !== undefined && tokens <= this.compactionRetryAbove) return;
     try {
@@ -847,7 +834,7 @@ export class ThinkingLoop {
     if (row.kind === 'nightly-review') {
       return { event_id: eventId, type: 'nightly_review', received_at: row.created_at, instructions: REVIEW_INSTRUCTIONS };
     }
-    const timeZone = this.options.timeZone ?? 'UTC';
+    const timeZone = this.options.loop.timeZone;
     const raisedAt = Date.parse(row.created_at);
     if (row.kind === 'self-check') {
       return { event_id: eventId, type: 'self_check', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone),

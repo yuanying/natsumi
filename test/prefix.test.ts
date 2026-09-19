@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
+import { LOOP_DEFAULTS } from '../src/server/config.ts';
 import { createLoopTools, type LoopToolHost, type ToolOutcome } from '../src/server/loop-tools.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
@@ -80,7 +81,7 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
     db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
     runtime: fixtureRuntime,
     configureSession: captured => { session = captured; },
-    ...(workspace ? { workspaceSocket: join(root, 'runner.sock') } : {}),
+    loop: { ...LOOP_DEFAULTS, ...(workspace ? { workspaceSocket: join(root, 'runner.sock') } : {}) },
   });
   try {
     assert.ok(session, 'the loop made no session');

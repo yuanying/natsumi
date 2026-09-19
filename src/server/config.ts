@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
+// The only thing this file takes from the modules above it is their `DEFAULT_*` constants, for LOOP_DEFAULTS below.
+// Applying a default is this parser's job alone: nothing downstream falls back again (see LoopOptions.loop).
 import { DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
