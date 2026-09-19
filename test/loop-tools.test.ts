@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createLoopTools, LOOP_TOOL_NAMES, RUN_SHELL_DESCRIPTION, RUN_SHELL_TOOL_NAME, type LoopToolHost } from '../src/server/loop-tools.ts';
+import { createLoopTools, LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME, type LoopToolHost } from '../src/server/loop-tools.ts';
+import { RUN_SHELL_DESCRIPTION } from '../src/server/prompts.ts';
 import { MAX_COMMAND_CHARS } from '../src/server/workspace-shell.ts';
 
 const ok = (text: string) => ({ ok: true, text });
