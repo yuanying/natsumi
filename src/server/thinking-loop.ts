@@ -19,10 +19,12 @@ import { localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
 
-/** Model calls one turn may make before it is stopped and its open events fail (the evaluation stopped at 8). */
+/**
+ * Model calls one turn may make before it is stopped and its open events fail (the evaluation stopped at 8), and how
+ * long it may take. The nightly review has its own, larger limits, in the config (`loop.reviewModelCalls` and
+ * `loop.reviewTimeoutMinutes`, ADR 0018).
+ */
 export const DEFAULT_MAX_MODEL_CALLS = 8;
-/** The nightly review may write many memories, so it gets more calls. */
-export const DEFAULT_REVIEW_MODEL_CALLS = 16;
 export const DEFAULT_RUN_TIMEOUT_MS = 10 * 60_000;
 /** notify_owner is limited per turn and per rolling hour (ADR 0008). */
 export const DEFAULT_NOTIFY_LIMITS = { perTurn: 3, perHour: 12 };
@@ -111,8 +113,8 @@ export interface LoopOptions {
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
    */
   loop: LoopConfig;
+  /** An ordinary turn's limits. Tests shorten them; the review turn's come from `loop`. */
   maxModelCalls?: number;
-  reviewModelCalls?: number;
   runTimeoutMs?: number;
   notifyLimits?: { perTurn: number; perHour: number };
   now?: () => number;
@@ -563,13 +565,14 @@ export class ThinkingLoop {
   /** Runs one turn and records how its events ended. Returns the turn, with the failure if it did not end cleanly. */
   private async runTurn(eventIds: string[], kind: Turn['kind'], rotationId?: string): Promise<Turn & { failure?: string }> {
     const session = this.session!;
-    const maxCalls = kind === 'review'
-      ? this.options.reviewModelCalls ?? DEFAULT_REVIEW_MODEL_CALLS : this.options.maxModelCalls ?? DEFAULT_MAX_MODEL_CALLS;
+    // The review reads and rewrites memory file by file, so it gets more calls and more time than an ordinary turn.
+    const maxCalls = kind === 'review' ? this.options.loop.reviewModelCalls : this.options.maxModelCalls ?? DEFAULT_MAX_MODEL_CALLS;
+    const timeoutMs = kind === 'review' ? this.options.loop.reviewTimeoutMinutes * 60_000 : this.options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId };
     this.turn = turn;
     for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId));
     const before = session.messages.length;
-    const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, this.options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
+    const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, timeoutMs);
     const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice()].filter(Boolean).join('\n\n');
     const prompt = formatEvents(eventIds.map(id => this.eventLine(id))) + (notices ? `\n\n${notices}` : '');
     try {
@@ -578,6 +581,9 @@ export class ThinkingLoop {
       // Judged below from what Pi recorded; the error text never leaves the server.
     } finally { clearTimeout(timer); }
     this.endThinking();
+    // A turn cut short is not told apart by its rows once a handoff was written, so the log says which limit did it.
+    if (turn.limited) this.log(`thinking loop: the ${kind} turn was stopped at the model-call limit (${turn.calls} calls)`);
+    else if (turn.timedOut) this.log(`thinking loop: the ${kind} turn was stopped by the time limit (${timeoutMs / 1000} seconds)`);
 
     // Steering Pi did not deliver goes back to the front of the queue.
     for (const text of session.clearQueue().steering.reverse()) {

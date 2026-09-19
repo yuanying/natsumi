@@ -102,7 +102,15 @@ export interface LoopConfig {
   selfCheck: SelfCheckLimits;
   /** Minutes an expression other than thinking stays before returning to neutral. */
   expressionResetMinutes: number;
+  /** Model calls the nightly review turn may make: it reads and rewrites memory file by file (ADR 0018). */
+  reviewModelCalls: number;
+  /** Minutes the nightly review turn may take. An ordinary turn keeps the thinking loop's own limit. */
+  reviewTimeoutMinutes: number;
 }
+
+// The nightly review's limits live here rather than in the thinking loop, which loads Pi's SDK on import.
+export const DEFAULT_REVIEW_MODEL_CALLS = 40;
+export const DEFAULT_REVIEW_TIMEOUT_MINUTES = 30;
 
 export const LOOP_DEFAULTS: LoopConfig = {
   timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
@@ -110,6 +118,7 @@ export const LOOP_DEFAULTS: LoopConfig = {
   workspaceSizeWarnBytes: DEFAULT_SIZE_WARN_BYTES,
   awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES, selfCheck: DEFAULT_SELF_CHECK_LIMITS,
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
+  reviewModelCalls: DEFAULT_REVIEW_MODEL_CALLS, reviewTimeoutMinutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
 };
 
 /** The shortest ping interval, so a typo cannot make natsumi think all day. */
@@ -332,7 +341,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   }
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
     'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'awakeHours',
-    'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes']);
+    'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -368,6 +377,10 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   }
   const reset = loop.expressionResetMinutes ?? LOOP_DEFAULTS.expressionResetMinutes;
   if (!positiveInteger(reset, 1)) throw new ConfigError(`${path}.expressionResetMinutes`, 'must be a positive integer');
+  const reviewCalls = loop.reviewModelCalls ?? LOOP_DEFAULTS.reviewModelCalls;
+  if (!positiveInteger(reviewCalls, 1)) throw new ConfigError(`${path}.reviewModelCalls`, 'must be a positive integer');
+  const reviewMinutes = loop.reviewTimeoutMinutes ?? LOOP_DEFAULTS.reviewTimeoutMinutes;
+  if (!positiveInteger(reviewMinutes, 1)) throw new ConfigError(`${path}.reviewTimeoutMinutes`, 'must be a positive integer');
   return {
     timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep,
     ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, workspaceSizeWarnBytes: warnBytes as number,
@@ -376,6 +389,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     pingIntervalMinutes: ping as number | false,
     selfCheck: parseSelfCheck(loop.selfCheck ?? {}, `${path}.selfCheck`),
     expressionResetMinutes: reset as number,
+    reviewModelCalls: reviewCalls as number, reviewTimeoutMinutes: reviewMinutes as number,
   };
 }
 
