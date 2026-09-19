@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ToolOutcome } from './loop-tools.ts';
-import { clockMinutes, instant, localDateTime, localParts, minutesOfDay } from './nightly.ts';
+import { clockMinutes, instant, localDateTime, localParts, minutesOfDay, previousOccurrence } from './nightly.ts';
 
 /** The local hours natsumi is up. Pings and self-checks happen only inside them; `end` may be past midnight. */
 export interface AwakeHours { start: string; end: string }
@@ -193,6 +193,10 @@ export interface ScheduledLoop {
   deliverDueSelfChecks(): boolean;
   /** Hands the loop a ping. */
   ping(): boolean;
+  /** When the current session began: its last switch, or the conversation's creation (ADR 0009). */
+  sessionStartedAt(): number | undefined;
+  /** Reviews the day and switches to a new session. Queues the review and resolves once the switch has ended. */
+  rotate(): Promise<{ result: string; reason?: string }>;
 }
 
 export interface SchedulerOptions {
@@ -202,18 +206,25 @@ export interface SchedulerOptions {
   awakeHours: AwakeHours;
   pingIntervalMinutes: number | false;
   expressionResetMinutes: number;
+  /** The local time of the nightly session switch, or false to leave the session alone (ADR 0009). */
+  nightlyRotationAt: string | false;
   tickMs?: number;
   log?: (line: string) => void;
 }
 
 /**
- * Looks at the clock and raises the loop's own events (ADR 0014): due self-checks first, then a ping after a quiet
- * interval, both only in the awake hours and only when the loop is quiet. The night belongs to the review (ADR 0009).
+ * Looks at the clock and raises the loop's own events: the nightly session switch (ADR 0009) whatever the hour, then
+ * due self-checks and a ping after a quiet interval (ADR 0014), those two only in the awake hours and only when the
+ * loop is quiet.
  */
 export class Scheduler {
   private readonly options: SchedulerOptions;
   private readonly now: () => number;
   private timer: NodeJS.Timeout | undefined;
+  /** The switching time a switch was last asked for, so one night asks once however many ticks pass. */
+  private switchedFor: number | undefined;
+  /** A switch resolves only once its review turn is over; until then nothing asks for another. */
+  private switching = false;
 
   constructor(options: SchedulerOptions) {
     this.options = options;
@@ -232,16 +243,37 @@ export class Scheduler {
     this.timer = undefined;
   }
 
-  /** One look at the clock. Returns what it raised, if anything. */
+  /** One look at the clock. Returns what it raised for the owner's stream, if anything. */
   tick(): 'self-check' | 'ping' | undefined {
     const { loop, awakeHours, timeZone, pingIntervalMinutes, expressionResetMinutes } = this.options;
     if (loop.unavailable) return undefined;
     loop.relaxExpression(expressionResetMinutes * MINUTE);
     const now = this.now();
+    // The switch happens in the night, outside the awake hours, and waits for no quiet: it is looked at before both.
+    this.switchSession(now);
     if (!loop.quiet || !isAwake(now, awakeHours, timeZone)) return undefined;
     if (loop.deliverDueSelfChecks()) return 'self-check';
     if (pingIntervalMinutes !== false && now - loop.lastActivityAt >= pingIntervalMinutes * MINUTE && loop.ping()) return 'ping';
     return undefined;
+  }
+
+  /**
+   * The nightly switch (ADR 0009). A session that began before the last switching time is switched: at the time itself,
+   * or at the next start after a night passed while natsumi was stopped. One switching time asks for one switch, so a
+   * switch that changed nothing (an empty session) or failed waits for the next night, as the timer it replaced did.
+   */
+  private switchSession(now: number): void {
+    const { loop, nightlyRotationAt, timeZone, log } = this.options;
+    if (nightlyRotationAt === false || this.switching) return;
+    const at = previousOccurrence(now, nightlyRotationAt, timeZone);
+    const started = loop.sessionStartedAt();
+    if (at === this.switchedFor || started === undefined || started >= at) return;
+    this.switchedFor = at;
+    this.switching = true;
+    void loop.rotate().then(
+      outcome => { log?.(`thinking loop: nightly switch ${outcome.result}${'reason' in outcome ? ` (${outcome.reason})` : ''}`); },
+      () => {},
+    ).finally(() => { this.switching = false; });
   }
 
   private safeTick() {

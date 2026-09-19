@@ -16,13 +16,10 @@ import { readSecret, readTlsFiles } from './secrets.ts';
 import { SessionStore } from './sessions.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
-import { nextOccurrence, previousOccurrence } from './nightly.ts';
 import { Scheduler } from './scheduler.ts';
 import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
 
 const SESSION_SWEEP_MS = 30_000;
-/** setTimeout's longest delay; a longer wait is re-armed when it fires. */
-const MAX_TIMER_MS = 2 ** 31 - 1;
 /** The shortest wait between background certificate checks, so a schedule surprise cannot spin. */
 const MIN_CERTIFICATE_CHECK_MS = 60_000;
 
@@ -94,7 +91,6 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let certificates: CertificateManager | undefined;
   let checking: Promise<void> | undefined;
   let renewal: NodeJS.Timeout | undefined;
-  let rotation: NodeJS.Timeout | undefined;
   let scheduler: Scheduler | undefined;
   let closed = false;
   const timers: NodeJS.Timeout[] = [];
@@ -102,7 +98,6 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     closed = true;
     timers.forEach(clearInterval);
     clearTimeout(renewal);
-    clearTimeout(rotation);
     scheduler?.stop();
     certificates?.close();
     await checking?.catch(() => {});
@@ -126,30 +121,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runTimeoutMs: options.pi?.runTimeoutMs, now, log, loop: config.loop,
     });
 
-    // The nightly switch at the configured local time (ADR 0009). A night missed while stopped is caught up at start.
-    const nightlyAt = config.loop.nightlyRotationAt;
-    const rotate = () => thinkingLoop.rotate().then(outcome => {
-      log(`thinking loop: nightly switch ${outcome.result}${'reason' in outcome ? ` (${outcome.reason})` : ''}`);
-    });
-    const scheduleRotation = () => {
-      if (nightlyAt === false || closed) return;
-      const target = nextOccurrence(now(), nightlyAt, config.loop.timeZone);
-      rotation = setTimeout(() => {
-        void (now() >= target ? rotate() : Promise.resolve()).finally(scheduleRotation);
-      }, Math.min(Math.max(target - now(), 1_000), MAX_TIMER_MS));
-      rotation.unref();
-    };
-    if (nightlyAt !== false && !thinkingLoop.unavailable) {
-      const started = thinkingLoop.sessionStartedAt();
-      if (started !== undefined && started < previousOccurrence(now(), nightlyAt, config.loop.timeZone)) void rotate();
-      scheduleRotation();
-    }
-
-    // Self-checks natsumi booked, pings in quiet moments and expressions returning to neutral (ADR 0014).
+    // The nightly switch (ADR 0009), self-checks natsumi booked, pings in quiet moments and expressions
+    // returning to neutral (ADR 0014). A night missed while stopped is caught up on the first tick.
     if (!thinkingLoop.unavailable) {
       scheduler = new Scheduler({
         loop: thinkingLoop, now, log, timeZone: config.loop.timeZone, awakeHours: config.loop.awakeHours,
-        pingIntervalMinutes: config.loop.pingIntervalMinutes, expressionResetMinutes: config.loop.expressionResetMinutes,
+        nightlyRotationAt: config.loop.nightlyRotationAt, pingIntervalMinutes: config.loop.pingIntervalMinutes,
+        expressionResetMinutes: config.loop.expressionResetMinutes,
       });
       scheduler.start();
     }
