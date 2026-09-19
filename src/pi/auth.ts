@@ -2,11 +2,8 @@ import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { COMPATIBLE_PROVIDER, type CompatibleEndpoint } from './compatible.ts';
 import { isLoopbackHost } from './loopback.ts';
-
-export const COMPATIBLE_PROVIDER = 'natsumi-compatible';
-
-export interface CompatibleEndpoint { baseUrl: string; model: string }
 
 /** A runtime that uses only the OAuth login stored at `authPath` for `provider`. No API key route exists here. */
 export async function subscriptionRuntime(root: string, authPath: string, provider: string): Promise<ModelRuntime> {

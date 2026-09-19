@@ -3,7 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { COMPATIBLE_PROVIDER, compatibleRuntimeWithKey } from '../src/pi/auth.ts';
+import { compatibleRuntimeWithKey } from '../src/pi/auth.ts';
+import { COMPATIBLE_PROVIDER } from '../src/pi/compatible.ts';
 import { COMPATIBLE_PROVIDER as CONFIG_COMPATIBLE_PROVIDER, ConfigError, parseConfig } from '../src/server/config.ts';
 
 // One rule decides which plaintext endpoints are allowed, so a baseUrl the config accepts is one the runtime can open.

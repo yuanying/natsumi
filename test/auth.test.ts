@@ -3,7 +3,8 @@ import test from 'node:test';
 import { mkdtemp, rm, writeFile, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { COMPATIBLE_PROVIDER, subscriptionRuntime } from '../src/pi/auth.ts';
+import { subscriptionRuntime } from '../src/pi/auth.ts';
+import { COMPATIBLE_PROVIDER } from '../src/pi/compatible.ts';
 import { COMPATIBLE_KEY_ENV, compatibleRuntime } from '../src/probe/auth.ts';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 
