@@ -1,7 +1,7 @@
 # 0008. 単一の思考ループと Mac との会話
 
 - Date: 2026-09-15
-- Status: Accepted（登録するツールと、compaction が無効のままという点は [ADR 0009](0009-long-term-memory-and-nightly-session-switch.md) で置き換え、範囲外としていた Slack 連携と投稿の承認は [ADR 0012](0012-slack-and-colleagues.md) で決定、Mac に見せる会話の既読と知らせの確認は [ADR 0013](0013-read-state-on-the-server.md) で追加、表情の戻し方と、範囲外としていたスケジューラーと自発的な確認の土台は [ADR 0014](0014-self-checks-and-pings.md) で置き換え・決定、思考を Mac に出さないことは [ADR 0017](0017-streaming-the-line-she-is-thinking.md) で一部改訂）
+- Status: Accepted（登録するツールと、compaction が無効のままという点は [ADR 0009](0009-long-term-memory-and-nightly-session-switch.md) で置き換え、範囲外としていた Slack 連携と投稿の承認は [ADR 0012](0012-slack-and-colleagues.md) で決定、Mac に見せる会話の既読と知らせの確認は [ADR 0013](0013-read-state-on-the-server.md) で追加、表情の戻し方と、範囲外としていたスケジューラーと自発的な確認の土台は [ADR 0014](0014-self-checks-and-pings.md) で置き換え・決定、思考を Mac に出さないことは [ADR 0017](0017-streaming-the-line-she-is-thinking.md) で一部改訂、登録するツールの一覧は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で再び置き換え）
 
 ## Context
 

@@ -1,7 +1,7 @@
 # 0011. 閉じ込めたコンテナで、記憶を shell で探す
 
 - Date: 2026-09-15
-- Status: Accepted
+- Status: Accepted（記憶を読み取り専用にする点と、記憶の書き込みをサーバーのツールで行う点は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で置き換え）
 
 ## Context
 
