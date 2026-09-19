@@ -76,6 +76,8 @@ services:
     command: ["serve", "-response-limit", "60s", "-max-output", "65536", "-tz", "${NATSUMI_TIME_ZONE:-UTC}"]
     volumes:
       # Memory: writable, and its history is not. The server owns the commits (ADR 0018).
+      # Both subpaths follow loop.memoryRepository: point them at the same place if it is moved out of the
+      # data directory's memory/, or the server will commit somewhere natsumi's /memory never shows, with no error.
       - type: volume
         source: natsumi-data
         target: /memory
