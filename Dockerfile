@@ -53,7 +53,10 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY --from=build /app/dist/src ./dist/src
+# Only what the server runs. src/probe is a development tool against a live model; it belongs in the
+# checkout, not here, and nothing under src/server or src/pi imports it.
+COPY --from=build /app/dist/src/server ./dist/src/server
+COPY --from=build /app/dist/src/pi ./dist/src/pi
 # Mount points for the data directory and the dedicated Pi state area. A new named volume inherits
 # this ownership and mode, so the unprivileged user can write without running as root.
 RUN mkdir -p /data /var/lib/natsumi-pi \
