@@ -1,8 +1,9 @@
 import { createHash, createPrivateKey, generateKeyPairSync, X509Certificate, type KeyObject } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AcmeError, CERTIFICATE_PEM, issueCertificate } from './acme.ts';
 import type { AcmeConfig } from './config.ts';
+import { writeFileAtomically } from './paths.ts';
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -136,7 +137,7 @@ export class CertificateManager {
       });
       const pem = `${issued.privateKeyPem.trim()}\n${issued.certificatePem}`;
       const certificate = parseCertificate(pem, hostname);
-      await writePrivate(this.file, pem);
+      await writeFileAtomically(this.file, pem, 0o600);
       this.current = certificate;
       this.failures = 0;
       this.retryAt = 0;
@@ -201,12 +202,4 @@ async function loadAccountKey(file: string): Promise<KeyObject> {
     throw new Error('acme: the account key cannot be stored');
   }
   return privateKey;
-}
-
-/** Replaces `file` atomically with a new 0600 file. */
-async function writePrivate(file: string, text: string): Promise<void> {
-  const temporary = `${file}.${process.pid}.tmp`;
-  await rm(temporary, { force: true });
-  await writeFile(temporary, text, { flag: 'wx', mode: 0o600 });
-  await rename(temporary, file);
 }

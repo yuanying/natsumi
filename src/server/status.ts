@@ -1,6 +1,7 @@
-import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { STATE_DIRECTORY } from './data-directory.ts';
+import { writeFileAtomically } from './paths.ts';
 
 export interface ServerStatus {
   /** `waiting-for-certificate`: ACME has not yet obtained the first certificate, so HTTPS is not open. */
@@ -18,10 +19,7 @@ const statusPath = (dataDirectory: string) => join(dataDirectory, STATE_DIRECTOR
 
 /** Health is exposed as a local file, not a network listener. Written atomically by rename. */
 export async function writeStatus(dataDirectory: string, status: ServerStatus): Promise<void> {
-  const path = statusPath(dataDirectory);
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, JSON.stringify(status) + '\n', { mode: 0o600 });
-  await rename(temporary, path);
+  await writeFileAtomically(statusPath(dataDirectory), JSON.stringify(status) + '\n', 0o600);
 }
 
 export async function readStatus(dataDirectory: string): Promise<ServerStatus | undefined> {
