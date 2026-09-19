@@ -11,7 +11,8 @@ set -eu
 list="$1"
 root="$2"
 
-mkdir -p "$root/bin" "$root/memory" "$root/run/natsumi-tools" "$root/tmp"
+# /memory is the memory repository, mounted read-write; its .git is mounted read-only over it (ADR 0018).
+mkdir -p "$root/bin" "$root/memory/.git" "$root/run/natsumi-tools" "$root/tmp"
 
 copy_with_libraries() {
   source="$1"

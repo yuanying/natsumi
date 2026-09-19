@@ -182,6 +182,11 @@ func TestServeRefusesMalformedAndOversizedRequests(t *testing.T) {
 	if answer := ask(t, path, `{"command":"`+strings.Repeat("a", MaxRequestBytes)+`"}`+"\n"); answer["error"] == nil {
 		t.Fatalf("oversized: %v", answer)
 	}
+	// A command of 8000 Japanese characters is three bytes each: it must still fit in one request.
+	long := `: ` + strings.Repeat("\u3042", 8000)
+	if answer := ask(t, path, `{"command":`+quote(long)+`}`+"\n"); answer["error"] != nil {
+		t.Fatalf("a full-length command was refused: %v", answer)
+	}
 }
 
 func TestServeRunsOneCommandAtATime(t *testing.T) {

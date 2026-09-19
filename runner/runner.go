@@ -1,8 +1,9 @@
 // Package main is the runner inside the natsumi tools container (ADR 0011).
 //
 // It listens on a Unix socket that natsumi reaches through a shared volume, runs each command with `sh -c` in the
-// read-only memory directory, and answers with the exit code, stdout and stderr, cut at a time limit and an output
-// limit. The container itself provides the confinement: no network, no secrets, only the memory directory, read-only.
+// memory directory, and answers with the exit code, stdout and stderr, cut at a time limit and an output limit.
+// The container itself provides the confinement: no network, no secrets, only the memory directory, whose .git is
+// mounted read-only over it so the history cannot be rewritten from here (ADR 0018).
 package main
 
 import (
@@ -23,8 +24,9 @@ import (
 	"time"
 )
 
-// MaxRequestBytes bounds one request line.
-const MaxRequestBytes = 16 << 10
+// MaxRequestBytes bounds one request line. natsumi caps a command at 8000 characters (ADR 0018), and a command
+// written in Japanese is three bytes per character, so the line it sends can be well over 16 KiB.
+const MaxRequestBytes = 64 << 10
 
 // Limits are fixed when the runner starts; a request cannot change them.
 type Limits struct {

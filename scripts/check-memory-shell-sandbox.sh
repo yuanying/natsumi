@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Measures the confinement of the natsumi-tools container (ADR 0011) on throwaway containers and volumes.
+# Measures the confinement of the natsumi-tools container (ADR 0011, ADR 0018) on throwaway containers and volumes.
 #
 #   NATSUMI_CHECK_PROJECT=natsumi-check NATSUMI_CHECK_OVERRIDE=path/to/override.yaml scripts/check-memory-shell-sandbox.sh
 #
@@ -7,6 +7,8 @@
 # images must already be built with it. The script starts natsumi and natsumi-tools under its own project name with a
 # throwaway self-signed certificate and fictional memory, sends commands to the runner from inside natsumi (the path
 # the model's tool uses), prints PASS or FAIL per check, and removes the project's containers and volumes at the end.
+# Since ADR 0018 the memory working tree is writable, so the checks measure what may be written and what may not:
+# memory yes, .git no.
 # Nothing here reaches outside the host.
 set -euo pipefail
 
@@ -44,7 +46,7 @@ export NATSUMI_CONFIG="$PWD/config.example.json"
 
 "${compose[@]}" up -d --no-build --wait --wait-timeout 180 natsumi natsumi-tools >/dev/null
 
-# Fictional memory, written by natsumi as it would be.
+# Fictional memory, written into the repository natsumi made on its first start.
 "${compose[@]}" exec -T natsumi node -e '
   const { writeFileSync } = require("node:fs");
   writeFileSync("/data/memory/合言葉.md", "# 合言葉\n\n- 2026-01-01: 合言葉は SYNTHETIC-HERON-208\n", { mode: 0o600 });'
@@ -86,9 +88,9 @@ host_check "no-new-privileges is set" "$(inspect '{{json .HostConfig.SecurityOpt
 host_check "pids are limited" "$(inspect '{{.HostConfig.PidsLimit}}')" 64
 host_check "memory is limited" "$(inspect '{{.HostConfig.Memory}}')" 268435456
 host_check "cpu is limited" "$(inspect '{{.HostConfig.NanoCpus}}')" 1000000000
-host_check "only memory (read-only) and the socket are mounted" \
+host_check "only memory (writable), its .git (read-only) and the socket are mounted" \
   "$(inspect '{{range .Mounts}}{{.Destination}}:{{.RW}} {{end}}' | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')" \
-  "/memory:false /run/natsumi-tools:true "
+  "/memory:true /memory/.git:false /run/natsumi-tools:true "
 host_check "no environment beyond PATH" "$(inspect '{{range .Config.Env}}{{.}} {{end}}' | tr ' ' '\n' | sed '/^$/d;s/=.*//' | sort | tr '\n' ' ')" "PATH "
 
 check "commands run as a non-root user" 'grep "^Uid:" /proc/self/status' '/^Uid:\s+[1-9]\d*\s/.test(r.stdout)'
@@ -104,11 +106,25 @@ check "no other executables outside the libraries" \
   'find / \( -path /proc -o -path /sys -o -path /dev \) -prune -o -type f -perm -u+x -print' \
   'r.stdout.trim().split("\n").filter(p => !p.startsWith("/bin/") && !/^\/(lib|lib64|usr\/lib)\//.test(p)).sort().join(",") === "/.dockerenv,/sbin/docker-init,/usr/libexec/natsumi-tools-runner"'
 check "secrets, SQLite, Pi state and config are not visible" \
-  'ls /run/secrets /data /var/lib/natsumi-pi /etc/natsumi 2>&1; find / \( -path /proc -o -path /sys \) -prune -o \( -name "*.sqlite*" -o -name auth.json -o -name "*.jsonl" -o -name personality.md -o -name "*secret*" -o -name "*.pem" \) -print' \
+  'ls /run/secrets /data /var/lib/natsumi-pi /etc/natsumi 2>&1; find / \( -path /proc -o -path /sys \) -prune -o \( -name "*.sqlite*" -o -name auth.json -o -name "*.jsonl" -o -name "*secret*" -o -name "*.pem" \) -print' \
   'r.exitCode === 0 && !/^\//m.test(r.stdout) && (r.stdout.match(/No such file/g) || []).length === 4'
 check "memory is readable" 'rg -n 合言葉' 'r.exitCode === 0 && r.stdout.includes("SYNTHETIC-HERON-208")'
-check "memory is not writable" 'echo x >> 合言葉.md; echo y > /memory/new.md' 'r.exitCode !== 0 && (r.stderr.match(/Read-only file system/g) || []).length === 2'
+# What ADR 0018 opened up: a file can be made, rewritten in place, moved, copied and removed, and a folder made.
+check "memory is writable" \
+  'printf "# 予定\n\n- 2026-01-01: 歯医者は金曜\n" > 予定.md && sed -i "s/金曜/土曜/" 予定.md && mkdir -p 仕事 \
+   && cp 予定.md 仕事/写し.md && mv 予定.md 仕事/予定.md && rm 仕事/写し.md && cat 仕事/予定.md && ls 仕事' \
+  'r.exitCode === 0 && r.stdout.includes("歯医者は土曜") && !r.stdout.includes("写し")'
+check "the history is not writable" \
+  'echo x > /memory/.git/HEAD; rm -rf /memory/.git; echo y > /memory/.git/objects/x' \
+  'r.exitCode !== 0 && /Read-only file system/.test(r.stderr) && /Read-only file system|Device or resource busy|Permission denied/.test(r.stderr)'
+check "the history is still whole afterwards" 'cat /memory/.git/HEAD; ls /memory/.git' \
+  'r.exitCode === 0 && /ref:/.test(r.stdout) && r.stdout.includes("objects")'
 check "root is not writable" 'echo x > /bin/x; echo x > /x' 'r.exitCode !== 0 && (r.stderr.match(/Read-only file system/g) || []).length === 2'
+# One command may be 8000 characters (ADR 0018); in Japanese that is three bytes each, past the old request limit.
+long="$(awk 'BEGIN { while (i++ < 7000) printf "あ" }')"
+check "a command of thousands of Japanese characters arrives whole" \
+  "printf '%s' '$long' > 長い.md; wc -m < 長い.md" \
+  'r.exitCode === 0 && Number(r.stdout.trim()) === 7000'
 check "the socket directory cannot be changed" 'echo x > /run/natsumi-tools/x; find /run/natsumi-tools -delete' \
   'r.exitCode !== 0 && /Permission denied/.test(r.stderr)'
 check "only the small /tmp is writable" 'echo ok > /tmp/t && cat /tmp/t' 'r.exitCode === 0 && r.stdout === "ok\n"'
@@ -126,6 +142,19 @@ read -r verdict detail < <("${compose[@]}" exec -T natsumi node --input-type=mod
   const outcome = await new MemoryShell({ socketPath: "/run/natsumi-tools/runner.sock" }).run("rg -n 合言葉");
   console.log(outcome.ok && /終了コード 0/.test(outcome.text) && outcome.text.includes("SYNTHETIC-HERON-208") ? "pass" : "fail", JSON.stringify(outcome));')
 report "the tool reads the memory through the runner" "$verdict" "$detail"
+
+# What the server does with what the shell wrote: check, commit, and put back what fails (ADR 0018).
+read -r verdict detail < <("${compose[@]}" exec -T natsumi node --input-type=module -e '
+  import { MemoryShell } from "/app/dist/src/server/memory-shell.js";
+  import { MemoryRepository } from "/app/dist/src/server/memory-repository.js";
+  const shell = new MemoryShell({ socketPath: "/run/natsumi-tools/runner.sock" });
+  const repository = new MemoryRepository({ directory: "/data/memory", dataDirectory: "/data" });
+  await shell.run("printf \"# 鍵\\n\\n- 2026-01-01: 玄関の鍵は郵便受け\\n\" > 鍵.md");
+  await shell.run("printf \"# だめ\\n\\n这个\\n\" > だめ.md");
+  const outcome = await repository.commit({ event: "mac_message" });
+  const reverted = outcome.reverted.map(file => file.path).join(",");
+  console.log(outcome.committed && outcome.files.includes("鍵.md") && reverted === "だめ.md" ? "pass" : "fail", JSON.stringify(outcome));')
+report "the server commits what the shell wrote and puts back what fails" "$verdict" "$detail"
 
 echo "failures: $failures"
 [ "$failures" -eq 0 ]

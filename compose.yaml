@@ -44,8 +44,8 @@ services:
       start_period: 30s
       retries: 3
 
-  # Where the model's memory shell runs (ADR 0011): only the commands in docker/tools-commands.txt, no network,
-  # no secrets, and the data directory's memory/ alone, read-only. natsumi reaches its runner over a Unix socket.
+  # Where the model's memory shell runs (ADR 0011, ADR 0018): only the commands in docker/tools-commands.txt, no
+  # network, no secrets, and the memory repository alone. natsumi reaches its runner over a Unix socket.
   natsumi-tools:
     build:
       context: .
@@ -70,19 +70,29 @@ services:
     # The time limit of one command and the bytes of stdout and of stderr kept from it.
     command: ["serve", "-timeout", "10s", "-max-output", "65536"]
     volumes:
+      # The working tree is writable: memory is written here (ADR 0018). Point both at loop.memoryRepository
+      # if the repository is somewhere other than the data directory's memory/.
       - type: volume
         source: natsumi-data
         target: /memory
-        read_only: true
         volume:
           subpath: memory
+          nocopy: true
+      # The history, read-only on top of it: everything in the working tree can be rewritten or removed, and
+      # nothing that was committed can be lost.
+      - type: volume
+        source: natsumi-data
+        target: /memory/.git
+        read_only: true
+        volume:
+          subpath: memory/.git
           nocopy: true
       - type: volume
         source: natsumi-tools-socket
         target: /run/natsumi-tools
         volume:
           nocopy: true
-    # natsumi creates memory/ in the data directory on its first start.
+    # natsumi makes the memory repository, .git included, on its first start.
     depends_on:
       natsumi:
         condition: service_healthy

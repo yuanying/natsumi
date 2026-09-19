@@ -4,7 +4,7 @@ Pi Coding Agent を使う個人アシスタント。現在はサーバー基盤�
 二重起動の拒否、状態 DB の migration、専用の Pi 状態領域、コンテナ）、GitHub ログインと短期セッション、
 HTTPS/WSS の待ち受けと v1 envelope の入口、Let's Encrypt（ACME HTTP-01）による証明書の自動取得、
 固定 IPv6 で公開するコンテナ構成、Pi SDK の隔離検証ハーネス、単一の思考ループによる Mac との会話
-（端末の登録と同期、表情、表示用の会話の記録）、Markdown の長期記憶と、夜の思考の記録の切り替えを提供しています。
+（端末の登録と同期、表情、表示用の会話の記録）、git で持つ Markdown の長期記憶と、夜の思考の記録の切り替えを提供しています。
 Mac アプリは土台（ログイン、会話の同期、デスクトップに常駐するキャラクター、その上の吹き出しと下の入力欄、履歴）ができています。
 Slack、通知・スケジューラー、承認の表示、Google/Wiki 連携は後続の実装です。
 
@@ -55,7 +55,7 @@ npm run build
 node dist/src/server/main.js serve --config config.local.json --data-dir <data directory>
 ```
 
-`--data-dir` を省略すると起動 cwd を data directory とします。初回起動で `memory/`、`personality.md`、
+`--data-dir` を省略すると起動 cwd を data directory とします。初回起動で `memory/`（記憶のリポジトリ）と
 `.natsumi/`（状態 DB・ロック・状態ファイル）を作ります。既存のファイルは上書きしません。
 同じ data directory で 2 つ目のサーバーを起動すると拒否します。異常終了後のロックは OS が解放するため、そのまま再起動できます。
 SIGTERM / SIGINT で停止します。
@@ -65,13 +65,34 @@ SIGTERM / SIGINT で停止します。
 `.natsumi/state.sqlite` に、思考の記録は Pi の session に保存されます。どちらも個人データとして一緒にバックアップしてください。
 Pi の session ファイルが消えた・壊れた場合は新しい session を作らず、会話を使えない状態で起動します。
 
-長期記憶は data directory の `memory/` に、トピックごとの Markdown ファイルとして書かれます
-（[ADR 0009](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)）。各ファイルは見出しと、日付付きの箇条書きの行でできていて、
-手で読んで直せます。`memory/` の直下に手で置いた `.md` ファイルも、natsumi が探す対象になります。
+長期記憶は 1 つの git リポジトリです（[ADR 0018](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)）。
+場所は `loop.memoryRepository`、既定は data directory の `memory/` で、初回起動でそこが git のリポジトリになります
+（ブランチは `main`）。すでにあった Markdown は、名前も中身も変えずに最初のコミットに入ります。
+
+サーバーが名前を決めるのは、リポジトリ直下の 3 つだけです。
+
+| ファイル | 中身 |
+| --- | --- |
+| `always.md` | 常時記憶。夜にだけ書き換えられます |
+| `personality.md` | 性格・話し方。session を作るときにプロンプトに入ります。夜にだけ書き換えられます |
+| `handoff.md` | 夜の引き継ぎ |
+
+それ以外のファイル名、見出し、トピックの切り方、サブフォルダの作り方は natsumi が決めます。置けるのは `.md` の
+ファイルとフォルダだけです。natsumi は `run_memory_shell` で読み書きし、手で読んで直すこともできます。
+
+記憶に変更があったターンの終わりごとに、サーバーが 1 回コミットします。順序は、ターンが終わる → 変わったファイルを
+検査 → 当たったものを直前のコミットの状態に戻す（新しいファイルは消す）→ 残りをコミット、です。検査は `.md` 以外・
+symlink・空・`loop.memoryFileMaxChars`（既定 32000 文字）超過・テンプレートの制御文字列・制御文字・日本語以外の文字と、
+日中のターンでの `always.md`・`personality.md` の変更です。戻した理由は次のターンで natsumi に伝わります。
+削除と改名は検査しません。全部消しても履歴から戻せます。
+
+**サーバーは commit だけを行い、push も pull もしません。** リモートを設定するか、外へ出すかはオーナーが決めます。
+リポジトリには本人の私的なことがそのまま残るので、リモートを作るなら private にしてください。
+author と committer はサーバーが固定し、リポジトリに置かれた git の hook は実行しません。
 
 毎晩 `loop.nightlyRotationAt` に、natsumi はその日を振り返って記憶を整理し、引き継ぎのメモを持って新しい Pi session に切り替えます。
 古い session ファイルは消さずに残るので、Pi の session 領域は日ごとに増えます。日中に context が `loop.compactionThreshold` を超えると、
-イベントの合間に古い部分を要約します。`memory/`、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
+イベントの合間に古い部分を要約します。記憶のリポジトリ、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
 
 natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-self-checks-and-pings.md)）。
 `loop.awakeHours` の間、会話や処理のない時間が `loop.pingIntervalMinutes` 続くと、サーバーが「何かしたいことは？」の合図を送ります。
@@ -153,33 +174,26 @@ volume の代わりに既存のディレクトリを bind mount する場合は�
   （`NATSUMI_TLS_CERT`、`NATSUMI_TLS_KEY`、`NATSUMI_GITHUB_CLIENT_SECRET_FILE` で変更できます）。
   `secrets/` は Git の追跡対象外です。ファイルはホストの権限のままマウントされるため、UID 1000 だけが読めるようにしてください。
 
-### 記憶を shell で探すコンテナ（natsumi-tools）
+### 記憶を shell で読み書きするコンテナ（natsumi-tools）
 
-モデルは `run_memory_shell` で、記憶のファイルを `rg` などのコマンドで探せます。コマンドは natsumi の中ではなく、
-閉じ込めたコンテナ `natsumi-tools` の中で動きます（[ADR 0011](docs/adr/0011-memory-shell-in-a-confined-container.md)）。
+モデルは `run_memory_shell` で、記憶のファイルを読み書きします。コマンドは natsumi の中ではなく、
+閉じ込めたコンテナ `natsumi-tools` の中で動きます（[ADR 0011](docs/adr/0011-memory-shell-in-a-confined-container.md)、
+[ADR 0018](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)）。
 
-- 構成
-  - natsumi は、共有する小さな tmpfs の volume（`natsumi-tools-socket`）にある Unix ソケットで、`natsumi-tools` の実行役（runner）にコマンドを送ります。
-  - natsumi に Docker のソケットは渡しません。
+- コマンドは `docker/tools-commands.txt` の一覧（`sh cat find grep head ls rg sort tail uniq wc mkdir mv cp rm sed awk`）だけです。
+  ネットワーク、パッケージマネージャー、インタープリター、git は入っていません。
   - ツールは、設定の `loop.memoryShellSocket`（設定例では `/run/natsumi-tools/runner.sock`）があるときだけ使えます。
-- 入っているもの: `sh`、`cat`、`find`、`grep`、`head`、`ls`、`rg`、`sort`、`tail`、`uniq`、`wc` と runner だけです
-  （[docker/tools-commands.txt](docker/tools-commands.txt)）。ネットワークの道具、パッケージマネージャー、インタプリタ、git はありません。
-- 閉じ込め
-  - ネットワークはありません（`network_mode: none`）。
-  - `natsumi-data` の `memory/` だけを読み取り専用でマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
-  - ルートは読み取り専用で、書けるのは 16 MB の `/tmp` だけです。
-  - 非 root で動き、全 capability を外し、`no-new-privileges` を付けます。
-- 上限
-  - CPU 1、メモリ 256 MB、プロセス数 64
-  - 1 回のコマンドは 10 秒まで
-  - 出力は標準出力・標準エラー出力それぞれ 64 KiB まで（モデルに返すのは標準出力 8000 文字・標準エラー出力 2000 文字まで）
-  - 時間と出力の上限は、`compose.yaml` の `command` で変えられます。
+  - 1 コマンドは 8000 文字まで。時間（10 秒）と出力（64 KiB）にも上限があります。
+  - 記憶のリポジトリの作業ツリーは読み書きできます。その上に `.git` を読み取り専用で重ねてあるので、
+    作業ツリーは全部消せますが、履歴は壊せません。消されても履歴から戻せます。
+  - SQLite、Pi の状態領域、secrets、設定は見えません。
 - UID: 記憶のファイルは所有者だけが読めるので、`natsumi-tools` は natsumi と同じ UID で動かします（既定は 1000）。
   natsumi を別の UID で動かすときは、`NATSUMI_TOOLS_UID` に同じ値を入れます。
-- 起動の順番: natsumi が初回の起動で `memory/` を作るので、`natsumi-tools` は natsumi が healthy になってから起動します。
+- 起動の順番: natsumi が初回の起動で記憶のリポジトリ（`.git` を含む）を作るので、`natsumi-tools` は natsumi が healthy になってから起動します。
+- 記憶の置き場を変えたとき: `loop.memoryRepository` を変えたら、compose の `/memory` と `/memory/.git` のマウントもそこへ向けてください。
 - 閉じ込めの確認: [scripts/check-memory-shell-sandbox.sh](scripts/check-memory-shell-sandbox.sh) が、使い捨ての project で
-  2 つのコンテナを起動し、閉じ込め（ネットワーク、見えるファイル、書き込み、コマンドの一覧、プロセス数と時間の上限、非 root）を
-  runner 経由で確かめます。image 名を変える override を用意して、先に build してから実行します。
+  2 つのコンテナを起動し、閉じ込め（ネットワーク、見えるファイル、記憶が書けること、`.git` が書けないこと、コマンドの一覧、
+  プロセス数と時間の上限、非 root）を runner 経由で確かめます。image 名を変える override を用意して、先に build してから実行します。
   運用中の環境と同じ image 名で build すると、そのタグを上書きするので注意してください。
 
 ### 固定 IPv6 で公開する

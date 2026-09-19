@@ -44,6 +44,11 @@ CMD ["serve"]
 
 FROM node:24.12.0-bookworm-slim
 ENV NODE_ENV=production
+# git commits the memory repository (ADR 0018). It is the server's, never the model's: the memory shell runs in the
+# tools container above, which has no git.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
