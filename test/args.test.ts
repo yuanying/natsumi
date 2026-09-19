@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { COMPATIBLE_KEY_ENV } from '../src/pi-auth.ts';
-import { parseProbeArgs } from '../src/probe-args.ts';
+import { COMPATIBLE_KEY_ENV } from '../src/probe/auth.ts';
+import { parseProbeArgs } from '../src/probe/args.ts';
 
 const key = { [COMPATIBLE_KEY_ENV]: 'fixture-key' };
 

@@ -1,7 +1,7 @@
 import { access } from 'node:fs/promises';
 import { VERSION } from '@earendil-works/pi-coding-agent';
-import { parseProbeArgs } from './probe-args.ts';
-import { exerciseRestart, exerciseTool } from './probe-process.ts';
+import { parseProbeArgs } from './args.ts';
+import { exerciseRestart, exerciseTool } from './process.ts';
 
 const NOT_RUN = new Set(['missing-route', 'missing-auth', 'missing-key']);
 const report = { pi: VERSION, route: 'none', text: 'not-run', tool: 'not-run', voice: 'disabled-not-tested' };
@@ -15,7 +15,7 @@ try {
     try { await access(route.authPath); } catch { throw new Error('missing-auth'); }
   }
   if (VERSION !== '0.85.1') throw new Error('unsupported-version');
-  const worker = new URL('./pi-worker.ts', import.meta.url);
+  const worker = new URL('./worker.ts', import.meta.url);
   const json = JSON.stringify(route); // Contains no key: compatible keys stay in the environment.
   await exerciseRestart(worker, json);
   report.text = 'create-send-history-process-restart-resume-context-passed';

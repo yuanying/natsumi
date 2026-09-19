@@ -1,7 +1,7 @@
 import { InMemoryCredentialStore, type AssistantMessage, type Context } from '@earendil-works/pi-ai';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
 import { ModelRuntime, type AgentSession } from '@earendil-works/pi-coding-agent';
-import { SUBSCRIPTION_TARGET } from '../../src/pi-session.ts';
+import { SUBSCRIPTION_TARGET } from '../../src/probe/session.ts';
 
 const { provider: PROVIDER, model: MODEL } = SUBSCRIPTION_TARGET;
 
