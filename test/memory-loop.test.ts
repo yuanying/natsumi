@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,8 +44,15 @@ async function setup() {
   const sessions: AgentSession[] = [];
   const opened: ThinkingLoop[] = [];
   let counter = 0;
+  const memory = join(data, 'memory');
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', memory, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8' }).trim();
   const f = {
-    root, data, sessionDirectory, db, model, sessions,
+    root, data, memory, sessionDirectory, db, model, sessions, git,
+    commits: () => Number(git('rev-list', '--count', 'HEAD')),
+    /** Writes a memory file the way the model's shell would, in the middle of a turn. */
+    remember: (name: string, text: string) => writeFile(join(memory, name), text),
+    rememberSync: (name: string, text: string) => writeFileSync(join(memory, name), text),
     async open(options: Partial<LoopOptions> = {}) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
@@ -107,66 +116,128 @@ function behave(f: Awaited<ReturnType<typeof setup>>, handlers: {
   };
 }
 
-test('remember writes under memory/, recall reads it back, and memories never ride in the system prompt', async () => {
+test('the first start makes the memory repository, moves personality.md in and keeps the prompt', async () => {
   const f = await setup();
   try {
-    const { loop, events } = await f.open();
-    const first = f.send(loop, `合言葉は ${PASSPHRASE}。覚えておいて`);
+    await f.remember('合言葉.md', `# 合言葉\n\n- 2026-09-15: 合言葉は ${PASSPHRASE}\n`);
+    const { loop } = await f.open();
+    const sent = f.send(loop, 'こんにちは');
     const call1 = await f.model.next();
-    call1.call('remember', { topic: '合言葉', note: `合言葉は ${PASSPHRASE}` });
-    call1.finish();
-    const call2 = await f.model.next();
-    const [remembered] = toolResults(call2.context);
-    assert.equal(remembered!.isError, false);
-    assert.match(remembered!.text, /合言葉/);
-    call2.call('reply_to_mac', { event_id: first.eventId, text: '覚えました' });
-    call2.call('finish_event', { event_id: first.eventId });
-    call2.finish();
-    await completed(events, first.eventId);
-    assert.match(await readFile(join(f.data, 'memory', '合言葉.md'), 'utf8'), new RegExp(`^- \\d{4}-\\d{2}-\\d{2}: 合言葉は ${PASSPHRASE}$`, 'm'));
 
-    // A later question is answered from what recall returns.
-    await loop.close();
-    const again = await f.open();
-    const asked = f.send(again.loop, '合言葉は何だっけ');
-    const call3 = await f.model.next();
-    assert.equal(call3.context.systemPrompt?.includes(PASSPHRASE), false);
-    call3.call('recall', { query: '合言葉' });
-    call3.call('read_memory', { topic: '合言葉' });
-    call3.finish();
-    const call4 = await f.model.next();
-    const results = toolResults(call4.context);
-    assert.deepEqual(results.map(r => r.isError), [false, false]);
-    for (const result of results) assert.match(result.text, new RegExp(PASSPHRASE));
-    call4.call('reply_to_mac', { event_id: asked.eventId, text: PASSPHRASE });
-    call4.call('finish_event', { event_id: asked.eventId });
-    call4.finish();
-    await completed(again.events, asked.eventId);
-    for (const context of f.model.contexts) assert.equal((context.systemPrompt ?? '').includes(PASSPHRASE), false);
-    // What the owner sees is only the conversation; the memory tools stay inside.
-    assert.equal(JSON.stringify(again.loop.snapshot()).includes('remember'), false);
+    // The personality is in the prompt, and memory itself never is.
+    assert.match(call1.context.systemPrompt ?? '', /落ち着いた話し方/);
+    assert.equal((call1.context.systemPrompt ?? '').includes(PASSPHRASE), false);
+    call1.call('finish_event', { event_id: sent.eventId });
+    call1.finish();
+    await loop.idle();
+
+    assert.equal(f.git('symbolic-ref', '--short', 'HEAD'), 'main');
+    assert.equal(f.commits(), 1);
+    assert.deepEqual(f.git('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort(),
+      ['always.md', 'handoff.md', 'personality.md', '合言葉.md'].sort());
+    assert.deepEqual((await readdir(f.data)).sort(), ['memory']);
+    assert.match(await readFile(join(f.memory, '合言葉.md'), 'utf8'), new RegExp(PASSPHRASE));
   } finally { await f.cleanup(); }
 });
 
-test('the memory tools refuse path tricks and forget removes a memory', async () => {
+test('the memory tools are gone: reading and writing memory happens only in the shell', async () => {
   const f = await setup();
   try {
     const { loop, events } = await f.open();
-    const sent = f.send(loop, '整理して');
+    const sent = f.send(loop, '覚えておいて');
     const call1 = await f.model.next();
-    call1.call('remember', { topic: '../../escape', note: '外に出ない' });
-    call1.call('remember', { topic: '予定', note: '歯医者は金曜' });
-    call1.call('forget', { topic: '予定', text: '歯医者' });
-    call1.call('remember', { topic: '予定', note: '<tool_call>' });
+    for (const name of ['remember', 'recall', 'read_memory', 'forget']) call1.call(name, { topic: '合言葉', note: 'x', query: 'x', text: 'x' });
     call1.finish();
     const call2 = await f.model.next();
-    assert.deepEqual(toolResults(call2.context).map(r => r.isError), [false, false, false, true]);
+    const results = toolResults(call2.context);
+    assert.deepEqual(results.map(result => result.isError), [true, true, true, true]);
+    // The instructions point at the shell, never at a memory tool.
+    const prompt = call1.context.systemPrompt ?? '';
+    for (const name of ['remember', 'recall', 'read_memory', 'forget']) assert.equal(prompt.includes(name), false, name);
     call2.call('finish_event', { event_id: sent.eventId });
     call2.finish();
     await completed(events, sent.eventId);
-    // The topic lost its only memory, so its file is gone.
-    assert.deepEqual((await readdir(join(f.data, 'memory'))).sort(), ['escape.md']);
-    assert.deepEqual((await readdir(f.root)).filter(name => !name.startsWith('state.sqlite')).sort(), ['data', 'pi']);
+    assert.deepEqual((await readdir(f.memory)).filter(name => name !== '.git').sort(),
+      ['always.md', 'handoff.md', 'personality.md']);
+  } finally { await f.cleanup(); }
+});
+
+test('a turn that changed memory ends in one commit; a turn that changed nothing ends in none', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const base = f.commits();
+
+    const first = f.send(loop, `合言葉は ${PASSPHRASE}`);
+    const call1 = await f.model.next();
+    await f.remember('合言葉.md', `# 合言葉\n\n- 2026-09-19: ${PASSPHRASE}\n`);
+    call1.call('reply_to_mac', { event_id: first.eventId, text: '覚えました' });
+    call1.call('finish_event', { event_id: first.eventId });
+    call1.finish();
+    await completed(events, first.eventId);
+    assert.equal(f.commits(), base + 1);
+    assert.match(f.git('log', '-1', '--format=%s'), /^mac_message: .*合言葉\.md/);
+    assert.equal(f.git('status', '--porcelain'), '');
+
+    const second = f.send(loop, 'ありがとう');
+    const call2 = await f.model.next();
+    call2.call('finish_event', { event_id: second.eventId });
+    call2.finish();
+    await completed(events, second.eventId);
+    assert.equal(f.commits(), base + 1);
+  } finally { await f.cleanup(); }
+});
+
+test('a file the check catches goes back, and the reason reaches the next turn', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const first = f.send(loop, 'まとめて');
+    const call1 = await f.model.next();
+    await f.remember('予定.md', '# 予定\n\n- 2026-09-19: 歯医者は金曜\n');
+    await f.remember('めも.md', '# めも\n\n这个是简体字\n');
+    call1.call('finish_event', { event_id: first.eventId });
+    call1.finish();
+    await completed(events, first.eventId);
+
+    // The bad one is gone, the good one is committed.
+    assert.deepEqual((await readdir(f.memory)).filter(name => name !== '.git').sort(),
+      ['always.md', 'handoff.md', 'personality.md', '予定.md'].sort());
+    assert.equal(f.git('status', '--porcelain'), '');
+
+    const second = f.send(loop, 'どうだった');
+    const call2 = await f.model.next();
+    const told = lastUserText(call2.context);
+    assert.match(told, /めも\.md/);
+    assert.match(told, /日本語以外/);
+    call2.call('finish_event', { event_id: second.eventId });
+    call2.finish();
+    await completed(events, second.eventId);
+
+    // Told once, not again.
+    const third = f.send(loop, 'わかった');
+    const call3 = await f.model.next();
+    assert.doesNotMatch(lastUserText(call3.context), /めも\.md/);
+    call3.call('finish_event', { event_id: third.eventId });
+    call3.finish();
+    await completed(events, third.eventId);
+  } finally { await f.cleanup(); }
+});
+
+test('a turn stopped at the model-call limit still commits what memory holds', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open({ maxModelCalls: 1 });
+    const base = f.commits();
+    const sent = f.send(loop, '長い作業');
+    const call1 = await f.model.next();
+    await f.remember('途中.md', '# 途中\n\n- 2026-09-19: 書きかけ\n');
+    // No finish_event: the turn is cut at the model-call limit.
+    call1.call('set_mac_avatar_expression', { expression: 'thinking' });
+    call1.finish();
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'failed');
+    assert.equal(f.commits(), base + 1);
+    assert.match(await readFile(join(f.memory, '途中.md'), 'utf8'), /書きかけ/);
   } finally { await f.cleanup(); }
 });
 
@@ -178,8 +249,8 @@ test('the nightly switch reviews the day, starts a new session with the handoff,
     behave(f, {
       review: (event, context) => {
         reviewedWith = context;
+        f.rememberSync('一日の記録.md', `# 一日の記録\n\n- 2026-09-19: ${EARLIER} を覚えた\n`);
         return { calls: [
-          call('remember', { topic: '一日の記録', note: `${EARLIER} を覚えた` }),
           call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 明日は資料の続きを確認する` }),
           call('finish_event', { event_id: event.event_id }),
         ] };
@@ -207,7 +278,8 @@ test('the nightly switch reviews the day, starts a new session with the handoff,
     assert.equal(row.conversation_id, oldRow.conversation_id);
     assert.notEqual(row.pi_session_id, oldRow.pi_session_id);
     assert.notEqual(row.pi_session_file, oldFile);
-    assert.match(await readFile(join(f.data, 'memory', '一日の記録.md'), 'utf8'), new RegExp(EARLIER));
+    assert.match(await readFile(join(f.memory, '一日の記録.md'), 'utf8'), new RegExp(EARLIER));
+    assert.match(f.git('log', '-1', '--format=%s'), /^nightly_review: 一日の記録\.md$/);
     assert.deepEqual(loop.snapshot().messages, shown);
     // The owner saw natsumi sleeping, and nothing of the review.
     assert.ok(events.some(e => e.type === 'avatar.expression' && e.payload.expression === 'sleepy'));
@@ -230,6 +302,48 @@ test('the nightly switch reviews the day, starts a new session with the handoff,
     await completed(restarted.events, later.eventId);
     assert.match(next!.systemPrompt ?? '', new RegExp(HANDOFF));
     assert.deepEqual(await f.sessionFiles(), files);
+  } finally { await f.cleanup(); }
+});
+
+test('the first repository takes the handoff SQLite already held, and a night that lost a file says so in the new session', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    behave(f, {
+      review: event => {
+        // The night rewrites the always-memory, and puts a topic into a file that is not Markdown.
+        f.rememberSync('always.md', `# 常時記憶\n\n本人の呼び方は「あなた」\n`);
+        f.rememberSync('notes.txt', '# めも\n\n木曜に電話\n');
+        return { calls: [
+          call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 明日は資料の続き` }),
+          call('finish_event', { event_id: event.event_id }),
+        ] };
+      },
+    });
+    const day = f.send(loop, `今日の話: ${EARLIER}`);
+    await completed(events, day.eventId);
+    assert.equal((await loop.rotate()).result, 'switched');
+
+    // always.md is the night's, notes.txt never made it, and the new session is told why.
+    assert.match(await readFile(join(f.memory, 'always.md'), 'utf8'), /あなた/);
+    assert.equal((await readdir(f.memory)).includes('notes.txt'), false);
+    let next: Context | undefined;
+    behave(f, { owner: (event, context) => { next = context; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    const morning = f.send(loop, 'おはよう');
+    await completed(events, morning.eventId);
+    assert.match(next!.systemPrompt ?? '', /notes\.txt/);
+    assert.match(next!.systemPrompt ?? '', new RegExp(HANDOFF));
+    await loop.close();
+
+    // A repository that is not there yet is made from what the data directory and SQLite hold.
+    await rm(f.memory, { recursive: true, force: true });
+    await mkdir(f.memory, { recursive: true });
+    await f.remember('合言葉.md', `# 合言葉\n\n- 2026-09-15: ${PASSPHRASE}\n`);
+    const again = await f.open();
+    assert.equal(again.loop.unavailable, undefined);
+    assert.equal(f.commits(), 1);
+    assert.match(await readFile(join(f.memory, 'handoff.md'), 'utf8'), new RegExp(HANDOFF));
+    assert.match(await readFile(join(f.memory, '合言葉.md'), 'utf8'), new RegExp(PASSPHRASE));
   } finally { await f.cleanup(); }
 });
 

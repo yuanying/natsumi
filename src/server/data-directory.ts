@@ -1,4 +1,4 @@
-import { mkdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { findCodeCheckout } from './paths.ts';
 
@@ -7,11 +7,6 @@ export class DataDirectoryError extends Error {
 }
 
 export const STATE_DIRECTORY = '.natsumi';
-
-const PERSONALITY_TEMPLATE = `# 性格・話し方
-
-natsumi の性格と話し方をここに書きます。このファイルは初回起動時に一度だけ作成され、以後は上書きされません。
-`;
 
 /** `--data-dir` wins; otherwise the launch cwd. Resolved once to a real absolute path. */
 export async function resolveDataDirectory(flag: string | undefined, cwd: string): Promise<string> {
@@ -26,7 +21,10 @@ export async function resolveDataDirectory(flag: string | undefined, cwd: string
   return dir;
 }
 
-/** Creates the initial layout. Existing files and directories are never overwritten or re-permissioned. */
+/**
+ * Creates the initial layout. Existing files and directories are never overwritten or re-permissioned.
+ * `memory/` is only made here; what goes in it belongs to the memory repository (ADR 0018), personality.md included.
+ */
 export async function initializeDataDirectory(dir: string): Promise<void> {
   for (const name of ['memory', STATE_DIRECTORY]) {
     const path = join(dir, name);
@@ -34,8 +32,5 @@ export async function initializeDataDirectory(dir: string): Promise<void> {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       if (!(await stat(path)).isDirectory()) throw new DataDirectoryError(`${name} exists but is not a directory`);
     }
-  }
-  try { await writeFile(join(dir, 'personality.md'), PERSONALITY_TEMPLATE, { flag: 'wx', mode: 0o600 }); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
   }
 }

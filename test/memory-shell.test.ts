@@ -99,7 +99,7 @@ test('without a runner at the socket nothing runs, and the reason points back to
     const outcome = await new MemoryShell({ socketPath: join(root, 'missing.sock') }).run('ls');
     assert.equal(outcome.ok, false);
     assert.match(outcome.text, /接続できません/);
-    assert.match(outcome.text, /recall/);
+    assert.match(outcome.text, /記憶を読むことも書くこともできません/);
     assert.ok(Date.now() - started < 2000);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -169,7 +169,9 @@ test('the commands the tool describes are exactly the ones the tools image insta
   const listed = (await readFile(new URL('../docker/tools-commands.txt', import.meta.url), 'utf8'))
     .split('\n').map(line => line.trim()).filter(line => line !== '' && !line.startsWith('#'));
   assert.deepEqual([...listed].sort(), [...MEMORY_SHELL_COMMANDS].sort());
-  for (const forbidden of ['curl', 'wget', 'nc', 'python3', 'node', 'git', 'apt', 'sed', 'awk', 'rm']) {
+  // Memory is written with these now (ADR 0018); the history stays out of reach in the container's read-only .git.
+  for (const writing of ['mkdir', 'mv', 'cp', 'rm', 'sed', 'awk']) assert.equal(listed.includes(writing), true, writing);
+  for (const forbidden of ['curl', 'wget', 'nc', 'python3', 'node', 'git', 'apt']) {
     assert.equal(listed.includes(forbidden), false, forbidden);
   }
 });

@@ -1,9 +1,14 @@
 import { createConnection } from 'node:net';
 import type { ToolOutcome } from './loop-tools.ts';
 
-/** Every command the tools image installs (docker/tools-commands.txt). Nothing that reaches a network or runs code. */
-export const MEMORY_SHELL_COMMANDS = ['sh', 'cat', 'find', 'grep', 'head', 'ls', 'rg', 'sort', 'tail', 'uniq', 'wc'] as const;
-export const MAX_COMMAND_CHARS = 2000;
+/**
+ * Every command the tools image installs (docker/tools-commands.txt): reading, and the ones memory is written with
+ * (ADR 0018). Nothing that reaches a network, installs packages or runs an interpreter.
+ */
+export const MEMORY_SHELL_COMMANDS = ['sh', 'cat', 'find', 'grep', 'head', 'ls', 'rg', 'sort', 'tail', 'uniq', 'wc',
+  'mkdir', 'mv', 'cp', 'rm', 'sed', 'awk'] as const;
+/** One command's length. A file is rewritten in whole commands, so this is well above a single `>` redirection. */
+export const MAX_COMMAND_CHARS = 8000;
 /** The most stdout characters one result carries, whatever the runner sent. */
 export const SHELL_OUTPUT_CHARS = 8000;
 const STDERR_CHARS = 2000;
@@ -34,12 +39,12 @@ export interface MemoryShellOptions {
 }
 
 const RUNNER = '記憶の shell の実行役（runner）';
-const FALLBACK = 'recall と read_memory で探せます。';
+const FALLBACK = 'いまは記憶を読むことも書くこともできません。';
 
 /**
- * Runs a model's command in the tools container (ADR 0011) by asking its runner over a Unix socket. natsumi holds no
- * Docker socket: the runner is the only way in. The confinement is the container's; this side bounds the request,
- * the wait and the text that goes back to the model.
+ * Runs a model's command in the tools container (ADR 0011, ADR 0018) by asking its runner over a Unix socket.
+ * natsumi holds no Docker socket: the runner is the only way in. The confinement is the container's; this side
+ * bounds the request, the wait and the text that goes back to the model.
  */
 export class MemoryShell {
   private readonly options: MemoryShellOptions;

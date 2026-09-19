@@ -1,6 +1,7 @@
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
-import { MEMORY_SHELL_COMMANDS } from './memory-shell.ts';
+import { MAX_COMMAND_CHARS, MEMORY_SHELL_COMMANDS } from './memory-shell.ts';
+import { DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
 
 /** The avatar expressions the Mac can show. The model picks from these only. */
 export const EXPRESSIONS = ['neutral', 'happy', 'laughing', 'surprised', 'thinking', 'worried', 'sad', 'sleepy'] as const;
@@ -17,10 +18,6 @@ export interface LoopToolHost {
   notify(text: string, about: string[]): Outcome;
   finish(eventId: string): Outcome;
   setExpression(expression: Expression): Outcome;
-  remember(topic: string, note: string): Outcome;
-  recall(query: string): Outcome;
-  readMemory(topic: string): Outcome;
-  forget(topic: string, text: string): Outcome;
   writeHandoff(eventId: string, text: string): Outcome;
   scheduleSelfCheck(reason: string, when: { inMinutes?: number; at?: string }): Outcome;
   listSelfChecks(): Outcome;
@@ -30,12 +27,12 @@ export interface LoopToolHost {
 }
 
 /**
- * The allowlist given to Pi (ADR 0004, ADR 0008, ADR 0009, ADR 0014). Pi's own read/bash/edit/write stay disabled:
- * the memory tools reach only `memory/`, through names the server turns into paths.
+ * The allowlist given to Pi (ADR 0004, ADR 0008, ADR 0014, ADR 0018). Pi's own read/bash/edit/write stay disabled,
+ * and memory has no tool of its own: it is read and written only with the shell below.
  */
 export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'finish_event', 'set_mac_avatar_expression',
-  'remember', 'recall', 'read_memory', 'forget', 'write_handoff_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check'];
-/** Added to the allowlist with a runner: a shell confined to a read-only copy of `memory/` in its own container (ADR 0011). */
+  'write_handoff_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check'];
+/** Added to the allowlist with a runner: a shell confined to the memory repository in its own container (ADR 0011). */
 export const MEMORY_SHELL_TOOL_NAME = 'run_memory_shell';
 
 async function result(outcome: Outcome) {
@@ -49,12 +46,17 @@ export function createLoopTools(host: LoopToolHost) {
   const shell = host.runMemoryShell?.bind(host);
   return [
     ...(shell ? [defineTool({
-      name: MEMORY_SHELL_TOOL_NAME, label: 'Search memory with a shell',
-      description: '長期記憶のファイル（1 トピック 1 つの Markdown）を shell のコマンドで探す。recall で見つからないとき、'
-        + '正規表現・ファイルの一覧・件数で調べたいときに使う。コマンドは記憶のディレクトリを作業ディレクトリにして sh -c で動く。'
-        + `使えるコマンドは ${MEMORY_SHELL_COMMANDS.join('、')} だけ。記憶は読み取り専用で、ネットワークはない。`
-        + '記憶を書き換えるときは remember と forget を使う。時間と出力の大きさに上限があり、超えると打ち切られる。'
-        + '例: rg -n 鍵 / rg -l 誕生日 / ls / wc -l *.md',
+      name: MEMORY_SHELL_TOOL_NAME, label: 'Read and write memory with a shell',
+      description: '長期記憶を shell のコマンドで読み書きする。記憶の置き場を作業ディレクトリにして sh -c で 1 コマンドずつ動く。'
+        + `使えるコマンドは ${MEMORY_SHELL_COMMANDS.join('、')} だけ。ネットワークはない。`
+        + '読むとき: rg で探し、cat で読み、ls や find で見渡す。'
+        + '書くとき: sh のリダイレクト（> で書き直し、>> で追記）、sed -i で部分の書き換え、mkdir・mv・cp・rm でファイルとフォルダの整理ができる。'
+        + 'ファイルの名前、見出し、トピックの分け方、フォルダの作り方は自由。置けるのは .md のファイルとフォルダだけ。'
+        + 'always.md（常時記憶）と personality.md（性格・話し方）は、夜の振り返り（nightly_review）のターンでだけ書き換えられる。'
+        + 'ターンの終わりに、変えたファイルをサーバーが検査して git にコミットする。検査に当たったファイルは直前のコミットの状態に戻り'
+        + '（新しく作ったものは消え）、理由が次のターンで伝わる。ターンの途中ではコミットされない。'
+        + `1 コマンドは ${MAX_COMMAND_CHARS} 文字まで、1 ファイルは既定で ${DEFAULT_FILE_MAX_CHARS} 文字までで、時間と出力の大きさにも上限があり、超えると打ち切られる。`
+        + '例: rg -n 鍵 / cat 合言葉.md / ls / cat > 予定.md <<EOF ... EOF / sed -i "/古い行/d" 予定.md',
       parameters: Type.Object({ command: Type.String() }),
       execute: async (_id, params) => result(shell(params.command)),
     })] : []),
@@ -83,33 +85,6 @@ export function createLoopTools(host: LoopToolHost) {
       description: `本人の Mac のデスクトップにいるあなたのアバターの表情を変える。候補: ${EXPRESSIONS.join(', ')}。`,
       parameters: Type.Object({ expression: Type.Union(EXPRESSIONS.map(expression => Type.Literal(expression))) }),
       execute: async (_id, params) => result(host.setExpression(params.expression as Expression)),
-    }),
-    defineTool({
-      name: 'remember', label: 'Remember',
-      description: '長期記憶に 1 件書く。本人に「覚えておいて」と言われたこと、本人について今後も役立つこと、本人との約束を残す。'
-        + 'topic は「家族」「仕事の予定」のような短いトピック名で、同じトピックは 1 つのファイルにまとまる。note は 1 件の記憶を 1 文で書く。',
-      parameters: Type.Object({ topic: Type.String(), note: Type.String() }),
-      execute: async (_id, params) => result(host.remember(params.topic, params.note)),
-    }),
-    defineTool({
-      name: 'recall', label: 'Recall',
-      description: '長期記憶を言葉で探す。空白で区切った言葉のどれかを含む記憶の行と、トピックの一覧が返る。'
-        + '記憶はいつも見えているわけではないので、本人のことや以前の約束が関係しそうなときはまず探す。',
-      parameters: Type.Object({ query: Type.String() }),
-      execute: async (_id, params) => result(host.recall(params.query)),
-    }),
-    defineTool({
-      name: 'read_memory', label: 'Read a memory topic',
-      description: '長期記憶の 1 つのトピックを全部読む。topic には recall で分かったトピック名を入れる。',
-      parameters: Type.Object({ topic: Type.String() }),
-      execute: async (_id, params) => result(host.readMemory(params.topic)),
-    }),
-    defineTool({
-      name: 'forget', label: 'Forget',
-      description: '長期記憶のトピックから、text を含む記憶の行を消す。本人に忘れてと言われたときや、記憶が古くなったときに使う。'
-        + '直すときは、古い行を forget してから remember で書き直す。',
-      parameters: Type.Object({ topic: Type.String(), text: Type.String() }),
-      execute: async (_id, params) => result(host.forget(params.topic, params.text)),
     }),
     defineTool({
       name: 'write_handoff_note', label: 'Write the handoff note',
