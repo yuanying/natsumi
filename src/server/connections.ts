@@ -5,7 +5,6 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 import { DEFAULT_STREAM_BUFFER_SIZE, DeviceStreams, EventStream, PROTOCOL_VERSION } from './device-streams.ts';
 import type { VerifiedSession } from './sessions.ts';
-import type { ThinkingLoop } from './thinking-loop.ts';
 
 export { PROTOCOL_VERSION };
 export const WEBSOCKET_PATH = '/v1/ws';
@@ -30,13 +29,42 @@ interface Connection {
   stream?: EventStream;
 }
 
+/**
+ * The outcome of a command the hub only relays: the kind picks the answer's type, and whatever else the loop
+ * returns is published with it. The hub reads none of those fields, so it does not name them.
+ */
+type RelayedOutcome = { kind: 'accepted' | 'rejected' | 'unavailable'; code?: string };
+
+/**
+ * The loop as the hub uses it: the six things the client contract needs, and nothing about how a thought is had.
+ * Every command a client may send turns into one of these, so a change to the way natsumi thinks is not a change
+ * to this file. The scheduler looks at the loop through a narrow interface of its own for the same reason.
+ */
+export interface HubLoop {
+  /** The code clients are turned away with, or undefined while the loop is taking commands. */
+  readonly unavailable: string | undefined;
+  /** Everything the loop shows the owner, to be broadcast. Returns the way to stop listening. */
+  subscribe(listener: (event: { type: string; payload: Record<string, unknown>; ephemeral?: boolean }) => void): () => void;
+  /** Records an owner message and answers; the loop's own events follow the answer. */
+  send(input: { requestId: string; deviceId: string; text: string }):
+    | { kind: 'accepted'; messageId: string; eventId: string; state: string }
+    | { kind: 'rejected'; code: string }
+    | { kind: 'unavailable'; code: string };
+  /** Moves the read cursor for every device (ADR 0013). */
+  markRead(input: { throughMessageId: string; deviceId: string }): RelayedOutcome;
+  /** Records that the owner checked a notice. */
+  acknowledgeNotice(input: { notificationId: string; deviceId: string }): RelayedOutcome;
+  /** Everything a device needs to start over from; spread whole into `session.snapshot`. */
+  snapshot(): Record<string, unknown>;
+}
+
 export interface ConnectionHubOptions {
   publicOrigin: string;
   /** The live session presented by an upgrade request, or undefined. */
   authenticate: (request: IncomingMessage) => VerifiedSession | undefined;
   now: () => number;
   db: DatabaseSync;
-  loop: ThinkingLoop;
+  loop: HubLoop;
   /** Events kept per device stream for replay after a reconnect. */
   streamBufferSize?: number;
 }
