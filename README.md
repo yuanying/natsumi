@@ -4,7 +4,7 @@ Pi Coding Agent を使う個人アシスタント。現在はサーバー基盤�
 二重起動の拒否、状態 DB の migration、専用の Pi 状態領域、コンテナ）、GitHub ログインと短期セッション、
 HTTPS/WSS の待ち受けと v1 envelope の入口、Let's Encrypt（ACME HTTP-01）による証明書の自動取得、
 固定 IPv6 で公開するコンテナ構成、Pi SDK の隔離検証ハーネス、単一の思考ループによる Mac との会話
-（端末の登録と同期、表情、表示用の会話の記録）、Markdown の長期記憶と、夜の思考の記録の切り替えを提供しています。
+（端末の登録と同期、表情、表示用の会話の記録）、git で持つ Markdown の長期記憶と、夜の思考の記録の切り替えを提供しています。
 Mac アプリは土台（ログイン、会話の同期、デスクトップに常駐するキャラクター、その上の吹き出しと下の入力欄、履歴）ができています。
 Slack、通知・スケジューラー、承認の表示、Google/Wiki 連携は後続の実装です。
 
@@ -48,6 +48,8 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      （既定 30 分、`false` で合図を出さない）、自分で予約する確認の上限 `selfCheck`（最短の先 `minDelayMinutes` 既定 5 分、
      最も遠い先 `maxDelayDays` 既定 7 日、同時に待たせる件数 `maxPending` 既定 5 件、1 日の件数 `maxPerDay` 既定 20 件）、
      表情が neutral に戻るまでの時間 `expressionResetMinutes`（既定 3 分）。
+     記憶のリポジトリの場所 `memoryRepository`（絶対パス。既定は data directory の `memory/`）と、
+     記憶 1 ファイルの上限 `memoryFileMaxChars`（既定 32000 文字）。
 4. ビルドして起動します。
 
 ```sh
@@ -55,7 +57,7 @@ npm run build
 node dist/src/server/main.js serve --config config.local.json --data-dir <data directory>
 ```
 
-`--data-dir` を省略すると起動 cwd を data directory とします。初回起動で `memory/`、`personality.md`、
+`--data-dir` を省略すると起動 cwd を data directory とします。初回起動で `memory/`（記憶のリポジトリ）と
 `.natsumi/`（状態 DB・ロック・状態ファイル）を作ります。既存のファイルは上書きしません。
 同じ data directory で 2 つ目のサーバーを起動すると拒否します。異常終了後のロックは OS が解放するため、そのまま再起動できます。
 SIGTERM / SIGINT で停止します。
@@ -65,13 +67,38 @@ SIGTERM / SIGINT で停止します。
 `.natsumi/state.sqlite` に、思考の記録は Pi の session に保存されます。どちらも個人データとして一緒にバックアップしてください。
 Pi の session ファイルが消えた・壊れた場合は新しい session を作らず、会話を使えない状態で起動します。
 
-長期記憶は data directory の `memory/` に、トピックごとの Markdown ファイルとして書かれます
-（[ADR 0009](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)）。各ファイルは見出しと、日付付きの箇条書きの行でできていて、
-手で読んで直せます。`memory/` の直下に手で置いた `.md` ファイルも、natsumi が探す対象になります。
+長期記憶は 1 つの git リポジトリです（[ADR 0018](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)）。
+場所は `loop.memoryRepository`、既定は data directory の `memory/` で、初回起動でそこが git のリポジトリになります
+（ブランチは `main`）。すでにあった Markdown は、名前も中身も変えずに最初のコミットに入ります。
+記憶そのものは、これまでどおりトピックごとの Markdown ファイルで、見出しと日付付きの箇条書きの行でできています
+（[ADR 0009](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)）。natsumi は記憶のツールで書き足し、
+`run_memory_shell` で探します。手で読んで直すこともできますし、直下に手で置いた `.md` ファイルも natsumi が探す対象になります。
+
+サーバーが名前と置き場所を決めるのは、リポジトリ直下の 3 つだけです。
+
+| ファイル | 中身 |
+| --- | --- |
+| `always.md` | 常時記憶。夜のターンでだけ書き換えられます（毎回のプロンプトに入れるのは後続の実装） |
+| `personality.md` | 性格・話し方。session を作るときにプロンプトに入ります。夜のターンでだけ書き換えられます |
+| `handoff.md` | 夜の引き継ぎ。初回起動で、そのときの最新の引き継ぎを写します（引き継ぎ自体を SQLite からこのファイルへ移すのは後続の実装） |
+
+記憶に変更があったターンの終わりごとに、サーバーが 1 回コミットします。順序は、ターンが終わる → 変わったファイルを
+検査 → 当たったものを直前のコミットの状態に戻す（新しいファイルは消す）→ 残りをコミット、です。ターンがモデル呼び出しの
+上限や時間切れで終わったときも同じように検査してコミットします。検査は `.md` 以外・symlink・空・
+`loop.memoryFileMaxChars`（既定 32000 文字）超過・テンプレートの制御文字列・制御文字・日本語以外の文字と、
+日中のターンでの `always.md`・`personality.md` の変更です。戻した理由は次のターンで natsumi に伝わります。
+
+natsumi が作ったファイルは、削除も改名も検査しません。全部消しても履歴から戻せます。上の 3 つだけは別で、
+消すことも改名することもできません（戻したうえで理由を伝えます）。サーバーはこの 3 つが直下にある前提で動くので、
+黙って消えるとその前提が崩れます。
+
+**サーバーは commit だけを行い、push も pull もしません。** リモートを設定するか、外へ出すかはオーナーが決めます。
+リポジトリには本人の私的なことがそのまま残るので、リモートを作るなら private にしてください。
+author と committer はサーバーが固定し、リポジトリに置かれた git の hook は実行しません。
 
 毎晩 `loop.nightlyRotationAt` に、natsumi はその日を振り返って記憶を整理し、引き継ぎのメモを持って新しい Pi session に切り替えます。
 古い session ファイルは消さずに残るので、Pi の session 領域は日ごとに増えます。日中に context が `loop.compactionThreshold` を超えると、
-イベントの合間に古い部分を要約します。`memory/`、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
+イベントの合間に古い部分を要約します。記憶のリポジトリ、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
 
 natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-self-checks-and-pings.md)）。
 `loop.awakeHours` の間、会話や処理のない時間が `loop.pingIntervalMinutes` 続くと、サーバーが「何かしたいことは？」の合図を送ります。

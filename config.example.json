@@ -28,6 +28,7 @@
     "pingIntervalMinutes": 30,
     "selfCheck": { "minDelayMinutes": 5, "maxDelayDays": 7, "maxPending": 5, "maxPerDay": 20 },
     "expressionResetMinutes": 3,
-    "memoryShellSocket": "/run/natsumi-tools/runner.sock"
+    "memoryShellSocket": "/run/natsumi-tools/runner.sock",
+    "memoryFileMaxChars": 32000
   }
 }
