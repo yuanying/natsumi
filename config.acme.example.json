@@ -25,6 +25,6 @@
     "allowedUserId": 12345678
   },
   "loop": {
-    "memoryShellSocket": "/run/natsumi-tools/runner.sock"
+    "workspaceSocket": "/run/natsumi-workspace/runner.sock"
   }
 }

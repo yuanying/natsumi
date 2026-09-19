@@ -300,3 +300,38 @@ test('the note handed to the next turn names every reverted file with its reason
   assert.match(notice, /戻しました/);
   assert.equal(revertNotice([]), '');
 });
+
+// `/work` and `/home/natsumi` are never inspected, so a memory written by mistake leaves no trace. This line is the
+// only hint natsumi gets that memory itself moved, and it rides on every shell command (ADR 0019).
+test('the line about what changed in memory names the files and how they changed', async () => {
+  const f = await setup();
+  try {
+    await f.write('合言葉.md', `# 合言葉\n\n- 2026-09-15: ${PASSPHRASE}\n`);
+    await f.repository.initialize();
+    assert.equal(await f.repository.changeSummary(), '', 'a clean repository has nothing to say');
+
+    await f.write('合言葉.md', `# 合言葉\n\n- 2026-09-16: ${PASSPHRASE}\n`);
+    await f.write('予定.md', '# 予定\n\n- 2026-09-16: 歯医者は金曜\n');
+    await rm(join(f.directory, ALWAYS_FILE));
+    const summary = await f.repository.changeSummary();
+    assert.match(summary, /合言葉\.md（変更）/);
+    assert.match(summary, /予定\.md（追加）/);
+    assert.match(summary, new RegExp(`${ALWAYS_FILE}（削除）`));
+    assert.equal(summary.includes('\n'), false, 'it is one line at the end of a tool result');
+
+    // Committing them leaves nothing to report again.
+    await f.repository.commit({ event: 'mac_message', night: true });
+    assert.equal(await f.repository.changeSummary(), '');
+  } finally { await f.cleanup(); }
+});
+
+test('a long list of changes is shortened rather than filling the result', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize();
+    for (let i = 0; i < 9; i++) await f.write(`話題${i}.md`, `# 話題${i}\n\n- 2026-09-16: ${PASSPHRASE}\n`);
+    const summary = await f.repository.changeSummary();
+    assert.match(summary, /ほか 4 件/);
+    assert.ok([...summary].length < 200, summary);
+  } finally { await f.cleanup(); }
+});

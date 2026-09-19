@@ -1,6 +1,5 @@
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
-import { MEMORY_SHELL_COMMANDS } from './memory-shell.ts';
 
 /** The avatar expressions the Mac can show. The model picks from these only. */
 export const EXPRESSIONS = ['neutral', 'happy', 'laughing', 'surprised', 'thinking', 'worried', 'sad', 'sleepy'] as const;
@@ -17,26 +16,45 @@ export interface LoopToolHost {
   notify(text: string, about: string[]): Outcome;
   finish(eventId: string): Outcome;
   setExpression(expression: Expression): Outcome;
-  remember(topic: string, note: string): Outcome;
-  recall(query: string): Outcome;
-  readMemory(topic: string): Outcome;
-  forget(topic: string, text: string): Outcome;
   writeHandoff(eventId: string, text: string): Outcome;
   scheduleSelfCheck(reason: string, when: { inMinutes?: number; at?: string }): Outcome;
   listSelfChecks(): Outcome;
   cancelSelfCheck(checkId: string): Outcome;
-  /** Present only when the tools container's runner is configured (ADR 0011). */
-  runMemoryShell?(command: string): Outcome;
+  /** Present only when the workspace container's runner is configured (ADR 0019). */
+  runShell?(command: string): Outcome;
 }
 
 /**
  * The allowlist given to Pi (ADR 0004, ADR 0008, ADR 0009, ADR 0014). Pi's own read/bash/edit/write stay disabled:
- * the memory tools reach only `memory/`, through names the server turns into paths.
+ * the only shell is `run_shell`, and it runs in the workspace container, never here.
  */
 export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'finish_event', 'set_mac_avatar_expression',
-  'remember', 'recall', 'read_memory', 'forget', 'write_handoff_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check'];
-/** Added to the allowlist with a runner: a shell confined to a read-only copy of `memory/` in its own container (ADR 0011). */
-export const MEMORY_SHELL_TOOL_NAME = 'run_memory_shell';
+  'write_handoff_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check'];
+/** Added to the allowlist with a runner: the whole of natsumi's workspace, memory included (ADR 0019). */
+export const RUN_SHELL_TOOL_NAME = 'run_shell';
+
+/**
+ * One fixed string, and the reason it is one: the backend prefills slowly, so the tool definitions have to sit on the
+ * prefix cache for the life of a session (ADR 0019). Nothing here is built from a setting or from what the image
+ * holds, because either would move the prefix whenever a deployment changed. The one number written out is the
+ * command length, which is a decision rather than a deployment's choice, and which the server refuses before the
+ * command is sent: a command that is too long would otherwise cost a whole turn. Every limit that an environment can
+ * change is named without its number, and the number arrives in the result when she meets it.
+ */
+export const RUN_SHELL_DESCRIPTION = 'あなたの作業環境でコマンドを動かす。ネットワークの無い Debian の環境で、コマンドは bash -c で動く。'
+  + '作業ディレクトリは /work。\n'
+  + '書ける場所:\n'
+  + '- /memory: 記憶。残る。ターンの終わりにサーバーが検査してコミットする。覚えておきたいことはここに書く。\n'
+  + '- /work: 手を動かす場所。残るが、検査もコミットもされない。中間ファイル、下書き、集計の途中、自分で書くスクリプトはここ。\n'
+  + '- /home/natsumi: あなたのホーム。残る。shell の履歴や自分で用意した道具を置ける。検査もコミットもされない。\n'
+  + '- /tmp: 一時。コンテナが再起動すると消える。\n'
+  + '記憶として残したいものは必ず /memory に書く。/work と /home/natsumi は本人からも見えず、git の履歴にも残らない。\n'
+  + '/memory の .git は読み取り専用。git log や git diff で「いつこう書いたか」を読めるが、コミットするのはサーバー。\n'
+  + '長い処理はそのまま残せる。応答の上限までに終わらなければ、そこまでの出力と「まだ動いている」印が返り、'
+  + 'プロセスは止まらずに動き続ける。その後の出力は読み捨てられるので、残したいときは /work のファイルへリダイレクトする。'
+  + '残ったプロセスは ps で見て、要らなくなったら kill する。\n'
+  + 'コマンドの長さは 8000 文字まで。超えると実行されずに返るので、長いものは /work にファイルとして書いて bash で動かす。\n'
+  + '時間と出力の大きさにも上限がある。当たったときは結果の文で知らせる。';
 
 async function result(outcome: Outcome) {
   const settled = await outcome;
@@ -46,15 +64,11 @@ async function result(outcome: Outcome) {
 }
 
 export function createLoopTools(host: LoopToolHost) {
-  const shell = host.runMemoryShell?.bind(host);
+  const shell = host.runShell?.bind(host);
   return [
     ...(shell ? [defineTool({
-      name: MEMORY_SHELL_TOOL_NAME, label: 'Search memory with a shell',
-      description: '長期記憶のファイル（1 トピック 1 つの Markdown）を shell のコマンドで探す。recall で見つからないとき、'
-        + '正規表現・ファイルの一覧・件数で調べたいときに使う。コマンドは記憶のディレクトリを作業ディレクトリにして sh -c で動く。'
-        + `使えるコマンドは ${MEMORY_SHELL_COMMANDS.join('、')} だけ。記憶は読み取り専用で、ネットワークはない。`
-        + '記憶を書き換えるときは remember と forget を使う。時間と出力の大きさに上限があり、超えると打ち切られる。'
-        + '例: rg -n 鍵 / rg -l 誕生日 / ls / wc -l *.md',
+      name: RUN_SHELL_TOOL_NAME, label: 'Work in the workspace',
+      description: RUN_SHELL_DESCRIPTION,
       parameters: Type.Object({ command: Type.String() }),
       execute: async (_id, params) => result(shell(params.command)),
     })] : []),
@@ -83,33 +97,6 @@ export function createLoopTools(host: LoopToolHost) {
       description: `本人の Mac のデスクトップにいるあなたのアバターの表情を変える。候補: ${EXPRESSIONS.join(', ')}。`,
       parameters: Type.Object({ expression: Type.Union(EXPRESSIONS.map(expression => Type.Literal(expression))) }),
       execute: async (_id, params) => result(host.setExpression(params.expression as Expression)),
-    }),
-    defineTool({
-      name: 'remember', label: 'Remember',
-      description: '長期記憶に 1 件書く。本人に「覚えておいて」と言われたこと、本人について今後も役立つこと、本人との約束を残す。'
-        + 'topic は「家族」「仕事の予定」のような短いトピック名で、同じトピックは 1 つのファイルにまとまる。note は 1 件の記憶を 1 文で書く。',
-      parameters: Type.Object({ topic: Type.String(), note: Type.String() }),
-      execute: async (_id, params) => result(host.remember(params.topic, params.note)),
-    }),
-    defineTool({
-      name: 'recall', label: 'Recall',
-      description: '長期記憶を言葉で探す。空白で区切った言葉のどれかを含む記憶の行と、トピックの一覧が返る。'
-        + '記憶はいつも見えているわけではないので、本人のことや以前の約束が関係しそうなときはまず探す。',
-      parameters: Type.Object({ query: Type.String() }),
-      execute: async (_id, params) => result(host.recall(params.query)),
-    }),
-    defineTool({
-      name: 'read_memory', label: 'Read a memory topic',
-      description: '長期記憶の 1 つのトピックを全部読む。topic には recall で分かったトピック名を入れる。',
-      parameters: Type.Object({ topic: Type.String() }),
-      execute: async (_id, params) => result(host.readMemory(params.topic)),
-    }),
-    defineTool({
-      name: 'forget', label: 'Forget',
-      description: '長期記憶のトピックから、text を含む記憶の行を消す。本人に忘れてと言われたときや、記憶が古くなったときに使う。'
-        + '直すときは、古い行を forget してから remember で書き直す。',
-      parameters: Type.Object({ topic: Type.String(), text: Type.String() }),
-      execute: async (_id, params) => result(host.forget(params.topic, params.text)),
     }),
     defineTool({
       name: 'write_handoff_note', label: 'Write the handoff note',

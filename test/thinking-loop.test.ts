@@ -638,7 +638,7 @@ test('a line longer than the limit keeps its newest end, and the owner never see
     assert.ok(line.endsWith('おわり'));
 
     clock += THINKING_MIN_INTERVAL_MS;
-    reply.call('recall', { query: 'SYNTHETIC-TOOL-ARGUMENT-8841' });
+    reply.call('schedule_self_check', { reason: 'SYNTHETIC-TOOL-ARGUMENT-8841' });
     reply.finish();
     const second = await f.model.next();
     second.call('finish_event', { event_id: sent.eventId });
@@ -659,7 +659,7 @@ test('the last line stays across model calls in one turn and is cleared when the
     const first = await f.model.next();
     first.think('記憶を確かめよう');
     await until(() => thinkingLines(events).length >= 1);
-    first.call('recall', { query: '買い物' });
+    first.call('list_self_checks', {});
     first.finish();
 
     const second = await f.model.next();

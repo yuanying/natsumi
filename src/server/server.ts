@@ -124,7 +124,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
       configureSession: options.pi?.configureSession, maxModelCalls: options.pi?.maxModelCalls,
       runTimeoutMs: options.pi?.runTimeoutMs, now, log, timeZone: config.loop.timeZone,
-      compactAtTokens: config.loop.compactionThreshold, keepRecentTokens: config.loop.compactionKeepRecent, memoryShellSocket: config.loop.memoryShellSocket,
+      compactAtTokens: config.loop.compactionThreshold, keepRecentTokens: config.loop.compactionKeepRecent,
+      workspaceSocket: config.loop.workspaceSocket, shellWaitSeconds: config.loop.shellWaitSeconds,
+      workspaceSizeWarnBytes: config.loop.workspaceSizeWarnBytes,
       memoryRepository: config.loop.memoryRepository, memoryFileMaxChars: config.loop.memoryFileMaxChars,
       awakeHours: config.loop.awakeHours, selfCheckLimits: config.loop.selfCheck,
     });

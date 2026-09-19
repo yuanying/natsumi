@@ -1,14 +1,17 @@
-// Package main is the runner inside the natsumi tools container (ADR 0011).
+// Package main is the runner inside the natsumi workspace container (ADR 0011, ADR 0019).
 //
-// It listens on a Unix socket that natsumi reaches through a shared volume, runs each command with `sh -c` in the
-// read-only memory directory, and answers with the exit code, stdout and stderr, cut at a time limit and an output
-// limit. The container itself provides the confinement: no network, no secrets, only the memory directory, read-only.
+// It listens on a Unix socket that natsumi reaches through a shared volume, runs each command with `bash -c` in the
+// work directory, and answers with the exit code and the output so far. The confinement is the container's: no
+// network, no secrets, and only the four writable places ADR 0019 lists.
+//
+// A command is never stopped. The response limit is the line at which the runner answers, not the line at which the
+// command dies (ADR 0019): past it the answer says the command is still running, the process is left alone, and its
+// output goes on being read and thrown away so the pipe cannot fill and block it.
 package main
 
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,25 +20,39 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
-// MaxRequestBytes bounds one request line.
-const MaxRequestBytes = 16 << 10
+// MaxRequestBytes bounds one request line. 8000 characters of Japanese is 24 KiB in UTF-8, and up to 48 KiB once
+// JSON escaping has had its worst; 64 KiB holds that with room for the rest of the line (ADR 0019).
+const MaxRequestBytes = 64 << 10
 
-// Limits are fixed when the runner starts; a request cannot change them.
+// After the shell exits, how long the runner waits for what is still in the pipes before it answers.
+const flushDelay = 200 * time.Millisecond
+
+// Bytes read from a command that has already been answered for, and thrown away, per read.
+const drainBuffer = 32 << 10
+
+// Limits are fixed when the runner starts; a request cannot change them. Only the time zone may come with a request,
+// because it belongs to natsumi's configuration rather than to the confinement.
 type Limits struct {
 	Shell     string
 	Path      string
 	Dir       string
-	Timeout   time.Duration
+	Home      string
+	Lang      string
+	TimeZone  string
+	Response  time.Duration
 	MaxOutput int
 }
 
-// Result is the answer to a command that was run. ExitCode is nil when a signal stopped the shell.
+// Result is the answer to a command. ExitCode and Signal are empty while StillRunning is true: the command has not
+// ended yet, so it has neither.
 type Result struct {
 	ExitCode        *int   `json:"exitCode"`
 	Signal          string `json:"signal,omitempty"`
@@ -43,22 +60,37 @@ type Result struct {
 	Stderr          string `json:"stderr"`
 	StdoutTruncated bool   `json:"stdoutTruncated"`
 	StderrTruncated bool   `json:"stderrTruncated"`
-	TimedOut        bool   `json:"timedOut"`
-	TimeoutMs       int64  `json:"timeoutMs"`
+	// The response limit was reached and the command was left running.
+	StillRunning bool `json:"stillRunning"`
+	// The response limit in milliseconds, so the answer can say how long it waited.
+	ResponseLimitMs int64 `json:"responseLimitMs"`
+	// Commands this runner started that are still alive, this one included while it is.
+	Running int `json:"running"`
 }
 
 type refusal struct {
 	Error string `json:"error"`
 }
 
-// capped keeps the first max bytes written and remembers whether more came.
+// A time zone name, kept to what tzdata can hold so nothing odd reaches the environment of a command.
+var timeZoneName = regexp.MustCompile(`^[A-Za-z0-9_+\-/]{1,64}$`)
+
+// capped keeps the first max bytes written and remembers whether more came. Once frozen it keeps nothing: the
+// command has been answered for, and what it writes from then on is read only to keep its pipe moving.
 type capped struct {
+	mu        sync.Mutex
 	buffer    bytes.Buffer
 	max       int
 	truncated bool
+	frozen    bool
 }
 
 func (c *capped) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.frozen {
+		return len(p), nil
+	}
 	room := c.max - c.buffer.Len()
 	switch {
 	case room >= len(p):
@@ -72,46 +104,160 @@ func (c *capped) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Run runs one command in its own process group. At the time limit the whole group is killed; after the shell
-// exits, anything it left in the background is killed too, so no command outlives its answer.
-func Run(command string, limits Limits) Result {
-	ctx, cancel := context.WithTimeout(context.Background(), limits.Timeout)
-	defer cancel()
+// take freezes the buffer and returns what it holds, as valid UTF-8.
+func (c *capped) take() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.frozen = true
+	return strings.ToValidUTF8(c.buffer.String(), "�"), c.truncated
+}
+
+// Server answers one JSON request line per connection and waits on one command at a time. Commands it has already
+// answered for go on running outside the lock.
+type Server struct {
+	Limits Limits
+	mu     sync.Mutex
+	live   atomic.Int64
+}
+
+// A command still counted as running. Released once its shell has exited and its output has reached its end, so a
+// shell that left something behind keeps counting for as long as that something holds the output open.
+type liveCommand struct {
+	server *Server
+	once   sync.Once
+}
+
+func (l *liveCommand) release() {
+	l.once.Do(func() { l.server.live.Add(-1) })
+}
+
+// Run runs one command in its own process group and answers when it ends or when the response limit is reached,
+// whichever comes first. Nothing is killed either way.
+func (s *Server) Run(command string, timeZone string) Result {
+	limits := s.Limits
+	if timeZoneName.MatchString(timeZone) {
+		limits.TimeZone = timeZone
+	}
+	result := Result{ResponseLimitMs: limits.Response.Milliseconds()}
+
+	outRead, outWrite, err := os.Pipe()
+	if err != nil {
+		return s.unstarted(result, "the runner could not open a pipe\n")
+	}
+	errRead, errWrite, err := os.Pipe()
+	if err != nil {
+		closeAll(outRead, outWrite)
+		return s.unstarted(result, "the runner could not open a pipe\n")
+	}
+
+	cmd := exec.Command(limits.Shell, "-c", command)
+	cmd.Dir = limits.Dir
+	// Nothing from the runner's own environment reaches the command; os/exec adds PWD from Dir (ADR 0019).
+	cmd.Env = environment(limits)
+	cmd.Stdin = nil
+	cmd.Stdout = outWrite
+	cmd.Stderr = errWrite
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		closeAll(outRead, outWrite, errRead, errWrite)
+		return s.unstarted(result, "the shell could not be started\n")
+	}
+	// The runner holds no write end of its own, so the pipes end when the command and everything it left have let go.
+	closeAll(outWrite, errWrite)
+
 	stdout := &capped{max: limits.MaxOutput}
 	stderr := &capped{max: limits.MaxOutput}
-	cmd := exec.CommandContext(ctx, limits.Shell, "-c", command)
-	cmd.Dir = limits.Dir
-	// Nothing from the runner's own environment reaches the command.
-	cmd.Env = []string{"PATH=" + limits.Path}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	// A background child holding the output open must not keep the answer waiting.
-	cmd.WaitDelay = 200 * time.Millisecond
+	var drains sync.WaitGroup
+	drains.Add(2)
+	go drain(outRead, stdout, &drains)
+	go drain(errRead, stderr, &drains)
 
-	result := Result{TimeoutMs: limits.Timeout.Milliseconds()}
-	if err := cmd.Start(); err != nil {
-		code := 127
-		result.ExitCode = &code
-		result.Stderr = "the shell could not be started\n"
-		return result
+	s.live.Add(1)
+	entry := &liveCommand{server: s}
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+	ended := make(chan struct{})
+	go func() { drains.Wait(); close(ended) }()
+	// Whatever happens above, the command stops counting once it is over and its output has run out.
+	go func() {
+		<-exited
+		<-ended
+		closeAll(outRead, errRead)
+		entry.release()
+	}()
+
+	timer := time.NewTimer(limits.Response)
+	defer timer.Stop()
+	finished := false
+	select {
+	case <-exited:
+		finished = true
+	case <-timer.C:
 	}
-	_ = cmd.Wait()
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if finished {
+		// What the shell wrote just before it exited is still in the pipe; anything it left behind holds them open.
+		select {
+		case <-ended:
+			entry.release()
+		case <-time.After(flushDelay):
+		}
+	}
 
-	result.TimedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
-	if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-		result.Signal = status.Signal().String()
+	result.Stdout, result.StdoutTruncated = stdout.take()
+	result.Stderr, result.StderrTruncated = stderr.take()
+	if finished {
+		if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			result.Signal = status.Signal().String()
+		} else {
+			code := cmd.ProcessState.ExitCode()
+			result.ExitCode = &code
+		}
 	} else {
-		code := cmd.ProcessState.ExitCode()
-		result.ExitCode = &code
+		result.StillRunning = true
 	}
-	result.Stdout = strings.ToValidUTF8(stdout.buffer.String(), "�")
-	result.Stderr = strings.ToValidUTF8(stderr.buffer.String(), "�")
-	result.StdoutTruncated = stdout.truncated
-	result.StderrTruncated = stderr.truncated
+	result.Running = int(s.live.Load())
 	return result
+}
+
+func (s *Server) unstarted(result Result, reason string) Result {
+	code := 127
+	result.ExitCode = &code
+	result.Stderr = reason
+	result.Running = int(s.live.Load())
+	return result
+}
+
+// environment is the whole environment of a command: PATH, HOME, LANG and TZ here, and PWD from os/exec (ADR 0019).
+func environment(limits Limits) []string {
+	env := []string{"PATH=" + limits.Path}
+	for name, value := range map[string]string{"HOME": limits.Home, "LANG": limits.Lang, "TZ": limits.TimeZone} {
+		if value != "" {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
+}
+
+// drain reads until the writers are gone. What arrives after the answer is thrown away by the frozen buffer, but it
+// must still be read: an unread pipe fills and blocks the command that ADR 0019 promised to leave running.
+func drain(file *os.File, into *capped, done *sync.WaitGroup) {
+	defer done.Done()
+	buffer := make([]byte, drainBuffer)
+	for {
+		read, err := file.Read(buffer)
+		if read > 0 {
+			_, _ = into.Write(buffer[:read])
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func closeAll(files ...*os.File) {
+	for _, file := range files {
+		_ = file.Close()
+	}
 }
 
 // Listen takes over the socket path, then makes the socket connectable by its peer and its directory read-only, so a
@@ -144,12 +290,6 @@ func Listen(path string) (net.Listener, error) {
 	return listener, nil
 }
 
-// Server answers one JSON request line per connection and runs one command at a time.
-type Server struct {
-	Limits Limits
-	mu     sync.Mutex
-}
-
 func (s *Server) Serve(listener net.Listener) error {
 	for {
 		conn, err := listener.Accept()
@@ -169,7 +309,8 @@ func (s *Server) handle(conn net.Conn) {
 	line, _ := bufio.NewReader(io.LimitReader(conn, MaxRequestBytes+1)).ReadBytes('\n')
 	var answer any
 	var request struct {
-		Command string `json:"command"`
+		Command  string `json:"command"`
+		TimeZone string `json:"timeZone"`
 	}
 	switch {
 	case len(line) > MaxRequestBytes:
@@ -182,10 +323,11 @@ func (s *Server) handle(conn net.Conn) {
 		answer = refusal{Error: "command is empty"}
 	default:
 		s.mu.Lock()
-		answer = Run(request.Command, s.Limits)
+		answer = s.Run(request.Command, request.TimeZone)
 		s.mu.Unlock()
 	}
 	encoded, _ := json.Marshal(answer)
+	// A command that ran to the response limit has already taken its time; the write itself is what is bounded here.
 	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, _ = conn.Write(append(encoded, '\n'))
 }

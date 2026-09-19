@@ -46,6 +46,8 @@ const HANDOFF_TEMPLATE = `# 引き継ぎ
 const MAX_SUBJECT_CHARS = 120;
 /** File names a machine-made commit subject lists before it says how many more there are. */
 const SUBJECT_FILES = 5;
+/** File names the line about what changed lists before it says how many more there are (ADR 0019). */
+const SUMMARY_FILES = 5;
 
 export interface MemoryRepositoryOptions {
   /** The repository: `loop.memoryRepository`, by default `memory/` in the data directory. */
@@ -67,7 +69,11 @@ export interface CommitOutcome {
   reverted: RevertedFile[];
 }
 
-interface StatusEntry { path: string; deleted: boolean }
+type Change = 'added' | 'modified' | 'deleted';
+
+interface StatusEntry { path: string; deleted: boolean; change: Change }
+
+const CHANGE_WORDS: Record<Change, string> = { added: '追加', modified: '変更', deleted: '削除' };
 
 export class MemoryRepository {
   readonly directory: string;
@@ -120,6 +126,20 @@ export class MemoryRepository {
     return { committed: true, files, reverted };
   }
 
+  /**
+   * What memory holds that the last commit does not, as one line, or an empty string when nothing differs. It rides
+   * on the result of every shell command: the working places are never inspected, so without this natsumi could
+   * write a memory into `/work` and have nothing tell her it was not kept (ADR 0019).
+   */
+  async changeSummary(): Promise<string> {
+    let entries: StatusEntry[];
+    try { entries = await this.status(); } catch { return ''; }
+    if (entries.length === 0) return '';
+    const shown = entries.slice(0, SUMMARY_FILES).map(entry => `${entry.path}（${CHANGE_WORDS[entry.change]}）`);
+    const more = entries.length > SUMMARY_FILES ? [`ほか ${entries.length - SUMMARY_FILES} 件`] : [];
+    return [...shown, ...more].join('、').replace(/\s+/g, ' ');
+  }
+
   /** True when the directory is a repository of its own, rather than a directory inside somebody else's. */
   private async isRepository(): Promise<boolean> {
     try { await lstat(join(this.directory, '.git')); return true; } catch { return false; }
@@ -170,10 +190,15 @@ export class MemoryRepository {
   /** What differs from the last commit, one entry per path. Renames come back as a removal and an addition. */
   private async status(): Promise<StatusEntry[]> {
     const { stdout } = await runGit(this.directory, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames']);
-    return stdout.split('\0').filter(entry => entry.length > 3).map(entry => ({
-      path: entry.slice(3),
-      deleted: entry[0] === 'D' || entry[1] === 'D',
-    }));
+    return stdout.split('\0').filter(entry => entry.length > 3).map(entry => {
+      const code = entry.slice(0, 2);
+      const deleted = code[0] === 'D' || code[1] === 'D';
+      return {
+        path: entry.slice(3),
+        deleted,
+        change: deleted ? 'deleted' : code === '??' || code[0] === 'A' ? 'added' : 'modified',
+      } as StatusEntry;
+    });
   }
 
   /**

@@ -17,35 +17,36 @@ RUN apt-get update \
 COPY --chmod=755 docker/ipv6-netns.sh /usr/local/bin/natsumi-ipv6-netns
 ENTRYPOINT ["natsumi-ipv6-netns"]
 
-# The runner of the tools container (ADR 0011), built static so the container needs no interpreter or libc of its own.
-FROM golang:1.27 AS tools-runner
+# The runner of the workspace container (ADR 0011), built static so it depends on nothing in the image around it.
+FROM golang:1.27 AS workspace-runner
 WORKDIR /src
 COPY runner/ ./
 RUN go test ./... \
-  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/natsumi-tools-runner .
+  && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/natsumi-workspace-runner .
 
-# Only the commands in docker/tools-commands.txt and the libraries they load. Built on the same base to share layers.
-FROM node:24.12.0-bookworm-slim AS tools-rootfs
+# natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
+# There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
+FROM debian:bookworm-slim AS workspace
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ripgrep \
+  && apt-get install -y --no-install-recommends \
+       bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep python3 git procps tzdata \
   && rm -rf /var/lib/apt/lists/*
-COPY docker/tools-commands.txt docker/tools-rootfs.sh /build/
-RUN sh /build/tools-rootfs.sh /build/tools-commands.txt /rootfs
-
-# Where the model's memory shell runs: no package manager, interpreter, network tool or git (compose.yaml: natsumi-tools).
-FROM scratch AS tools
-COPY --from=tools-rootfs /rootfs/ /
-# Outside PATH. Running it by path gives a command nothing sh does not already have.
-COPY --from=tools-runner /out/natsumi-tools-runner /usr/libexec/natsumi-tools-runner
+# A name for the default UID, and the mount points of the four writable places.
+RUN groupadd --gid 1000 natsumi \
+  && useradd --uid 1000 --gid 1000 --home-dir /home/natsumi --shell /bin/bash natsumi \
+  && mkdir -p /memory /work /home/natsumi /run/natsumi-workspace \
+  && chown natsumi:natsumi /work /home/natsumi
+# Outside PATH, so running it by its path gives nothing bash does not already have.
+COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-workspace-runner
 USER 1000:1000
-WORKDIR /memory
-ENTRYPOINT ["/usr/libexec/natsumi-tools-runner"]
+WORKDIR /work
+ENTRYPOINT ["/usr/libexec/natsumi-workspace-runner"]
 CMD ["serve"]
 
 FROM node:24.12.0-bookworm-slim
 ENV NODE_ENV=production
-# git commits the memory repository (ADR 0018). It is the server's, never the model's: the memory shell runs in the
-# tools container above, which has no git.
+# git commits the memory repository (ADR 0018). Committing is the server's alone: natsumi has git in the workspace
+# container above, but there /memory/.git is mounted read-only, so she can read the history and not write it.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git \
   && rm -rf /var/lib/apt/lists/*

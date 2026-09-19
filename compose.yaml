@@ -27,10 +27,10 @@ services:
     volumes:
       - natsumi-data:/data
       - natsumi-pi:/var/lib/natsumi-pi
-      # The runner socket of natsumi-tools. natsumi never gets the Docker socket (ADR 0011).
+      # The runner socket of natsumi-workspace. natsumi never gets the Docker socket (ADR 0011).
       - type: volume
-        source: natsumi-tools-socket
-        target: /run/natsumi-tools
+        source: natsumi-workspace-socket
+        target: /run/natsumi-workspace
         volume:
           nocopy: true
       - type: bind
@@ -44,50 +44,77 @@ services:
       start_period: 30s
       retries: 3
 
-  # Where the model's memory shell runs (ADR 0011): only the commands in docker/tools-commands.txt, no network,
-  # no secrets, and the data directory's memory/ alone, read-only. natsumi reaches its runner over a Unix socket.
-  natsumi-tools:
+  # natsumi's workspace (ADR 0019): an ordinary Debian environment with no network, no secrets, and only the four
+  # writable places below. The confinement is this shape; there is no list of allowed commands. natsumi reaches its
+  # runner over a Unix socket and never holds the Docker socket.
+  natsumi-workspace:
     build:
       context: .
-      target: tools
-    image: natsumi-tools:local
+      target: workspace
+    image: natsumi-workspace:local
     init: true
     restart: unless-stopped
-    # Must be the UID natsumi runs as: memory files are readable by their owner only.
-    user: "${NATSUMI_TOOLS_UID:-1000}:${NATSUMI_TOOLS_UID:-1000}"
+    # Must be the UID natsumi runs as: the data directory is readable by its owner only.
+    user: "${NATSUMI_WORKSPACE_UID:-1000}:${NATSUMI_WORKSPACE_UID:-1000}"
     network_mode: none
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-    pids_limit: 64
-    cpus: 1
-    mem_limit: 256m
-    memswap_limit: 256m
+    # A workbench rather than a search tool: enough to run a script or a Python aggregation, and small enough that
+    # forgotten processes still leave room for the model call and natsumi itself on the same host (ADR 0019).
+    pids_limit: 256
+    cpus: 2
+    mem_limit: 1g
+    memswap_limit: 1g
+    # noexec is set because there is no reason not to, but it is not a boundary: `python3 /tmp/x.py` ignores it.
     tmpfs:
-      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
-    # The time limit of one command and the bytes of stdout and of stderr kept from it.
-    command: ["serve", "-timeout", "10s", "-max-output", "65536"]
+      - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
+    # The response limit and the bytes of stdout and of stderr kept from one command. The time zone must match
+    # loop.timeZone; the server also sends it with every command, so this is only the fallback.
+    command: ["serve", "-response-limit", "60s", "-max-output", "65536", "-tz", "${NATSUMI_TIME_ZONE:-UTC}"]
     volumes:
+      # Memory: writable, and its history is not. The server owns the commits (ADR 0018).
+      # Both subpaths follow loop.memoryRepository: point them at the same place if it is moved out of the
+      # data directory's memory/, or the server will commit somewhere natsumi's /memory never shows, with no error.
       - type: volume
         source: natsumi-data
         target: /memory
-        read_only: true
         volume:
           subpath: memory
           nocopy: true
       - type: volume
-        source: natsumi-tools-socket
-        target: /run/natsumi-tools
+        source: natsumi-data
+        target: /memory/.git
+        read_only: true
+        volume:
+          subpath: memory/.git
+          nocopy: true
+      # Where she works and where she lives. Persistent, executable, and never inspected or committed.
+      - type: volume
+        source: natsumi-data
+        target: /work
+        volume:
+          subpath: work
+          nocopy: true
+      - type: volume
+        source: natsumi-data
+        target: /home/natsumi
+        volume:
+          subpath: home
+          nocopy: true
+      - type: volume
+        source: natsumi-workspace-socket
+        target: /run/natsumi-workspace
         volume:
           nocopy: true
-    # natsumi creates memory/ in the data directory on its first start.
+    # natsumi creates memory/, work/ and home/ in the data directory on its first start.
     depends_on:
       natsumi:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/usr/libexec/natsumi-tools-runner", "check"]
+      test: ["CMD", "/usr/libexec/natsumi-workspace-runner", "check"]
       interval: 30s
       timeout: 10s
       start_period: 10s
@@ -96,12 +123,12 @@ services:
 volumes:
   natsumi-data:
   natsumi-pi:
-  # A small tmpfs owned by the tools user, holding only the runner socket.
-  natsumi-tools-socket:
+  # A small tmpfs owned by the workspace user, holding only the runner socket.
+  natsumi-workspace-socket:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: "size=64k,uid=${NATSUMI_TOOLS_UID:-1000},gid=${NATSUMI_TOOLS_UID:-1000},mode=0755"
+      o: "size=64k,uid=${NATSUMI_WORKSPACE_UID:-1000},gid=${NATSUMI_WORKSPACE_UID:-1000},mode=0755"
 
 secrets:
   natsumi_tls_cert:
