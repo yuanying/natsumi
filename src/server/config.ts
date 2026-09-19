@@ -1,7 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
-// The only thing this file takes from the modules above it is their `DEFAULT_*` constants, for LOOP_DEFAULTS below.
+import { COMPATIBLE_PROVIDER } from '../pi/auth.ts';
+import { isLoopbackHost } from '../pi/loopback.ts';
+// The only thing this file takes from the server modules above it is their `DEFAULT_*` constants, for LOOP_DEFAULTS below.
 // Applying a default is this parser's job alone: nothing downstream falls back again (see LoopOptions.loop).
 import { DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
@@ -39,7 +41,7 @@ export interface CompatibleConfig {
   apiKey: SecretReference;
 }
 
-export const COMPATIBLE_PROVIDER = 'natsumi-compatible';
+export { COMPATIBLE_PROVIDER };
 
 export interface TlsConfig { certFile: string; keyFile: string }
 
@@ -406,12 +408,6 @@ function parseSelfCheck(value: unknown, path: string): SelfCheckLimits {
 
 function positiveInteger(value: unknown, least: number): boolean {
   return typeof value === 'number' && Number.isInteger(value) && value >= least;
-}
-
-/** 127.0.0.0/8, ::1 and localhost. Accepts a URL hostname, where IPv6 is bracketed. */
-export function isLoopbackHost(host: string): boolean {
-  const bare = host.replace(/^\[(.*)\]$/, '$1');
-  return bare === 'localhost' || bare === '::1' || (isIP(bare) === 4 && bare.startsWith('127.'));
 }
 
 // Helpers for section parsers.

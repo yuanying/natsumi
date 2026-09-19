@@ -2,6 +2,7 @@ import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { isLoopbackHost } from './loopback.ts';
 
 export const COMPATIBLE_PROVIDER = 'natsumi-compatible';
 
@@ -36,8 +37,7 @@ export async function compatibleRuntimeWithKey(root: string, endpoint: Compatibl
 export async function emptyRuntime(root: string, endpoint: CompatibleEndpoint): Promise<ModelRuntime> {
   let url: URL;
   try { url = new URL(endpoint.baseUrl); } catch { throw new Error('Compatible endpoint must use https'); }
-  const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
     throw new Error('Compatible endpoint must use https');
   }
   return ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null,
