@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -119,7 +119,7 @@ test('a turn that changed nothing commits nothing; a turn that changed memory ma
   } finally { await f.cleanup(); }
 });
 
-test('deletions and renames are committed without a check', async () => {
+test('natsumi may delete and rename her own files, at night or in the day, without a check', async () => {
   const f = await setup();
   try {
     await f.write('合言葉.md', `# 合言葉\n\n- 2026-09-19: ${PASSPHRASE}\n`);
@@ -136,6 +136,46 @@ test('deletions and renames are committed without a check', async () => {
     assert.equal(f.clean(), true);
     assert.deepEqual((await readdir(f.directory)).filter(name => name !== '.git').sort(),
       [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE, 'あいことば.md'].sort());
+
+    // A day turn is no different: what natsumi named, she may unname.
+    await rm(join(f.directory, 'あいことば.md'));
+    const day = await f.repository.commit({ event: 'mac_message' });
+    assert.equal(day.committed, true);
+    assert.deepEqual(day.reverted, []);
+    assert.deepEqual((await readdir(f.directory)).filter(name => name !== '.git').sort(),
+      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
+  } finally { await f.cleanup(); }
+});
+
+test('the three fixed files cannot be deleted or renamed away, by day or by night', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize('\u6628\u591c\u306e\u5f15\u304d\u7d99\u304e');
+    const before = Object.fromEntries(await Promise.all(
+      [ALWAYS_FILE, PERSONALITY_FILE, HANDOFF_FILE].map(async name => [name, await f.read(name)] as const)));
+
+    // A day turn: one removed outright, one renamed away, one moved into a folder.
+    await rm(join(f.directory, ALWAYS_FILE));
+    await rename(join(f.directory, PERSONALITY_FILE), join(f.directory, '\u5225\u540d.md'));
+    await mkdir(join(f.directory, '\u53e4\u3044\u8a71'), { recursive: true });
+    await rename(join(f.directory, HANDOFF_FILE), join(f.directory, '\u53e4\u3044\u8a71', HANDOFF_FILE));
+
+    const day = await f.repository.commit({ event: 'mac_message' });
+
+    assert.deepEqual(day.reverted.map(file => file.path).sort(), [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
+    for (const file of day.reverted) assert.match(file.reason, /\u56fa\u5b9a/);
+    for (const [name, text] of Object.entries(before)) assert.equal(await f.read(name), text);
+    assert.equal(f.clean(), true);
+
+    // The night may rewrite them, but not take them away either.
+    await rm(join(f.directory, PERSONALITY_FILE));
+    await rm(join(f.directory, HANDOFF_FILE));
+    const night = await f.repository.commit({ event: 'nightly_review', night: true });
+
+    assert.deepEqual(night.reverted.map(file => file.path).sort(), [HANDOFF_FILE, PERSONALITY_FILE].sort());
+    assert.equal(await f.read(PERSONALITY_FILE), before[PERSONALITY_FILE]!);
+    assert.equal(await f.read(HANDOFF_FILE), before[HANDOFF_FILE]!);
+    assert.equal(f.clean(), true);
   } finally { await f.cleanup(); }
 });
 

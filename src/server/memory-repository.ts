@@ -102,12 +102,12 @@ export class MemoryRepository {
   /**
    * The end of a turn: what changed is checked file by file, what fails goes back to the previous commit (a new file
    * is removed), and what is left becomes one commit. A turn that changed nothing commits nothing.
+   * Removing and renaming is natsumi's to do, save for the three fixed files, which come back.
    */
   async commit(input: { event: string; night?: boolean }): Promise<CommitOutcome> {
     const reverted: RevertedFile[] = [];
     for (const entry of await this.status()) {
-      if (entry.deleted) continue;
-      const reason = await this.inspect(entry.path, input.night === true);
+      const reason = entry.deleted ? this.inspectRemoval(entry.path) : await this.inspect(entry.path, input.night === true);
       if (!reason) continue;
       await this.restore(entry.path);
       reverted.push({ path: entry.path, reason });
@@ -176,7 +176,18 @@ export class MemoryRepository {
     }));
   }
 
-  /** Why the file may not be committed, or undefined when it may. Removals and renames are never checked. */
+  /**
+   * Why a removal may not be committed, or undefined when it may. Only the three names the server fixes are kept:
+   * everything else in the repository is natsumi's, and what she deletes the history still holds. The three are
+   * the server's own footing — the prompt reads them every turn — so losing one would quietly break what the server
+   * assumes, with nobody told. A rename reaches here as the removal half, and is put back the same way.
+   */
+  private inspectRemoval(path: string): string | undefined {
+    if (!FIXED_FILES.includes(path as typeof FIXED_FILES[number])) return undefined;
+    return `${path} はサーバーが名前と置き場所を固定しているファイルなので、消すことも改名することもできません`;
+  }
+
+  /** Why the changed file may not be committed, or undefined when it may. A removal goes through inspectRemoval. */
   private async inspect(path: string, night: boolean): Promise<string | undefined> {
     if (!night && NIGHT_ONLY_FILES.includes(path)) {
       return `${path} は毎回のプロンプトに入るので、夜の再構成のターンでだけ書き換えられます`;
