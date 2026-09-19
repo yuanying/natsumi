@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import { SUBSCRIPTION_TARGET } from '../src/pi-session.ts';
+import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { createLoopTools, type LoopToolHost, type ToolOutcome } from '../src/server/loop-tools.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
