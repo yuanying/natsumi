@@ -45,7 +45,7 @@ export type RotationOutcome =
 /** An event for clients. `conversation.message`, `avatar.expression` and `conversation.event.completed`. */
 export interface LoopClientEvent {
   type: string;
-  payload: Record<string, any>;
+  payload: Record<string, unknown>;
   /** Of the moment: sent to whoever is connected, never numbered on a stream and never kept for replay (ADR 0017). */
   ephemeral?: boolean;
 }
