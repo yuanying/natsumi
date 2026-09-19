@@ -1,0 +1,302 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from '../src/server/memory-repository.ts';
+
+// Fictional memories only.
+const PASSPHRASE = 'SYNTHETIC-HERON-208';
+
+async function setup(options: { fileMaxChars?: number } = {}) {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-memory-repo-')));
+  const data = join(root, 'data');
+  const directory = join(data, 'memory');
+  await mkdir(directory, { recursive: true });
+  const repository = new MemoryRepository({ directory, dataDirectory: data, ...options });
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', directory, '-c', 'core.quotePath=false', ...args], { encoding: 'utf8' }).trim();
+  return {
+    root, data, directory, repository, git,
+    commits: () => Number(git('rev-list', '--count', 'HEAD')),
+    subject: () => git('log', '-1', '--format=%s'),
+    clean: () => git('status', '--porcelain') === '',
+    write: (name: string, text: string) => writeFile(join(directory, name), text),
+    read: (name: string) => readFile(join(directory, name), 'utf8'),
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+test('the first start takes the memory that is there into one commit on main, unchanged', async () => {
+  const f = await setup();
+  try {
+    const passphrase = `# 合言葉\n\n- 2026-09-15: 合言葉は ${PASSPHRASE}\n`;
+    await f.write('合言葉.md', passphrase);
+    await mkdir(join(f.directory, '仕事'), { recursive: true });
+    await writeFile(join(f.directory, '仕事', '予定.md'), '# 予定\n\n- 2026-09-16: 歯医者は金曜\n');
+    await writeFile(join(f.data, PERSONALITY_FILE), '# 性格・話し方\n\n落ち着いた話し方\n');
+
+    await f.repository.initialize('昨夜の引き継ぎ');
+
+    assert.equal(f.git('symbolic-ref', '--short', 'HEAD'), 'main');
+    assert.equal(f.commits(), 1);
+    assert.equal(f.clean(), true);
+    // Names and contents are untouched.
+    assert.equal(await f.read('合言葉.md'), passphrase);
+    assert.equal(await readFile(join(f.directory, '仕事', '予定.md'), 'utf8'), '# 予定\n\n- 2026-09-16: 歯医者は金曜\n');
+    // personality.md moves out of the data directory into the repository.
+    assert.match(await f.read(PERSONALITY_FILE), /落ち着いた話し方/);
+    assert.deepEqual((await readdir(f.data)).sort(), ['memory']);
+    assert.match(await f.read(ALWAYS_FILE), /\S/);
+    assert.match(await f.read(HANDOFF_FILE), /昨夜の引き継ぎ/);
+    assert.deepEqual(f.git('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort(),
+      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE, '合言葉.md', '仕事/予定.md'].sort());
+    // The server fixes who commits.
+    const [author, committer] = f.git('log', '-1', '--format=%an <%ae>%n%cn <%ce>').split('\n');
+    assert.equal(author, committer);
+    assert.match(author!, /^natsumi <.+@.+>$/);
+  } finally { await f.cleanup(); }
+});
+
+test('a start with nothing to take in still leaves the three files committed', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    assert.equal(f.commits(), 1);
+    assert.deepEqual(f.git('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort(),
+      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
+    for (const name of [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE]) assert.match(await f.read(name), /\S/);
+  } finally { await f.cleanup(); }
+});
+
+test('an existing repository keeps its history, and only the missing files are added', async () => {
+  const f = await setup();
+  try {
+    // A repository the owner made, with memory in it and none of the three fixed files.
+    execFileSync('git', ['-C', f.directory, 'init', '-b', 'main'], { stdio: 'ignore' });
+    await f.write('\u5408\u8a00\u8449.md', `# \u5408\u8a00\u8449\n\n- 2026-09-15: ${PASSPHRASE}\n`);
+    f.git('add', '-A');
+    f.git('-c', 'user.name=owner', '-c', 'user.email=owner@example.net', 'commit', '-m', 'my memory');
+    const first = f.git('rev-parse', 'HEAD');
+
+    await f.repository.initialize('\u6700\u521d\u306e\u5f15\u304d\u7d99\u304e');
+
+    assert.equal(f.commits(), 2);
+    assert.equal(f.git('rev-parse', 'HEAD~1'), first);
+    assert.deepEqual(f.git('diff', '--name-only', 'HEAD~1', 'HEAD').split('\n').sort(),
+      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
+    assert.match(await f.read('\u5408\u8a00\u8449.md'), new RegExp(PASSPHRASE));
+    assert.match(await f.read(HANDOFF_FILE), /\u6700\u521d\u306e\u5f15\u304d\u7d99\u304e/);
+
+    // A later start changes nothing at all.
+    await new MemoryRepository({ directory: f.directory, dataDirectory: f.data }).initialize('\u5225\u306e\u5f15\u304d\u7d99\u304e');
+    assert.equal(f.commits(), 2);
+    assert.equal(f.clean(), true);
+    assert.match(await f.read(HANDOFF_FILE), /\u6700\u521d\u306e\u5f15\u304d\u7d99\u304e/);
+  } finally { await f.cleanup(); }
+});
+
+test('a turn that changed nothing commits nothing; a turn that changed memory makes exactly one commit', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    const quiet = await f.repository.commit({ event: 'mac_message' });
+    assert.equal(quiet.committed, false);
+    assert.deepEqual(quiet.reverted, []);
+    assert.equal(f.commits(), 1);
+
+    await f.write('合言葉.md', `# 合言葉\n\n- 2026-09-19: ${PASSPHRASE}\n`);
+    await f.write('予定.md', '# 予定\n\n- 2026-09-19: 歯医者は金曜\n');
+    const written = await f.repository.commit({ event: 'mac_message' });
+    assert.equal(written.committed, true);
+    assert.deepEqual(written.reverted, []);
+    assert.equal(f.commits(), 2);
+    assert.equal(f.clean(), true);
+    assert.match(f.subject(), /mac_message/);
+    assert.match(f.subject(), /合言葉\.md/);
+    assert.match(f.subject(), /予定\.md/);
+  } finally { await f.cleanup(); }
+});
+
+test('natsumi may delete and rename her own files, at night or in the day, without a check', async () => {
+  const f = await setup();
+  try {
+    await f.write('合言葉.md', `# 合言葉\n\n- 2026-09-19: ${PASSPHRASE}\n`);
+    await f.write('古い話.md', '# 古い話\n\n- 2025-01-01: もう要らない\n');
+    await f.repository.initialize(undefined);
+
+    await rm(join(f.directory, '古い話.md'));
+    await f.write('あいことば.md', `# 合言葉\n\n- 2026-09-19: ${PASSPHRASE}\n`);
+    await rm(join(f.directory, '合言葉.md'));
+    const outcome = await f.repository.commit({ event: 'nightly_review', night: true });
+
+    assert.equal(outcome.committed, true);
+    assert.deepEqual(outcome.reverted, []);
+    assert.equal(f.clean(), true);
+    assert.deepEqual((await readdir(f.directory)).filter(name => name !== '.git').sort(),
+      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE, 'あいことば.md'].sort());
+
+    // A day turn is no different: what natsumi named, she may unname.
+    await rm(join(f.directory, 'あいことば.md'));
+    const day = await f.repository.commit({ event: 'mac_message' });
+    assert.equal(day.committed, true);
+    assert.deepEqual(day.reverted, []);
+    assert.deepEqual((await readdir(f.directory)).filter(name => name !== '.git').sort(),
+      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
+  } finally { await f.cleanup(); }
+});
+
+test('the three fixed files cannot be deleted or renamed away, by day or by night', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize('\u6628\u591c\u306e\u5f15\u304d\u7d99\u304e');
+    const before = Object.fromEntries(await Promise.all(
+      [ALWAYS_FILE, PERSONALITY_FILE, HANDOFF_FILE].map(async name => [name, await f.read(name)] as const)));
+
+    // A day turn: one removed outright, one renamed away, one moved into a folder.
+    await rm(join(f.directory, ALWAYS_FILE));
+    await rename(join(f.directory, PERSONALITY_FILE), join(f.directory, '\u5225\u540d.md'));
+    await mkdir(join(f.directory, '\u53e4\u3044\u8a71'), { recursive: true });
+    await rename(join(f.directory, HANDOFF_FILE), join(f.directory, '\u53e4\u3044\u8a71', HANDOFF_FILE));
+
+    const day = await f.repository.commit({ event: 'mac_message' });
+
+    assert.deepEqual(day.reverted.map(file => file.path).sort(), [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE].sort());
+    for (const file of day.reverted) assert.match(file.reason, /\u56fa\u5b9a/);
+    for (const [name, text] of Object.entries(before)) assert.equal(await f.read(name), text);
+    assert.equal(f.clean(), true);
+
+    // The night may rewrite them, but not take them away either.
+    await rm(join(f.directory, PERSONALITY_FILE));
+    await rm(join(f.directory, HANDOFF_FILE));
+    const night = await f.repository.commit({ event: 'nightly_review', night: true });
+
+    assert.deepEqual(night.reverted.map(file => file.path).sort(), [HANDOFF_FILE, PERSONALITY_FILE].sort());
+    assert.equal(await f.read(PERSONALITY_FILE), before[PERSONALITY_FILE]!);
+    assert.equal(await f.read(HANDOFF_FILE), before[HANDOFF_FILE]!);
+    assert.equal(f.clean(), true);
+  } finally { await f.cleanup(); }
+});
+
+test('a changed file that fails a check goes back to the previous commit, and a new one is removed', async () => {
+  const f = await setup({ fileMaxChars: 100 });
+  try {
+    const kept = `# 合言葉\n\n- 2026-09-15: ${PASSPHRASE}\n`;
+    await f.write('合言葉.md', kept);
+    await f.repository.initialize(undefined);
+
+    // One good change rides along; every bad one goes back.
+    await f.write('予定.md', '# 予定\n\n- 2026-09-19: 歯医者は金曜\n');
+    await f.write('合言葉.md', '# 合言葉\n\n- 2026-09-19: 这个是简体字\n');
+    await f.write('空.md', '   \n\n');
+    await f.write('長い.md', `# 長い\n\n${'あ'.repeat(200)}\n`);
+    await f.write('制御.md', '# 制御\n\n<tool_call>\n');
+    await f.write('文字.md', '# 文字\n\n\u0007 ベル\n');
+    await f.write('memo.txt', 'これは Markdown ではありません\n');
+    await symlink('/etc/hostname', join(f.directory, 'よそ.md'));
+
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+
+    assert.equal(outcome.committed, true);
+    assert.deepEqual(outcome.reverted.map(file => file.path).sort(),
+      ['memo.txt', '制御.md', '合言葉.md', '文字.md', '空.md', '長い.md', 'よそ.md'].sort());
+    const reasons = Object.fromEntries(outcome.reverted.map(file => [file.path, file.reason]));
+    assert.match(reasons['合言葉.md']!, /日本語以外/);
+    assert.match(reasons['空.md']!, /空/);
+    assert.match(reasons['長い.md']!, /100/);
+    assert.match(reasons['制御.md']!, /制御文字列/);
+    assert.match(reasons['文字.md']!, /制御文字/);
+    assert.match(reasons['memo.txt']!, /\.md/);
+    assert.match(reasons['よそ.md']!, /symlink/i);
+
+    // The one that existed is back as it was; the new ones are gone.
+    assert.equal(await f.read('合言葉.md'), kept);
+    assert.deepEqual((await readdir(f.directory)).filter(name => name !== '.git').sort(),
+      [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE, '予定.md', '合言葉.md'].sort());
+    assert.equal(f.clean(), true);
+    assert.equal(f.commits(), 2);
+    assert.match(await f.read('予定.md'), /歯医者/);
+  } finally { await f.cleanup(); }
+});
+
+test('a turn whose every change failed the check commits nothing', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    await f.write('だめ.txt', 'Markdown ではない\n');
+    const outcome = await f.repository.commit({ event: 'ping' });
+    assert.equal(outcome.committed, false);
+    assert.equal(outcome.reverted.length, 1);
+    assert.equal(f.commits(), 1);
+    assert.equal(f.clean(), true);
+  } finally { await f.cleanup(); }
+});
+
+test('always.md and personality.md go back when a day turn changed them, and are kept at night', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    const always = await f.read(ALWAYS_FILE);
+
+    await f.write(ALWAYS_FILE, '# 常時記憶\n\n昼に書き換えた\n');
+    await f.write(PERSONALITY_FILE, '# 性格・話し方\n\n昼に書き換えた\n');
+    await f.write('予定.md', '# 予定\n\n- 2026-09-19: 歯医者は金曜\n');
+    const day = await f.repository.commit({ event: 'mac_message' });
+    assert.deepEqual(day.reverted.map(file => file.path).sort(), [ALWAYS_FILE, PERSONALITY_FILE].sort());
+    for (const file of day.reverted) assert.match(file.reason, /夜/);
+    assert.equal(await f.read(ALWAYS_FILE), always);
+    assert.equal(day.committed, true);
+
+    await f.write(ALWAYS_FILE, '# 常時記憶\n\n夜に書き直した\n');
+    await f.write(PERSONALITY_FILE, '# 性格・話し方\n\n夜に書き直した\n');
+    const night = await f.repository.commit({ event: 'nightly_review', night: true });
+    assert.deepEqual(night.reverted, []);
+    assert.equal(night.committed, true);
+    assert.match(await f.read(ALWAYS_FILE), /夜に書き直した/);
+    assert.match(await f.read(PERSONALITY_FILE), /夜に書き直した/);
+  } finally { await f.cleanup(); }
+});
+
+test('nothing is ever pushed, even with a remote', async () => {
+  const f = await setup();
+  try {
+    const bare = join(f.root, 'remote.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', bare], { stdio: 'ignore' });
+    await f.write('合言葉.md', `# 合言葉\n\n- 2026-09-19: ${PASSPHRASE}\n`);
+    await f.repository.initialize('引き継ぎ');
+    f.git('remote', 'add', 'origin', bare);
+
+    await f.write('予定.md', '# 予定\n\n- 2026-09-19: 歯医者は金曜\n');
+    await f.repository.commit({ event: 'mac_message' });
+    await f.write('予定.md', '# 予定\n\n- 2026-09-19: 歯医者は土曜\n');
+    await f.repository.commit({ event: 'nightly_review', night: true });
+
+    assert.equal(execFileSync('git', ['-C', bare, 'for-each-ref'], { encoding: 'utf8' }).trim(), '');
+    assert.equal(f.commits(), 3);
+  } finally { await f.cleanup(); }
+});
+
+test('hooks left in the repository never run', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    const hook = join(f.directory, '.git', 'hooks', 'pre-commit');
+    await writeFile(hook, `#!/bin/sh\ntouch "${join(f.root, 'hook-ran')}"\nexit 1\n`, { mode: 0o755 });
+
+    await f.write('予定.md', '# 予定\n\n- 2026-09-19: 歯医者は金曜\n');
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+
+    assert.equal(outcome.committed, true);
+    assert.equal(f.commits(), 2);
+    await assert.rejects(stat(join(f.root, 'hook-ran')));
+  } finally { await f.cleanup(); }
+});
+
+test('the note handed to the next turn names every reverted file with its reason', async () => {
+  const notice = revertNotice([{ path: '合言葉.md', reason: '日本語以外の文字（这）が含まれています' }]);
+  assert.match(notice, /合言葉\.md/);
+  assert.match(notice, /日本語以外の文字/);
+  assert.match(notice, /戻しました/);
+  assert.equal(revertNotice([]), '');
+});

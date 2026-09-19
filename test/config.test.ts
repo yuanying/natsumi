@@ -22,6 +22,7 @@ const github = () => ({
   allowedUserId: 4242001,
 });
 const SCHEDULE_DEFAULTS = {
+  memoryFileMaxChars: 32000,
   awakeHours: { start: '08:00', end: '23:00' },
   pingIntervalMinutes: 30,
   selfCheck: { minDelayMinutes: 5, maxDelayDays: 7, maxPending: 5, maxPerDay: 20 },
@@ -122,6 +123,16 @@ test('the memory shell is off unless the loop names the runner socket by absolut
     '/run/natsumi-tools/runner.sock');
   for (const socket of ['run/runner.sock', '', 42]) rejects({ ...base(), loop: { memoryShellSocket: socket } }, 'loop.memoryShellSocket');
   rejects({ ...base(), loop: { rotateAt: '04:00' } }, 'loop.rotateAt', /unknown/);
+});
+
+test('the memory repository defaults to the data directory, and a file limit too small is refused', () => {
+  // Left out, the loop puts the repository in the data directory: the config cannot name that path.
+  assert.equal('memoryRepository' in parseConfig(base()).loop, false);
+  assert.equal(parseConfig({ ...base(), loop: { memoryRepository: '/srv/natsumi-memory' } }).loop.memoryRepository, '/srv/natsumi-memory');
+  for (const path of ['memory', '', 42]) rejects({ ...base(), loop: { memoryRepository: path } }, 'loop.memoryRepository');
+  assert.equal(parseConfig(base()).loop.memoryFileMaxChars, 32000);
+  assert.equal(parseConfig({ ...base(), loop: { memoryFileMaxChars: 8000 } }).loop.memoryFileMaxChars, 8000);
+  for (const chars of [0, 999, 1.5, '32000', true]) rejects({ ...base(), loop: { memoryFileMaxChars: chars } }, 'loop.memoryFileMaxChars');
 });
 
 test('an OpenAI-compatible endpoint is chosen explicitly, with its key referenced by env or file', () => {

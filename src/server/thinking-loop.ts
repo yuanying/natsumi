@@ -6,6 +6,7 @@ import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-wo
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi-session.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { MemoryShell } from './memory-shell.ts';
+import { MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
 import { MemoryStore } from './memory-store.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { ReadState, type ReadPosition } from './read-state.ts';
@@ -145,6 +146,10 @@ export interface LoopOptions {
   keepRecentTokens?: number;
   /** The tools container's runner socket. The run_memory_shell tool exists only with it (ADR 0011). */
   memoryShellSocket?: string;
+  /** The memory repository (ADR 0018). `memory/` in the data directory when omitted. */
+  memoryRepository?: string;
+  /** The longest one memory file may be, in characters. */
+  memoryFileMaxChars?: number;
   /** The hours natsumi is up, in `timeZone`: a self-check booked outside them waits for the morning (ADR 0014). */
   awakeHours?: AwakeHours;
   selfCheckLimits?: SelfCheckLimits;
@@ -180,13 +185,16 @@ interface Turn {
  * events. A message that arrives while Pi is working is steered into the running turn at the next model-call boundary.
  * What the owner sees is kept in SQLite; the Pi session is the separate record of thinking.
  *
- * Long-term memory lives in `memory/` and is reached through tools only. Each night the session is reviewed and
- * replaced by a new one that starts from a handoff; in between, a session past its limit is compacted (ADR 0009).
+ * Long-term memory lives in `memory/`, reached through tools, and is a git repository: at the end of every turn the
+ * server checks what changed there, puts back what fails, and commits the rest (ADR 0018). Each night the session is
+ * reviewed and replaced by a new one that starts from a handoff; in between, a session past its limit is compacted
+ * (ADR 0009).
  */
 export class ThinkingLoop {
   private readonly options: LoopOptions;
   private readonly now: () => number;
   private readonly memory: MemoryStore;
+  private readonly memoryRepository: MemoryRepository;
   private readonly readState: ReadState;
   private readonly shell: MemoryShell | undefined;
   private readonly listeners = new Set<(event: LoopClientEvent) => void>();
@@ -214,11 +222,20 @@ export class ThinkingLoop {
   private readonly thinking = { line: '', sent: '', at: 0 };
   /** Stops watching the Pi session the loop is attached to. */
   private unwatch: (() => void) | undefined;
+  /** What the last commit put back, waiting to be told to natsumi in the next prompt (ADR 0018). */
+  private memoryNotice = '';
 
   private constructor(options: LoopOptions) {
     this.options = options;
     this.now = options.now ?? Date.now;
-    this.memory = new MemoryStore({ directory: join(options.dataDirectory, 'memory'), timeZone: options.timeZone ?? 'UTC', now: this.now });
+    // One directory, two ways in: the memory tools write the files, and the repository is what commits them.
+    const memoryDirectory = options.memoryRepository ?? join(options.dataDirectory, 'memory');
+    this.memory = new MemoryStore({ directory: memoryDirectory, timeZone: options.timeZone ?? 'UTC', now: this.now });
+    this.memoryRepository = new MemoryRepository({
+      directory: memoryDirectory, dataDirectory: options.dataDirectory,
+      ...(options.memoryFileMaxChars === undefined ? {} : { fileMaxChars: options.memoryFileMaxChars }),
+      log: line => this.log(line),
+    });
     this.readState = new ReadState(options.db, this.now);
     this.shell = options.memoryShellSocket ? new MemoryShell({ socketPath: options.memoryShellSocket }) : undefined;
     this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: options.timeZone ?? 'UTC',
@@ -227,11 +244,23 @@ export class ThinkingLoop {
     this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };
   }
 
-  /** Opens or creates the Pi session. Problems leave the loop unavailable instead of throwing or replacing history. */
+  /**
+   * Opens or creates the Pi session. Problems leave the loop unavailable instead of throwing or replacing history.
+   * The memory repository is the exception: without it nothing natsumi writes could be kept, so it is made first
+   * and a failure there stops the server with the reason (ADR 0018).
+   */
   static async open(options: LoopOptions): Promise<ThinkingLoop> {
     const loop = new ThinkingLoop(options);
+    await loop.memoryRepository.initialize(loop.latestHandoff());
     await loop.start();
     return loop;
+  }
+
+  /** The newest handoff SQLite holds, to seed `handoff.md` on the first start (ADR 0018). */
+  private latestHandoff(): string | undefined {
+    const row = this.options.db.prepare(`SELECT handoff FROM session_rotations
+      WHERE handoff IS NOT NULL ORDER BY updated_at DESC, rotation_id DESC LIMIT 1`).get() as { handoff: string } | undefined;
+    return row?.handoff;
   }
 
   get unavailable(): UnavailableCode | undefined {
@@ -525,11 +554,21 @@ export class ThinkingLoop {
    */
   private async systemPrompt(handoff?: string): Promise<string> {
     let personality = '';
-    try { personality = (await readFile(join(this.options.dataDirectory, 'personality.md'), 'utf8')).trim(); } catch { /* none */ }
+    try { personality = (await readFile(join(this.memoryRepository.directory, PERSONALITY_FILE), 'utf8')).trim(); } catch { /* none */ }
     const instruction = this.shell ? BASE_INSTRUCTION.replace('\n\n## 出来事の種類', `\n${SHELL_INSTRUCTION}\n\n## 出来事の種類`) : BASE_INSTRUCTION;
     let prompt = personality ? `${instruction}\n\n# 性格・話し方\n\n${personality}` : instruction;
     if (handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n昨夜の振り返りで、あなた自身が書いたメモです。\n\n${handoff}`;
+    // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
+    const notice = this.takeMemoryNotice();
+    if (notice) prompt += `\n\n# 記憶の検査\n\n${notice}`;
     return prompt;
+  }
+
+  /** The note about reverted files, taken once: whoever writes the next prompt carries it. */
+  private takeMemoryNotice(): string {
+    const notice = this.memoryNotice;
+    this.memoryNotice = '';
+    return notice;
   }
 
   /**
@@ -598,8 +637,10 @@ export class ThinkingLoop {
     }
     const before = session.messages.length;
     const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, this.options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
+    const notice = this.takeMemoryNotice();
+    const prompt = formatEvents(eventIds.map(id => this.eventLine(id))) + (notice ? `\n\n${notice}` : '');
     try {
-      await session.prompt(formatEvents(eventIds.map(id => this.eventLine(id))), { expandPromptTemplates: false });
+      await session.prompt(prompt, { expandPromptTemplates: false });
     } catch {
       // Judged below from what Pi recorded; the error text never leaves the server.
     } finally { clearTimeout(timer); }
@@ -614,6 +655,9 @@ export class ThinkingLoop {
       this.queue.unshift(eventId);
     }
     this.steered.clear();
+
+    // Whatever ended the turn, what memory holds now is checked and committed before the next event (ADR 0018).
+    await this.commitMemory(eventIds, kind);
 
     const last = session.messages.slice(before).filter(message => message.role === 'assistant').at(-1) as { stopReason?: string } | undefined;
     const failure = turn.limited ? 'model-call-limit' : turn.timedOut ? 'timeout' : this.closing ? 'stopped'
@@ -632,6 +676,32 @@ export class ThinkingLoop {
     // Thinking ends with the handling, whoever set it (ADR 0014); other expressions return to neutral with time.
     if (this.avatar.expression === 'thinking' && this.queue.length === 0) this.setAvatar('neutral', 'server');
     return { ...turn, ...(failure ? { failure } : {}) };
+  }
+
+  /**
+   * One commit for the turn, or none when memory did not change. A file that fails the check goes back to the
+   * previous commit and its reason waits for the next prompt. A commit that cannot be made is logged, never thrown:
+   * the memory is still on disk, and the next turn commits it.
+   */
+  private async commitMemory(eventIds: string[], kind: Turn['kind']): Promise<void> {
+    try {
+      const outcome = await this.memoryRepository.commit({ event: this.eventLabel(eventIds), night: kind === 'review' });
+      if (outcome.committed) this.log(`memory: committed ${outcome.files.length} file(s)`);
+      const notice = revertNotice(outcome.reverted);
+      if (notice) this.memoryNotice = this.memoryNotice ? `${this.memoryNotice}\n${notice}` : notice;
+    } catch {
+      // The error text is the git CLI's and never leaves the server.
+      this.log('memory: the commit failed; the changes stay in the working tree');
+    }
+  }
+
+  /** The event kinds of a turn, in the names the model sees, for the machine-made commit message. */
+  private eventLabel(eventIds: string[]): string {
+    const kinds = eventIds.map(eventId => {
+      const row = this.options.db.prepare('SELECT kind FROM loop_events WHERE event_id = ?').get(eventId) as { kind: string } | undefined;
+      return (row?.kind ?? 'event').replace(/-/g, '_');
+    });
+    return [...new Set(kinds)].join('+');
   }
 
   /**
