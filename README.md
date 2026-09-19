@@ -4,7 +4,8 @@ Pi Coding Agent を使う個人アシスタント。現在はサーバー基盤�
 二重起動の拒否、状態 DB の migration、専用の Pi 状態領域、コンテナ）、GitHub ログインと短期セッション、
 HTTPS/WSS の待ち受けと v1 envelope の入口、Let's Encrypt（ACME HTTP-01）による証明書の自動取得、
 固定 IPv6 で公開するコンテナ構成、Pi SDK の隔離検証ハーネス、単一の思考ループによる Mac との会話
-（端末の登録と同期、表情、表示用の会話の記録）、git で持つ Markdown の長期記憶と、夜の思考の記録の切り替えを提供しています。
+（端末の登録と同期、表情、表示用の会話の記録）、git で持つ Markdown の長期記憶、閉じ込めたコンテナの中の作業環境と、
+夜の思考の記録の切り替えを提供しています。
 Mac アプリは土台（ログイン、会話の同期、デスクトップに常駐するキャラクター、その上の吹き出しと下の入力欄、履歴）ができています。
 Slack、通知・スケジューラー、承認の表示、Google/Wiki 連携は後続の実装です。
 
@@ -50,6 +51,9 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      表情が neutral に戻るまでの時間 `expressionResetMinutes`（既定 3 分）。
      記憶のリポジトリの場所 `memoryRepository`（絶対パス。既定は data directory の `memory/`）と、
      記憶 1 ファイルの上限 `memoryFileMaxChars`（既定 32000 文字）。
+     作業環境の runner のソケット `workspaceSocket`（絶対パス。これがあるときだけ `run_shell` が使えます）、
+     runner の応答を待つ秒数 `shellWaitSeconds`（既定 75 秒。runner 側の応答の上限 60 秒より長くします）、
+     永続する書き場所の合計の目安 `workspaceSizeWarnBytes`（既定 1 GiB。超えると次のターンで natsumi に知らせます）。
 4. ビルドして起動します。
 
 ```sh
@@ -57,8 +61,9 @@ npm run build
 node dist/src/server/main.js serve --config config.local.json --data-dir <data directory>
 ```
 
-`--data-dir` を省略すると起動 cwd を data directory とします。初回起動で `memory/`（記憶のリポジトリ）と
-`.natsumi/`（状態 DB・ロック・状態ファイル）を作ります。既存のファイルは上書きしません。
+`--data-dir` を省略すると起動 cwd を data directory とします。初回起動で `memory/`（記憶のリポジトリ）、
+`work/` と `home/`（作業環境の `/work` と `/home/natsumi`）、`.natsumi/`（状態 DB・ロック・状態ファイル）を
+作ります。既存のファイルは上書きしません。
 同じ data directory で 2 つ目のサーバーを起動すると拒否します。異常終了後のロックは OS が解放するため、そのまま再起動できます。
 SIGTERM / SIGINT で停止します。
 
@@ -71,8 +76,9 @@ Pi の session ファイルが消えた・壊れた場合は新しい session �
 場所は `loop.memoryRepository`、既定は data directory の `memory/` で、初回起動でそこが git のリポジトリになります
 （ブランチは `main`）。すでにあった Markdown は、名前も中身も変えずに最初のコミットに入ります。
 記憶そのものは、これまでどおりトピックごとの Markdown ファイルで、見出しと日付付きの箇条書きの行でできています
-（[ADR 0009](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)）。natsumi は記憶のツールで書き足し、
-`run_memory_shell` で探します。手で読んで直すこともできますし、直下に手で置いた `.md` ファイルも natsumi が探す対象になります。
+（[ADR 0009](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)）。natsumi はこのファイルを `run_shell` で
+読み書きします（[ADR 0019](docs/adr/0019-a-workspace-not-a-memory-tool.md)。専用の記憶のツールはもうありません）。
+手で読んで直すこともできますし、直下に手で置いた `.md` ファイルも natsumi が探す対象になります。
 
 サーバーが名前と置き場所を決めるのは、リポジトリ直下の 3 つだけです。
 
@@ -180,34 +186,62 @@ volume の代わりに既存のディレクトリを bind mount する場合は�
   （`NATSUMI_TLS_CERT`、`NATSUMI_TLS_KEY`、`NATSUMI_GITHUB_CLIENT_SECRET_FILE` で変更できます）。
   `secrets/` は Git の追跡対象外です。ファイルはホストの権限のままマウントされるため、UID 1000 だけが読めるようにしてください。
 
-### 記憶を shell で探すコンテナ（natsumi-tools）
+### natsumi の作業環境（natsumi-workspace）
 
-モデルは `run_memory_shell` で、記憶のファイルを `rg` などのコマンドで探せます。コマンドは natsumi の中ではなく、
-閉じ込めたコンテナ `natsumi-tools` の中で動きます（[ADR 0011](docs/adr/0011-memory-shell-in-a-confined-container.md)）。
+natsumi は `run_shell` でコマンドを動かします。コマンドは natsumi の中ではなく、閉じ込めたコンテナ
+`natsumi-workspace` の中で動きます（[ADR 0011](docs/adr/0011-memory-shell-in-a-confined-container.md)、
+[ADR 0019](docs/adr/0019-a-workspace-not-a-memory-tool.md)）。記憶を探す道具ではなく、記憶の整理も調べものも
+下書きも集計もそこで行う作業机です。
 
 - 構成
-  - natsumi は、共有する小さな tmpfs の volume（`natsumi-tools-socket`）にある Unix ソケットで、`natsumi-tools` の実行役（runner）にコマンドを送ります。
+  - natsumi は、共有する小さな tmpfs の volume（`natsumi-workspace-socket`）にある Unix ソケットで、
+    `natsumi-workspace` の実行役（runner）にコマンドを送ります。
   - natsumi に Docker のソケットは渡しません。
-  - ツールは、設定の `loop.memoryShellSocket`（設定例では `/run/natsumi-tools/runner.sock`）があるときだけ使えます。
-- 入っているもの: `sh`、`cat`、`find`、`grep`、`head`、`ls`、`rg`、`sort`、`tail`、`uniq`、`wc` と runner だけです
-  （[docker/tools-commands.txt](docker/tools-commands.txt)）。ネットワークの道具、パッケージマネージャー、インタプリタ、git はありません。
+  - ツールは、設定の `loop.workspaceSocket`（設定例では `/run/natsumi-workspace/runner.sock`）があるときだけ使えます。
+- 入っているもの: debian-slim に標準の道具（`coreutils`・`findutils`・`diffutils`・`grep`・`sed`・`gawk`・`tar`・`gzip`・`bash`）と、
+  `ripgrep`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、それに runner です。
+  **使えるコマンドの一覧はもうありません。** 閉じ込めはコンテナの形だけで掛けます。
+- 書ける場所は 4 つです。ルートは読み取り専用のままです。
+
+  | 場所 | 永続 | 検査・コミット | 中身 |
+  | --- | --- | --- | --- |
+  | `/memory` | する | する | 記憶。`natsumi-data` の `memory/` |
+  | `/memory/.git` | する | — | 読み取り専用で重ねます。履歴は natsumi の手の届かないところに置きます |
+  | `/work` | する | しない | 手を動かす場所。`natsumi-data` の `work/` |
+  | `/home/natsumi` | する | しない | natsumi のホーム。`natsumi-data` の `home/` |
+  | `/tmp` | しない | — | 128 MB の tmpfs。コンテナの再起動で消えます |
+
+  `/work` と `/home/natsumi` はサーバーが見ません。ターンの終わりの検査もコミットも掛からず、
+  git の差分でも見られません。中を見るときはオーナーが自分でコンテナに入ります。
 - 閉じ込め
   - ネットワークはありません（`network_mode: none`）。
-  - `natsumi-data` の `memory/` だけを読み取り専用でマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
-  - ルートは読み取り専用で、書けるのは 16 MB の `/tmp` だけです。
+  - `natsumi-data` の上の 3 つだけをマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
   - 非 root で動き、全 capability を外し、`no-new-privileges` を付けます。
+  - `/tmp` には `noexec` を付けますが、**境界としては数えません。** インタプリタがある以上、
+    `python3 /tmp/x.py` は止まりません。
 - 上限
-  - CPU 1、メモリ 256 MB、プロセス数 64
-  - 1 回のコマンドは 10 秒まで
+  - CPU 2、メモリ 1 GB（swap なし）、プロセス数 256
+  - **1 つのコマンドに時間の上限はありません。** 応答の上限（60 秒）までに終わらなければ、
+    そこまでの出力と「まだ動いている」印が返り、プロセスはそのまま動き続けます。
+    返した後も runner が出力を読み捨て続けるので、コマンドが詰まることはありません。
+    残ったプロセスを止めるのは natsumi です（`ps` と `kill`）。サーバーは止めません。
   - 出力は標準出力・標準エラー出力それぞれ 64 KiB まで（モデルに返すのは標準出力 8000 文字・標準エラー出力 2000 文字まで）
-  - 時間と出力の上限は、`compose.yaml` の `command` で変えられます。
-- UID: 記憶のファイルは所有者だけが読めるので、`natsumi-tools` は natsumi と同じ UID で動かします（既定は 1000）。
-  natsumi を別の UID で動かすときは、`NATSUMI_TOOLS_UID` に同じ値を入れます。
-- 起動の順番: natsumi が初回の起動で `memory/` を作るので、`natsumi-tools` は natsumi が healthy になってから起動します。
-- 閉じ込めの確認: [scripts/check-memory-shell-sandbox.sh](scripts/check-memory-shell-sandbox.sh) が、使い捨ての project で
-  2 つのコンテナを起動し、閉じ込め（ネットワーク、見えるファイル、書き込み、コマンドの一覧、プロセス数と時間の上限、非 root）を
-  runner 経由で確かめます。image 名を変える override を用意して、先に build してから実行します。
-  運用中の環境と同じ image 名で build すると、そのタグを上書きするので注意してください。
+  - 1 つのコマンドの長さは 8000 文字まで。超えるとサーバーが送る前に拒否します。
+  - 応答の上限と出力の上限は `compose.yaml` の `command` で、サーバー側の待ち時間は `loop.shellWaitSeconds` で変えられます。
+- 環境変数: コマンドには `PATH`・`PWD`・`HOME`・`LANG`・`TZ` の 5 つだけを渡します。コンテナ自体の環境変数は空のままです。
+  `TZ` はサーバーがコマンドごとに `loop.timeZone` を送ります（`NATSUMI_TIME_ZONE` は runner 側の既定値です）。
+- 大きさ: `/memory`・`/work`・`/home/natsumi` の合計が `loop.workspaceSizeWarnBytes`（既定 1 GiB）を超えると、
+  次のターンで natsumi に内訳つきで知らせます。強制はしないので、片づけないままだといつかはディスクが埋まります。
+- UID: これらのファイルは所有者だけが読めるので、`natsumi-workspace` は natsumi と同じ UID で動かします（既定は 1000）。
+  natsumi を別の UID で動かすときは、`NATSUMI_WORKSPACE_UID` に同じ値を入れます。
+- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/` を作るので、`natsumi-workspace` は
+  natsumi が healthy になってから起動します。
+- 閉じ込めの確認: [scripts/check-workspace-sandbox.sh](scripts/check-workspace-sandbox.sh) が、使い捨ての project で
+  2 つのコンテナを起動し、コンテナの形（ネットワーク、マウント、権限、資源の上限、見えない秘密、環境変数）と、
+  終わらないコマンドが応答の上限で返りそのプロセスが生き残ることを、runner 経由で確かめます。
+  image 名を変える override を用意して、先に build してから実行します。
+  **運用中の環境と同じ image 名で build すると、そのタグを上書きします。** build する前に
+  `docker compose ... config --images` に `:local` が出ないことを確かめてください。
 
 ### 固定 IPv6 で公開する
 
@@ -316,7 +350,7 @@ cp <アセットのディレクトリ>/pet.json <アセットのディレクト�
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json)（証明書ファイル）と [ACME の設定例](config.acme.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。
