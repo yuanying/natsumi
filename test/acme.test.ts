@@ -10,6 +10,8 @@ import test from 'node:test';
 import { connect } from 'node:tls';
 import WebSocket from 'ws';
 import { createCsr } from '../src/server/acme.ts';
+import { CertificateManager } from '../src/server/certificates.ts';
+import { openChallengeListener } from '../src/server/challenge.ts';
 import { startServer, type RunningServer } from '../src/server/server.ts';
 import { checkHealth, readStatus } from '../src/server/status.ts';
 import { ACME_UPSTREAM_DETAIL, AcmeStub } from './support/acme-stub.ts';
@@ -277,4 +279,52 @@ test('without ACME no plaintext listener is opened', async () => {
       await server.checkCertificate();
     } finally { await server.stop(); }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('the manager hands over the first certificate and every renewal, and never the same one twice', { skip }, async () => {
+  const f = await setup();
+  try {
+    const manager = await CertificateManager.open({
+      stateDirectory: join(f.data, '.natsumi'), hostname: HOST, now: () => f.clock.now, pollIntervalMs: 5,
+      acme: { directoryUrl: f.stub.directoryUrl, contactEmail: 'owner@example.test', httpPort: f.httpPort },
+      log: line => { f.logs.push(line); },
+    });
+    const challenge = await openChallengeListener({
+      host: '127.0.0.1', port: f.httpPort, publicOrigin: PUBLIC_ORIGIN, challenges: manager.challenges,
+    });
+    const served: string[] = [];
+    try {
+      // Starting with nothing stored: the first certificate reaches the listener once.
+      await manager.start(async certificate => { served.push(certificate.cert.toString('utf8')); });
+      await manager.checkCertificate();
+      assert.equal(f.stub.orders, 1);
+      assert.equal(served.length, 1);
+
+      // A certificate that is not due is neither re-ordered nor handed over again.
+      await manager.checkCertificate();
+      assert.equal(f.stub.orders, 1);
+      assert.equal(served.length, 1);
+
+      // Near expiry it is renewed, and only the new one is handed over.
+      f.clock.advance(70 * DAY);
+      await manager.checkCertificate();
+      assert.equal(f.stub.orders, 2);
+      assert.equal(served.length, 2);
+      assert.notEqual(served[1], served[0]);
+
+      // A failed renewal keeps the current certificate, hands nothing over, and backs off before retrying.
+      f.clock.advance(70 * DAY);
+      f.stub.failing = true;
+      await manager.checkCertificate();
+      assert.equal(served.length, 2);
+      const orders = f.stub.orders;
+      f.stub.failing = false;
+      await manager.checkCertificate();
+      assert.equal(f.stub.orders, orders, 'the retry waits for the back-off');
+      f.clock.advance(16 * MINUTE);
+      await manager.checkCertificate();
+      assert.equal(served.length, 3);
+      assert.doesNotMatch(f.logs.join('\n'), leaks);
+    } finally { await challenge.close(); await manager.close(); }
+  } finally { await f.cleanup(); }
 });

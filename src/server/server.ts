@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { CertificateManager, CHECK_INTERVAL_MS, type Certificate } from './certificates.ts';
+import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
 import { loadConfig, type ServerConfig } from './config.ts';
 import { ConnectionHub } from './connections.ts';
@@ -20,8 +20,6 @@ import { Scheduler } from './scheduler.ts';
 import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
 
 const SESSION_SWEEP_MS = 30_000;
-/** The shortest wait between background certificate checks, so a schedule surprise cannot spin. */
-const MIN_CERTIFICATE_CHECK_MS = 60_000;
 
 export interface StartOptions {
   config: string;
@@ -89,21 +87,18 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let listener: Listener | undefined;
   let challenge: ChallengeListener | undefined;
   let certificates: CertificateManager | undefined;
-  let checking: Promise<void> | undefined;
-  let renewal: NodeJS.Timeout | undefined;
   let scheduler: Scheduler | undefined;
-  let closed = false;
   const timers: NodeJS.Timeout[] = [];
+  // Everything opened above, closed in the reverse order.
   const closeAll = async () => {
-    closed = true;
-    timers.forEach(clearInterval);
-    clearTimeout(renewal);
-    scheduler?.stop();
-    certificates?.close();
-    await checking?.catch(() => {});
+    timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
+    scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
+    await certificates?.close(); // Abandons an ACME order in flight: no certificate arrives at a listener being closed.
     try {
-      if (listener) await listener.close(); else await hub?.close();
+      if (listener) await listener.close(); else await hub?.close(); // Stops serving clients; closing the listener closes the hub with it.
     } finally {
+      // The challenge listener answers an order that is already abandoned, so it goes next; the loop is last because
+      // a turn in flight still needs its Pi session, and closing it ends that turn rather than cutting it off.
       try { await challenge?.close(); } finally { await loop?.close(); }
     }
   };
@@ -150,20 +145,16 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     let opened!: (address: Address) => void;
     const listening = new Promise<Address>(resolve => { opened = resolve; });
 
-    // A certificate goes into the running listener, or opens HTTPS if this is the first one.
-    let served: Certificate | undefined;
+    // All the certificate manager asks of the server: put a new certificate into the running listener,
+    // or open HTTPS with the first one. When it opens is what `status.state` follows.
     const serve = async (certificate: Certificate) => {
       const files = { cert: certificate.cert, key: certificate.key };
-      if (listener) {
-        listener.updateCertificate(files);
-      } else {
-        listener = await open(files);
-        status.state = 'running';
-        await writeStatus(dataDirectory, { ...status, updatedAt: new Date().toISOString() }).catch(() => {});
-        log('listen: HTTPS is open');
-        opened(listener.address);
-      }
-      served = certificate;
+      if (listener) return listener.updateCertificate(files);
+      listener = await open(files);
+      status.state = 'running';
+      await writeStatus(dataDirectory, { ...status, updatedAt: new Date().toISOString() }).catch(() => {});
+      log('listen: HTTPS is open');
+      opened(listener.address);
     };
 
     if (tls && 'acme' in tls) {
@@ -175,36 +166,19 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         host: config.listen.host, port: tls.acme.httpPort, publicOrigin: config.publicOrigin, challenges: certificates.challenges,
       });
       // Without a certificate HTTPS stays closed: no self-signed stand-in (ADR 0007).
-      if (certificates.current) await serve(certificates.current); else status.state = 'waiting-for-certificate';
+      if (!certificates.current) status.state = 'waiting-for-certificate';
+      await certificates.start(serve);
     } else {
       listener = await open(tlsFiles);
       opened(listener.address);
     }
 
     const manager = certificates;
-    const checkCertificate = (): Promise<void> => {
-      if (!manager || closed) return Promise.resolve();
-      checking ??= (async () => {
-        await manager.check();
-        if (manager.current && manager.current !== served && !closed) await serve(manager.current);
-      })().finally(() => { checking = undefined; });
-      return checking;
-    };
-    const report = (error: unknown) => {
-      log(`acme: the certificate could not be served (${(error as NodeJS.ErrnoException).code ?? (error as Error).name ?? 'error'})`);
-    };
-    const scheduleCheck = () => {
-      if (!manager || closed) return;
-      const wait = Math.min(Math.max(manager.nextCheckAt() - now(), MIN_CERTIFICATE_CHECK_MS), CHECK_INTERVAL_MS);
-      renewal = setTimeout(() => { void checkCertificate().catch(report).finally(scheduleCheck); }, wait);
-    };
-
     await writeStatus(dataDirectory, status);
     timers.push(setInterval(() => {
       void writeStatus(dataDirectory, { ...status, updatedAt: new Date().toISOString() }).catch(() => {});
     }, HEARTBEAT_MS));
     timers.push(setInterval(() => connections.expireSessions(), SESSION_SWEEP_MS));
-    if (manager) void checkCertificate().catch(report).finally(scheduleCheck);
 
     let stopping: Promise<void> | undefined;
     const database = db;
@@ -213,7 +187,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       get address() { return listener?.address; },
       get challengeAddress() { return challenge?.address; },
       expireSessions: () => connections.expireSessions(),
-      checkCertificate,
+      checkCertificate: () => manager?.checkCertificate() ?? Promise.resolve(),
       rotateSession: () => thinkingLoop.rotate(),
       stop() {
         stopping ??= (async () => {
