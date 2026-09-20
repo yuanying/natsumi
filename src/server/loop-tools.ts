@@ -2,7 +2,8 @@ import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { CANCEL_SELF_CHECK_DESCRIPTION, FINISH_EVENT_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION,
   NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION,
-  SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WRITE_HANDOFF_NOTE_DESCRIPTION } from './prompts.ts';
+  SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WRITE_CHANGE_NOTE_DESCRIPTION,
+  WRITE_HANDOFF_NOTE_DESCRIPTION } from './prompts.ts';
 
 /** The avatar expressions the Mac can show. The model picks from these only. */
 export const EXPRESSIONS = ['neutral', 'happy', 'laughing', 'surprised', 'thinking', 'worried', 'sad', 'sleepy'] as const;
@@ -20,6 +21,7 @@ export interface LoopToolHost {
   finish(eventId: string): Outcome;
   setExpression(expression: Expression): Outcome;
   writeHandoff(eventId: string, text: string): Outcome;
+  writeChangeNote(eventId: string, text: string): Outcome;
   scheduleSelfCheck(reason: string, when: { inMinutes?: number; at?: string }): Outcome;
   listSelfChecks(): Outcome;
   cancelSelfCheck(checkId: string): Outcome;
@@ -32,7 +34,7 @@ export interface LoopToolHost {
  * the only shell is `run_shell`, and it runs in the workspace container, never here.
  */
 export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'finish_event', 'set_mac_avatar_expression',
-  'write_handoff_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check'];
+  'write_handoff_note', 'write_change_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check'];
 /** Added to the allowlist with a runner: the whole of natsumi's workspace, memory included (ADR 0019). */
 export const RUN_SHELL_TOOL_NAME = 'run_shell';
 
@@ -81,6 +83,12 @@ export function createLoopTools(host: LoopToolHost) {
       description: WRITE_HANDOFF_NOTE_DESCRIPTION,
       parameters: Type.Object({ event_id: Type.String(), text: Type.String() }),
       execute: async (_id, params) => result(host.writeHandoff(params.event_id, params.text)),
+    }),
+    defineTool({
+      name: 'write_change_note', label: 'Write the change note',
+      description: WRITE_CHANGE_NOTE_DESCRIPTION,
+      parameters: Type.Object({ event_id: Type.String(), text: Type.String() }),
+      execute: async (_id, params) => result(host.writeChangeNote(params.event_id, params.text)),
     }),
     defineTool({
       name: 'schedule_self_check', label: 'Book a self-check',

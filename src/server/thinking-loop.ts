@@ -128,8 +128,8 @@ interface Handling { eventId: string; messageId?: string; replied: boolean; fini
 interface Turn {
   kind: 'events' | 'review';
   calls: number; maxCalls: number; limited: boolean; timedOut: boolean; notices: number;
-  /** The review's rotation and the handoff it wrote. */
-  rotationId?: string; handoff?: string;
+  /** The review's rotation, the handoff it wrote, and what it said about the night (ADR 0020). */
+  rotationId?: string; handoff?: string; changeNote?: string;
 }
 
 /**
@@ -609,7 +609,7 @@ export class ThinkingLoop {
     this.steered.clear();
 
     // Whatever ended the turn, what memory holds now is checked and committed before the next event (ADR 0018).
-    await this.commitMemory(eventIds, kind);
+    await this.commitMemory(eventIds, turn);
     await this.checkWorkspaceSize();
 
     const last = session.messages.slice(before).filter(message => message.role === 'assistant').at(-1) as { stopReason?: string } | undefined;
@@ -635,10 +635,16 @@ export class ThinkingLoop {
    * One commit for the turn, or none when memory did not change. A file that fails the check goes back to the
    * previous commit and its reason waits for the next prompt. A commit that cannot be made is logged, never thrown:
    * the memory is still on disk, and the next turn commits it.
+   *
+   * A review that wrote a change note commits under it; one that did not gets the machine-made message, because a
+   * night is not failed for having left its own commit unexplained (ADR 0020).
    */
-  private async commitMemory(eventIds: string[], kind: Turn['kind']): Promise<void> {
+  private async commitMemory(eventIds: string[], turn: Turn): Promise<void> {
     try {
-      const outcome = await this.memoryRepository.commit({ event: this.eventLabel(eventIds), night: kind === 'review' });
+      const outcome = await this.memoryRepository.commit({
+        event: this.eventLabel(eventIds), night: turn.kind === 'review',
+        ...(turn.changeNote ? { message: turn.changeNote } : {}),
+      });
       if (outcome.committed) this.log(`memory: committed ${outcome.files.length} file(s)`);
       const notice = revertNotice(outcome.reverted);
       if (notice) this.memoryNotice = this.memoryNotice ? `${this.memoryNotice}\n${notice}` : notice;
@@ -791,6 +797,7 @@ export class ThinkingLoop {
         return { ok: true, text: `アバターの表情を ${expression} にしました。` };
       },
       writeHandoff: (eventId, text) => this.writeHandoff(eventId, text),
+      writeChangeNote: (eventId, text) => this.writeChangeNote(eventId, text),
       scheduleSelfCheck: (reason, when) => this.selfChecks.schedule(reason, when),
       listSelfChecks: () => this.selfChecks.list(),
       cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
@@ -861,6 +868,23 @@ export class ThinkingLoop {
     // Saved at once, so a stop after this point finishes the switch instead of losing the review.
     this.store.saveHandoff(turn.rotationId, text);
     return { ok: true, text: '引き継ぎのメモを保存しました。明日の新しい思考の記録は、このメモから始まります。書き直すなら、もう一度呼んでください。' };
+  }
+
+  /**
+   * What the night says about itself, kept for this turn's commit (ADR 0020). Refused outside the review rather
+   * than quietly dropped: the day's commit message is the server's, so a note written then would have nowhere to
+   * go, and a reason lets her write it at the right time instead.
+   */
+  private writeChangeNote(eventId: string, text: string): ToolOutcome {
+    const turn = this.turn;
+    if (turn?.kind !== 'review' || !this.handling.has(eventId)) {
+      return { ok: false, text: '書いていません。write_change_note は、いま処理中の夜の振り返り（nightly_review）の event_id にだけ使えます。'
+        + '日中の記憶のコミットメッセージはサーバーが付けるので、この説明の行き場がありません。' };
+    }
+    const check = checkOutgoingText(text);
+    if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '書いていません') };
+    turn.changeNote = text;
+    return { ok: true, text: '今夜の記憶のコミットメッセージにします。書き直すなら、もう一度呼んでください。' };
   }
 
   /**

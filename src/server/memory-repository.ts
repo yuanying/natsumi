@@ -119,8 +119,11 @@ export class MemoryRepository {
    * The end of a turn: what changed is checked file by file, what fails goes back to the previous commit (a new file
    * is removed), and what is left becomes one commit. A turn that changed nothing commits nothing.
    * Removing and renaming is natsumi's to do, save for the three fixed files, which come back.
+   *
+   * `message` is what natsumi wrote about the night (ADR 0020). Without one the server makes the message itself, so
+   * a night that never explained itself still commits.
    */
-  async commit(input: { event: string; night?: boolean }): Promise<CommitOutcome> {
+  async commit(input: { event: string; night?: boolean; message?: string }): Promise<CommitOutcome> {
     const reverted: RevertedFile[] = [];
     for (const entry of await this.status()) {
       const reason = entry.deleted ? this.inspectRemoval(entry.path) : await this.inspect(entry.path, input.night === true);
@@ -131,7 +134,7 @@ export class MemoryRepository {
     const files = (await this.status()).map(entry => entry.path);
     if (files.length === 0) return { committed: false, files: [], reverted };
     await runGit(this.directory, ['add', '-A', '--', '.']);
-    await this.commitStaged(input.event, files);
+    await this.commitStaged(input.event, files, input.message);
     if (reverted.length > 0) this.log(`memory: ${reverted.length} changed file(s) went back to the previous commit`);
     return { committed: true, files, reverted };
   }
@@ -193,8 +196,8 @@ export class MemoryRepository {
     try { await lstat(join(this.directory, name)); return true; } catch { return false; }
   }
 
-  private async commitStaged(event: string, files: string[]): Promise<void> {
-    await runGit(this.directory, ['commit', '--no-verify', '--quiet', '-m', subject(event, files)]);
+  private async commitStaged(event: string, files: string[], message?: string): Promise<void> {
+    await runGit(this.directory, ['commit', '--no-verify', '--quiet', '-m', message?.trim() || subject(event, files)]);
   }
 
   /** What differs from the last commit, one entry per path. Renames come back as a removal and an addition. */

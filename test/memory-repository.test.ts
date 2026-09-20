@@ -290,6 +290,23 @@ test('always.md has a smaller limit of its own, counted in code points, and a ni
   } finally { await f.cleanup(); }
 });
 
+/** The night's own commit message: what natsumi wrote about the night, or the machine-made one when she wrote none. */
+test('a commit message given to the commit is used as it stands, and without one the server makes it', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+
+    await f.write('予定.md', '# 予定\n\n- 2026-09-19: 歯医者は金曜\n');
+    await f.repository.commit({ event: 'nightly_review', night: true, message: '予定をまとめ直した\n\n歯医者の件を 1 行にした。' });
+    assert.equal(f.subject(), '予定をまとめ直した');
+    assert.match(f.git('log', '-1', '--format=%B'), /歯医者の件を 1 行にした。/);
+
+    await f.write('予定.md', '# 予定\n\n- 2026-09-20: 歯医者は金曜の午後\n');
+    await f.repository.commit({ event: 'nightly_review', night: true });
+    assert.equal(f.subject(), 'nightly_review: 予定.md');
+  } finally { await f.cleanup(); }
+});
+
 test('nothing is ever pushed, even with a remote', async () => {
   const f = await setup();
   try {

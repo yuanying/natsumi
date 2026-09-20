@@ -860,3 +860,78 @@ test('an always.md written past its limit is not committed, and the reason reach
     assert.match(next!.systemPrompt ?? '', /200/);
   } finally { await f.cleanup(); }
 });
+
+/** What the night changed, in natsumi's own words, as that night's commit message (ADR 0018, ADR 0020). */
+test('write_change_note becomes the nightly commit message, and a note that fails the check is rewritten', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    behave(f, {});
+    const day = f.send(loop, `昼の話 ${EARLIER}`);
+    await completed(events, day.eventId);
+    await loop.idle();
+
+    f.model.takeOver();
+    const rotating = loop.rotate();
+    const review = await f.model.next();
+    const [reviewEvent] = eventLines(lastUserText(review.context));
+    writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER}\n`);
+    // The same checks as anything that reaches the owner: non-Japanese script is refused and may be written again.
+    review.call('write_change_note', { event_id: reviewEvent!.event_id, text: '今日の记录をまとめた' });
+    review.finish();
+    const review2 = await f.model.next();
+    const [refused] = toolResults(review2.context);
+    assert.equal(refused!.isError, true);
+    assert.match(refused!.text, /日本語以外/);
+    review2.call('write_change_note', { event_id: reviewEvent!.event_id, text: '一日の記録を書き足した\n\n昼の話を 1 行にまとめた。' });
+    review2.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 引き継ぎ` });
+    review2.call('finish_event', { event_id: reviewEvent!.event_id });
+    review2.finish();
+    assert.equal((await rotating).result, 'switched');
+
+    assert.equal(f.git('log', '-1', '--format=%s'), '一日の記録を書き足した');
+    assert.match(f.git('log', '-1', '--format=%B'), /昼の話を 1 行にまとめた。/);
+  } finally { await f.cleanup(); }
+});
+
+test('a night with no change note still switches, and the day is told why the note has no place', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    behave(f, {
+      review: event => {
+        writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER}\n`);
+        return { calls: [
+          call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 説明は書かなかった夜` }),
+          call('finish_event', { event_id: event.event_id }),
+        ] };
+      },
+    });
+    const day = f.send(loop, '今日の話');
+    await completed(events, day.eventId);
+    await loop.idle();
+
+    // No note, and the night is not failed for it: the server makes the message instead.
+    assert.equal((await loop.rotate()).result, 'switched');
+    assert.match(f.git('log', '-1', '--format=%s'), /^nightly_review: .*一日の記録\.md/);
+
+    // In the day the tool is refused with its reason, and the turn goes on: the day's message is the server's.
+    f.model.takeOver();
+    const morning = f.send(loop, 'おはよう');
+    const turn1 = await f.model.next();
+    const [event] = eventLines(lastUserText(turn1.context));
+    writeFileSync(join(f.memory, '予定.md'), '# 予定\n\n- 2026-09-20: 歯医者は金曜\n');
+    turn1.call('write_change_note', { event_id: event!.event_id, text: '昼の説明' });
+    turn1.finish();
+    const turn2 = await f.model.next();
+    const [refusal] = toolResults(turn2.context);
+    assert.equal(refusal!.isError, true);
+    assert.match(refusal!.text, /nightly_review/);
+    turn2.call('reply_to_mac', { event_id: event!.event_id, text: '続けます' });
+    turn2.call('finish_event', { event_id: event!.event_id });
+    turn2.finish();
+    await completed(events, morning.eventId);
+    assert.equal(replies(events).at(-1), '続けます');
+    assert.match(f.git('log', '-1', '--format=%s'), /^mac_message: .*予定\.md/);
+  } finally { await f.cleanup(); }
+});

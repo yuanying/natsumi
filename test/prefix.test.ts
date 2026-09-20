@@ -44,6 +44,7 @@ function toolHost(workspace: boolean): LoopToolHost {
     finish: () => outcome('finished'),
     setExpression: () => outcome('expression'),
     writeHandoff: () => outcome('handoff'),
+    writeChangeNote: () => outcome('change note'),
     scheduleSelfCheck: () => outcome('scheduled'),
     listSelfChecks: () => outcome('listed'),
     cancelSelfCheck: () => outcome('cancelled'),
