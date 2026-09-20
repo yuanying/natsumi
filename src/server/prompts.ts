@@ -101,6 +101,10 @@ export const SET_MAC_AVATAR_EXPRESSION_DESCRIPTION = (expressions: readonly stri
 
 export const WRITE_HANDOFF_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。明日の新しい思考の記録に引き継ぐメモを書く。何度か呼ぶと最後のものが使われる。';
 
+export const WRITE_CHANGE_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。今夜の記憶の変更を自分の言葉で説明する。'
+  + 'この文がそのまま今夜のコミットメッセージになるので、1 行目は短い要約にする。何度か呼ぶと最後のものが使われる。'
+  + '書かなくても夜は終わるが、その場合の説明はサーバーが機械的に付ける。';
+
 export const SCHEDULE_SELF_CHECK_DESCRIPTION = '後で自分からもう一度確かめるための予約をする。時刻が来ると、reason を添えた self_check のイベントが届く。'
   + 'in_minutes（今から何分後か）と at（本人のタイムゾーンの "HH:MM" か "YYYY-MM-DD HH:MM"）のどちらか一方だけを指定する。'
   + '近すぎる先・遠すぎる先・件数には上限があり、同じ理由の予約は 1 件にまとまる。夜に来た予約は朝に届く。';
@@ -111,10 +115,26 @@ export const CANCEL_SELF_CHECK_DESCRIPTION = 'まだ届いていない自分の�
 
 // ── On a turn's input ──
 
+/**
+ * The nightly review, as a menu rather than a sequence (ADR 0020). There are close to ten worthwhile things to do
+ * and a turn cannot hold them all, so listing them in order would mean the last of them never ran — and the one
+ * that must never be dropped, the handoff, would be at the end. Only two things are required; what else is worth
+ * doing tonight is natsumi's to choose, having actually looked at memory and at the workspace.
+ */
 export const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思考の記録は新しくなり、今日の細かいやりとりは見えなくなります。'
-  + '(1) 今日の出来事を振り返り、本人に覚えておいてと言われたこと、本人について今後も役立つこと、本人との約束で、まだ記憶にないものを /memory に書き足してください（先に run_shell で探すと、同じことを二度書かずに済みます）。'
-  + '(2) write_handoff_note で、明日の自分への引き継ぎを書いてください。対応中のこと、本人の返事を待っていること、本人の最近の様子など、記憶に書くほどではないが明日知っておきたいことを短くまとめます。'
-  + '(3) 最後に finish_event を呼んでください。本人への返事や知らせは送りません。';
+  + '必ずやることは 2 つだけです。'
+  + '(1) write_handoff_note で、明日の自分への引き継ぎを書くこと。対応中のこと、本人の返事を待っていること、本人の最近の様子など、記憶に書くほどではないが明日知っておきたいことを短くまとめます。'
+  + '(2) 最後に finish_event を呼んで、このターンを終えること。本人への返事や知らせは送りません。'
+  + 'ほかにやれることは候補として挙げておきます。今夜の記憶と作業場を実際に見て、価値のあるものをあなたが選んでください。順番も決まっていません。'
+  + '・今日の出来事を振り返り、本人に覚えておいてと言われたこと、本人について今後も役立つこと、本人との約束で、まだ記憶にないものを /memory に書き足す（先に run_shell で探すと、同じことを二度書かずに済みます）。'
+  + '・記憶全体を読み直し、重複しているところ、古くなったところを直す。'
+  + '・トピックをまとめる、分ける、名前を変える、フォルダを整理する。'
+  + '・always.md（常時記憶）を見直す。毎回思い出したいことだけを残し、長くなっていれば削ります。'
+  + '・personality.md（性格・話し方）を見直す。'
+  + '・write_change_note で、今夜の変更の説明を書く。'
+  + '・ps で残っているプロセスを見て、要らないものを kill する。'
+  + '・/work と /home/natsumi を片づける。ここは検査もコミットもされないので、残したいものがあれば /memory に移します。'
+  + '全部をやる必要はありません。今夜できなかったことは引き継ぎに書いておいてください。明日の自分がそこから拾えます。';
 
 export const COMPACTION_INSTRUCTIONS = 'これは natsumi（本人専属の秘書）の思考の記録です。要約は日本語で書いてください。'
   + '本人との約束、本人に頼まれて対応中のこと、本人の返事を待っていること、本人の最近の様子、覚えておいてと言われたこと（/memory に書いたかどうか）を必ず残してください。'

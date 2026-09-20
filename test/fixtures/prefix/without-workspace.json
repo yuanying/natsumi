@@ -125,6 +125,25 @@
       }
     },
     {
+      "name": "write_change_note",
+      "description": "夜の振り返り（nightly_review）でだけ使う。今夜の記憶の変更を自分の言葉で説明する。この文がそのまま今夜のコミットメッセージになるので、1 行目は短い要約にする。何度か呼ぶと最後のものが使われる。書かなくても夜は終わるが、その場合の説明はサーバーが機械的に付ける。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "event_id",
+          "text"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
       "name": "schedule_self_check",
       "description": "後で自分からもう一度確かめるための予約をする。時刻が来ると、reason を添えた self_check のイベントが届く。in_minutes（今から何分後か）と at（本人のタイムゾーンの \"HH:MM\" か \"YYYY-MM-DD HH:MM\"）のどちらか一方だけを指定する。近すぎる先・遠すぎる先・件数には上限があり、同じ理由の予約は 1 件にまとまる。夜に来た予約は朝に届く。",
       "parameters": {

@@ -31,6 +31,7 @@
     "reviewModelCalls": 40,
     "reviewTimeoutMinutes": 30,
     "workspaceSocket": "/run/natsumi-workspace/runner.sock",
-    "memoryFileMaxChars": 32000
+    "memoryFileMaxChars": 32000,
+    "alwaysMemoryMaxChars": 2000
   }
 }

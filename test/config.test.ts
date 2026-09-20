@@ -23,6 +23,7 @@ const github = () => ({
 });
 const SCHEDULE_DEFAULTS = {
   memoryFileMaxChars: 32000,
+  alwaysMemoryMaxChars: 2000,
   shellWaitSeconds: 75,
   workspaceSizeWarnBytes: 1073741824,
   awakeHours: { start: '08:00', end: '23:00' },
@@ -166,6 +167,13 @@ test('the memory repository defaults to the data directory, and a file limit too
   assert.equal(parseConfig(base()).loop.memoryFileMaxChars, 32000);
   assert.equal(parseConfig({ ...base(), loop: { memoryFileMaxChars: 8000 } }).loop.memoryFileMaxChars, 8000);
   for (const chars of [0, 999, 1.5, '32000', true]) rejects({ ...base(), loop: { memoryFileMaxChars: chars } }, 'loop.memoryFileMaxChars');
+});
+
+// The always-memory rides in every prompt, so it has a limit of its own, far below one memory file's (ADR 0020).
+test('the always-memory has its own smaller limit, with a default and a floor', () => {
+  assert.equal(parseConfig(base()).loop.alwaysMemoryMaxChars, 2000);
+  assert.equal(parseConfig({ ...base(), loop: { alwaysMemoryMaxChars: 800 } }).loop.alwaysMemoryMaxChars, 800);
+  for (const chars of [0, 199, 1.5, '2000', true]) rejects({ ...base(), loop: { alwaysMemoryMaxChars: chars } }, 'loop.alwaysMemoryMaxChars');
 });
 
 test('an OpenAI-compatible endpoint is chosen explicitly, with its key referenced by env or file', () => {

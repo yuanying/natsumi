@@ -25,6 +25,12 @@ export const NIGHT_ONLY_FILES: readonly string[] = [ALWAYS_FILE, PERSONALITY_FIL
 
 /** The longest one memory file may be, in characters. */
 export const DEFAULT_FILE_MAX_CHARS = 32000;
+/**
+ * The longest the always-memory may be. It rides in every prompt, so it is held far below one memory file (ADR 0018),
+ * and the limit is put on the writing rather than on the reading: the state where it is too long is never made,
+ * so whoever builds the prompt need not look at the length at all (ADR 0020).
+ */
+export const DEFAULT_ALWAYS_MAX_CHARS = 2000;
 
 const ALWAYS_TEMPLATE = `# 常時記憶
 
@@ -56,6 +62,8 @@ export interface MemoryRepositoryOptions {
   dataDirectory: string;
   /** `loop.memoryFileMaxChars`. */
   fileMaxChars?: number;
+  /** `loop.alwaysMemoryMaxChars`, for `always.md` alone. */
+  alwaysMaxChars?: number;
   log?: (line: string) => void;
 }
 
@@ -86,6 +94,8 @@ export class MemoryRepository {
 
   private get fileMaxChars(): number { return this.options.fileMaxChars ?? DEFAULT_FILE_MAX_CHARS; }
 
+  private get alwaysMaxChars(): number { return this.options.alwaysMaxChars ?? DEFAULT_ALWAYS_MAX_CHARS; }
+
   /**
    * Makes the repository if it is not one yet, on `main`, taking whatever Markdown is already there into the first
    * commit under its own name and contents. An existing repository keeps its history: only the three fixed files
@@ -109,8 +119,11 @@ export class MemoryRepository {
    * The end of a turn: what changed is checked file by file, what fails goes back to the previous commit (a new file
    * is removed), and what is left becomes one commit. A turn that changed nothing commits nothing.
    * Removing and renaming is natsumi's to do, save for the three fixed files, which come back.
+   *
+   * `message` is what natsumi wrote about the night (ADR 0020). Without one the server makes the message itself, so
+   * a night that never explained itself still commits.
    */
-  async commit(input: { event: string; night?: boolean }): Promise<CommitOutcome> {
+  async commit(input: { event: string; night?: boolean; message?: string }): Promise<CommitOutcome> {
     const reverted: RevertedFile[] = [];
     for (const entry of await this.status()) {
       const reason = entry.deleted ? this.inspectRemoval(entry.path) : await this.inspect(entry.path, input.night === true);
@@ -121,7 +134,7 @@ export class MemoryRepository {
     const files = (await this.status()).map(entry => entry.path);
     if (files.length === 0) return { committed: false, files: [], reverted };
     await runGit(this.directory, ['add', '-A', '--', '.']);
-    await this.commitStaged(input.event, files);
+    await this.commitStaged(input.event, files, input.message);
     if (reverted.length > 0) this.log(`memory: ${reverted.length} changed file(s) went back to the previous commit`);
     return { committed: true, files, reverted };
   }
@@ -183,8 +196,8 @@ export class MemoryRepository {
     try { await lstat(join(this.directory, name)); return true; } catch { return false; }
   }
 
-  private async commitStaged(event: string, files: string[]): Promise<void> {
-    await runGit(this.directory, ['commit', '--no-verify', '--quiet', '-m', subject(event, files)]);
+  private async commitStaged(event: string, files: string[], message?: string): Promise<void> {
+    await runGit(this.directory, ['commit', '--no-verify', '--quiet', '-m', message?.trim() || subject(event, files)]);
   }
 
   /** What differs from the last commit, one entry per path. Renames come back as a removal and an addition. */
@@ -225,6 +238,9 @@ export class MemoryRepository {
     let text: string;
     try { text = await readFile(join(this.directory, path), 'utf8'); } catch { return '読めないファイルです'; }
     if (text.trim() === '') return '中身が空です';
+    if (path === ALWAYS_FILE && [...text].length > this.alwaysMaxChars) {
+      return `毎回のプロンプトに入る常時記憶の上限（${this.alwaysMaxChars} 文字）を超えています`;
+    }
     if ([...text].length > this.fileMaxChars) return `1 ファイルの上限（${this.fileMaxChars} 文字）を超えています`;
     const control = findControlStrings(text);
     if (control.length > 0) return `テンプレートの制御文字列（${control.join(' ')}）が含まれています`;

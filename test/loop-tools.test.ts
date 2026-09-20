@@ -13,6 +13,7 @@ function host(overrides: Partial<LoopToolHost> = {}): LoopToolHost {
     finish: () => ok('finished'),
     setExpression: () => ok('expression'),
     writeHandoff: () => ok('handoff'),
+    writeChangeNote: () => ok('change note'),
     scheduleSelfCheck: () => ok('scheduled'),
     listSelfChecks: () => ok('listed'),
     cancelSelfCheck: () => ok('cancelled'),
@@ -32,9 +33,9 @@ test('run_shell is registered with a runner, and the old memory tools are regist
     assert.equal(withShell.includes(gone), false, gone);
     assert.equal(LOOP_TOOL_NAMES.includes(gone), false, gone);
   }
-  // Everything else is as ADR 0008 left it.
+  // Everything else is as ADR 0008 left it, with the night's change note added by ADR 0020.
   assert.deepEqual([...LOOP_TOOL_NAMES].sort(), ['cancel_self_check', 'finish_event', 'list_self_checks', 'notify_owner',
-    'reply_to_mac', 'schedule_self_check', 'set_mac_avatar_expression', 'write_handoff_note']);
+    'reply_to_mac', 'schedule_self_check', 'set_mac_avatar_expression', 'write_change_note', 'write_handoff_note']);
 });
 
 /**
