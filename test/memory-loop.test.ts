@@ -12,7 +12,7 @@ import { MIGRATIONS } from '../src/server/migrations.ts';
 import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ALWAYS_FILE, FIXED_FILES } from '../src/server/memory-repository.ts';
-import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
+import { sectionBody, ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { startFakeRunner } from './support/fake-runner.ts';
 import { ScriptedModel, type ScriptedStep } from './support/scripted-model.ts';
@@ -859,17 +859,21 @@ test('always.md rides in the instructions as it stands, and an empty one adds no
   const always = `# 常時記憶\n\n- 呼び方は「${ALWAYS_MARKER}」\n`;
   const prompt = await promptFor(always);
   assert.match(prompt, new RegExp(ALWAYS_MARKER));
+  // The server writes the section's heading, so the file's own opening heading is not repeated under it.
+  assert.equal(prompt.match(/^# 常時記憶$/gm)?.length, 1, prompt);
   // Ahead of it stands what changes less often, behind it what changes every night.
   assert.ok(prompt.indexOf('落ち着いた話し方') < prompt.indexOf(ALWAYS_MARKER), prompt);
   assert.ok(prompt.indexOf(ALWAYS_MARKER) < prompt.indexOf('# 前の思考の記録からの引き継ぎ'), prompt);
 
   // Nothing to say, nothing in the prompt: an empty file leaves the section out, as an empty personality does.
   assert.doesNotMatch(await promptFor('   \n'), /常時記憶/);
+  // A file that is nothing but its heading says nothing either.
+  assert.doesNotMatch(await promptFor('# 常時記憶\n'), /常時記憶/);
 
   // Far past `alwaysMemoryMaxChars`, and still whole: only the writing side looks at the length (ADR 0020).
   const long = `# 常時記憶\n\n${'あ'.repeat(4000)}\n- 末尾は ${ALWAYS_MARKER}\n`;
   assert.ok([...long].length > LOOP_DEFAULTS.alwaysMemoryMaxChars * 2);
-  assert.ok((await promptFor(long)).includes(long.trim()));
+  assert.ok((await promptFor(long)).includes(sectionBody(long)));
 });
 
 test('an always.md written past its limit is not committed, and the reason reaches the new session', async () => {

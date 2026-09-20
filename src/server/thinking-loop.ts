@@ -492,7 +492,7 @@ export class ThinkingLoop {
    */
   private async systemPrompt(): Promise<string> {
     const read = async (file: string) => {
-      try { return (await readFile(join(this.memoryRepository.directory, file), 'utf8')).trim(); } catch { return ''; }
+      try { return sectionBody(await readFile(join(this.memoryRepository.directory, file), 'utf8')); } catch { return ''; }
     };
     const personality = await read(PERSONALITY_FILE);
     const always = await read(ALWAYS_FILE);
@@ -983,6 +983,19 @@ export function thinkingLine(raw: string): string {
   const characters = [...trimmed];
   if (characters.length <= THINKING_LINE_MAX_CHARS) return trimmed;
   return `…${characters.slice(-(THINKING_LINE_MAX_CHARS - 1)).join('')}`;
+}
+
+/**
+ * A memory file as its section of the prompt takes it. The server writes the heading of every section itself, so a
+ * heading the file opens with — the one the template put there, and the one natsumi keeps when she rewrites it —
+ * would stand twice, saying the same thing and paying for it in the prefix every turn. Only the opening heading is
+ * dropped; the file's own structure below it is hers.
+ */
+export function sectionBody(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('# ')) return trimmed;
+  const newline = trimmed.indexOf('\n');
+  return newline < 0 ? '' : trimmed.slice(newline + 1).trim();
 }
 
 /** Events handed to Pi: one JSON line per event inside `<events>`, as in the loop evaluation. */
