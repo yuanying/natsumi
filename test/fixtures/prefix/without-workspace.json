@@ -107,7 +107,7 @@
     },
     {
       "name": "write_handoff_note",
-      "description": "夜の振り返り（nightly_review）でだけ使う。明日の新しい思考の記録に引き継ぐメモを書く。何度か呼ぶと最後のものが使われる。",
+      "description": "夜の振り返り（nightly_review）でだけ使う。明日の新しい思考の記録に引き継ぐメモを書く。書いた内容は /memory/handoff.md になり、このターンの終わりにコミットされる。何度か呼ぶと最後のものが使われる。",
       "parameters": {
         "type": "object",
         "required": [

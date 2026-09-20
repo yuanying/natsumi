@@ -10,7 +10,7 @@ import { ConversationStore, type EventKind, type EventState, type MessageRow,
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REVIEW_INSTRUCTIONS,
   WORKSPACE_SECTION } from './prompts.ts';
-import { ALWAYS_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
+import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
 import { WorkspaceShell } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
@@ -128,8 +128,8 @@ interface Handling { eventId: string; messageId?: string; replied: boolean; fini
 interface Turn {
   kind: 'events' | 'review';
   calls: number; maxCalls: number; limited: boolean; timedOut: boolean; notices: number;
-  /** The review's rotation, the handoff it wrote, and what it said about the night (ADR 0020). */
-  rotationId?: string; handoff?: string; changeNote?: string;
+  /** The review's rotation, whether it wrote its handoff, and what it said about the night (ADR 0020). */
+  rotationId?: string; handoffWritten?: true; changeNote?: string;
 }
 
 /**
@@ -225,7 +225,9 @@ export class ThinkingLoop {
    */
   static async open(options: LoopOptions): Promise<ThinkingLoop> {
     const loop = new ThinkingLoop(options);
-    await loop.memoryRepository.initialize(loop.store.latestHandoff());
+    await loop.memoryRepository.initialize(loop.store.carriedOverHandoff());
+    // The repository holds it now, so the copy schema 8 set aside goes: the handoff lives in one place (ADR 0020).
+    loop.store.clearCarriedOverHandoff();
     await loop.start();
     return loop;
   }
@@ -418,8 +420,8 @@ export class ThinkingLoop {
       if (row) {
         const unfinished = this.store.unfinishedRotation(row.conversation_id, row.pi_session_id);
         if (unfinished) {
-          // A switch stopped after its handoff was written: finish it rather than lose the review or start blank.
-          created = await createPersistedPiSession(await this.sessionOptions(unfinished.handoff!));
+          // A switch stopped after its handoff was committed: finish it rather than lose the review or start blank.
+          created = await createPersistedPiSession(await this.sessionOptions());
           this.commitSwitch(unfinished, created);
           this.log('thinking loop: an interrupted nightly switch was finished');
           this.session = created;
@@ -427,8 +429,7 @@ export class ThinkingLoop {
           const file = resolve(sessionDirectory, row.pi_session_file);
           const rel = relative(sessionDirectory, file);
           if (rel.startsWith('..') || isAbsolute(rel)) throw new PiSessionRestoreError('Pi session reference outside the session directory');
-          this.session = await openPiSession({ ...await this.sessionOptions(this.store.handoffFor(row.pi_session_id)),
-            file, expectedSessionId: row.pi_session_id });
+          this.session = await openPiSession({ ...await this.sessionOptions(), file, expectedSessionId: row.pi_session_id });
         }
       } else {
         created = await createPersistedPiSession(await this.sessionOptions());
@@ -445,12 +446,12 @@ export class ThinkingLoop {
     this.pump();
   }
 
-  private async sessionOptions(handoff?: string): Promise<Omit<PiSessionOptions, 'file' | 'expectedSessionId'>> {
+  private async sessionOptions(): Promise<Omit<PiSessionOptions, 'file' | 'expectedSessionId'>> {
     const { dataDirectory, sessionDirectory, agentDirectory, target } = this.options;
     const tools = createLoopTools(this.host());
     return {
       cwd: dataDirectory, agentDir: agentDirectory, sessionDir: sessionDirectory, modelRuntime: this.modelRuntime!, target,
-      systemPrompt: await this.systemPrompt(handoff),
+      systemPrompt: await this.systemPrompt(),
       thinkingLevel: this.options.thinking === 'on' ? 'medium' as const : 'off' as const,
       tools: { names: tools.map(tool => tool.name), definitions: tools },
       keepRecentTokens: this.options.loop.compactionKeepRecent,
@@ -476,23 +477,26 @@ export class ThinkingLoop {
   private log(line: string) { this.options.log?.(line); }
 
   /**
-   * The instructions: natsumi's base, the personality, the always-memory and the handoff of the night this session
-   * began with. Memories themselves are never included; they are read through tools when needed.
+   * The instructions: natsumi's base, the personality, the always-memory and the handoff. Memories themselves are
+   * never included; they are read through tools when needed.
    *
    * The sections stand in the order of how often they move, the steadiest first, so that a change to one of them
    * leaves as much of the prefix as possible in front of it: the personality is rewritten rarely, the always-memory
    * at some nights, the handoff at every one of them.
    *
-   * Both files are read from the working tree as they stand. The always-memory's length is never looked at here:
-   * the limit is put on the writing instead, so what is in the repository is already short enough — and what the
-   * owner put there by hand arrives whole, which is what someone who just edited a file expects (ADR 0020).
+   * All three are read from the working tree as it stands, including on a restart: the prompt is not rebuilt from
+   * the commits a switch recorded, which would buy a rare day's prefix cache with a complication carried every day
+   * (ADR 0020). The always-memory's length is never looked at here: the limit is put on the writing instead, so what
+   * is in the repository is already short enough — and what the owner put there by hand arrives whole, which is what
+   * someone who just edited a file expects.
    */
-  private async systemPrompt(handoff?: string): Promise<string> {
+  private async systemPrompt(): Promise<string> {
     const read = async (file: string) => {
       try { return (await readFile(join(this.memoryRepository.directory, file), 'utf8')).trim(); } catch { return ''; }
     };
     const personality = await read(PERSONALITY_FILE);
     const always = await read(ALWAYS_FILE);
+    const handoff = await read(HANDOFF_FILE);
     const instruction = BASE_INSTRUCTION(this.shell ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
     let prompt = personality ? `${instruction}\n\n# 性格・話し方\n\n${personality}` : instruction;
     if (always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${always}`;
@@ -687,12 +691,24 @@ export class ThinkingLoop {
     const outcome = await (async (): Promise<RotationOutcome> => {
       const turn = await this.runTurn([eventId], 'review', rotationId);
       const setRotation = (state: string, reason?: string) => this.store.setRotation(rotationId, state, reason);
-      if (!turn.handoff) {
+      if (!turn.handoffWritten) {
         const reason = this.closing ? 'stopped' : turn.failure ?? 'no-handoff';
         setRotation('failed', reason);
         this.store.setEventState(eventId, 'failed', reason);
         return { result: 'failed', reason };
       }
+      // The turn's own commit has just taken the handoff in, so this is the commit the new session is given.
+      // Recorded before the session is made: a stop after this point finishes the switch instead of losing the night.
+      // Should that commit have failed — logged, with the memory left in the working tree — this names the commit
+      // before it, and the next turn commits the handoff. The switch still goes ahead: the new session is given the
+      // note either way, and losing a night over a git failure would cost more than the imprecise pointer.
+      let handoffCommit: string;
+      try { handoffCommit = await this.memoryRepository.head(); } catch {
+        setRotation('failed', 'handoff-not-committed');
+        this.store.setEventState(eventId, 'failed', 'handoff-not-committed');
+        return { result: 'failed', reason: 'handoff-not-committed' };
+      }
+      this.store.saveHandoffCommit(rotationId, handoffCommit);
       setRotation('switching');
       if (this.closing) {
         // The handoff is kept; the next start finishes this switch.
@@ -701,8 +717,8 @@ export class ThinkingLoop {
       }
       let created: AgentSession | undefined;
       try {
-        created = await createPersistedPiSession(await this.sessionOptions(turn.handoff));
-        this.commitSwitch({ rotation_id: rotationId, conversation_id: conversation.conversation_id, handoff: turn.handoff }, created);
+        created = await createPersistedPiSession(await this.sessionOptions());
+        this.commitSwitch({ rotation_id: rotationId, conversation_id: conversation.conversation_id, handoff_commit: handoffCommit }, created);
       } catch {
         created?.dispose();
         setRotation('failed', 'session-create-failed');
@@ -722,7 +738,7 @@ export class ThinkingLoop {
   }
 
   /** Points the conversation at the new session and marks the switch done, together. */
-  private commitSwitch(rotation: Pick<RotationRow, 'rotation_id' | 'conversation_id' | 'handoff'>, created: AgentSession) {
+  private commitSwitch(rotation: Pick<RotationRow, 'rotation_id' | 'conversation_id' | 'handoff_commit'>, created: AgentSession) {
     this.store.commitSwitch(rotation,
       { sessionId: created.sessionId, sessionFile: relative(this.options.sessionDirectory, created.sessionFile!) });
   }
@@ -857,17 +873,26 @@ export class ThinkingLoop {
     return { ok: true, text: `イベント ${eventId} の対応は完了しました。このターンはここで終わります。追加の出力は不要です。`, closesTurn: true };
   }
 
-  private writeHandoff(eventId: string, text: string): ToolOutcome {
+  /**
+   * The handoff, written into `handoff.md` in the memory repository, which is the only place it is kept (ADR 0020).
+   * The turn's own commit takes it in like any other change, and the switch then records that commit.
+   */
+  private async writeHandoff(eventId: string, text: string): Promise<ToolOutcome> {
     const turn = this.turn;
     if (turn?.kind !== 'review' || !turn.rotationId || !this.handling.has(eventId)) {
       return { ok: false, text: '書いていません。write_handoff_note は、いま処理中の夜の振り返り（nightly_review）の event_id にだけ使えます。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '書いていません') };
-    turn.handoff = text;
-    // Saved at once, so a stop after this point finishes the switch instead of losing the review.
-    this.store.saveHandoff(turn.rotationId, text);
-    return { ok: true, text: '引き継ぎのメモを保存しました。明日の新しい思考の記録は、このメモから始まります。書き直すなら、もう一度呼んでください。' };
+    try {
+      await this.memoryRepository.writeHandoff(text);
+    } catch {
+      // The git and filesystem errors stay on the server; what she can act on is that the night has no handoff yet.
+      this.log('memory: the handoff could not be written');
+      return { ok: false, text: '書けませんでした。handoff.md に書き込めなかったので、もう一度試してください。' };
+    }
+    turn.handoffWritten = true;
+    return { ok: true, text: '引き継ぎのメモを handoff.md に書きました。このターンの終わりにコミットされ、明日の新しい思考の記録はこのメモから始まります。書き直すなら、もう一度呼んでください。' };
   }
 
   /**

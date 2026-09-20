@@ -384,3 +384,63 @@ test('a long list of changes is shortened rather than filling the result', async
     assert.ok([...summary].length < 200, summary);
   } finally { await f.cleanup(); }
 });
+
+/**
+ * The handoff is a file now (ADR 0020), and what SQLite held has to reach it. A repository made before the upgrade
+ * already has handoff.md, but only the template the first start wrote, so the seed would otherwise never land.
+ */
+test('the seed replaces the untouched handoff template and leaves a written one alone', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    const template = await f.read(HANDOFF_FILE);
+    assert.equal(f.commits(), 1);
+
+    // A second start, this time with the handoff SQLite carried over: the template makes way for it.
+    await new MemoryRepository({ directory: f.directory, dataDirectory: f.data }).initialize('あしたの自分へ');
+    assert.notEqual(await f.read(HANDOFF_FILE), template);
+    assert.match(await f.read(HANDOFF_FILE), /あしたの自分へ/);
+    assert.equal(f.commits(), 2);
+    assert.equal(f.clean(), true);
+
+    // What is written is never overwritten, however often a start carries something else.
+    await new MemoryRepository({ directory: f.directory, dataDirectory: f.data }).initialize('別の引き継ぎ');
+    assert.match(await f.read(HANDOFF_FILE), /あしたの自分へ/);
+    assert.equal(f.commits(), 2);
+  } finally { await f.cleanup(); }
+});
+
+test('the handoff is written into the working tree and the turn commits it, and head names that commit', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    const before = await f.repository.head();
+
+    await f.repository.writeHandoff('明日は資料の続き');
+    assert.match(await f.read(HANDOFF_FILE), /明日は資料の続き/);
+    assert.equal(f.clean(), false);
+
+    const outcome = await f.repository.commit({ event: 'nightly_review', night: true });
+    assert.equal(outcome.committed, true);
+    assert.deepEqual(outcome.files, [HANDOFF_FILE]);
+    const head = await f.repository.head();
+    assert.notEqual(head, before);
+    assert.equal(head, f.git('rev-parse', 'HEAD'));
+    assert.match(f.git('show', `${head}:${HANDOFF_FILE}`), /明日は資料の続き/);
+  } finally { await f.cleanup(); }
+});
+
+test('the handoff may be written on an ordinary day, unlike the two files that ride in every prompt', async () => {
+  const f = await setup();
+  try {
+    await f.repository.initialize(undefined);
+    await f.repository.writeHandoff('昼間に書き直した');
+    await f.write(ALWAYS_FILE, '# 常時記憶\n\n昼間の書き換え\n');
+
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+
+    assert.deepEqual(outcome.files, [HANDOFF_FILE]);
+    assert.deepEqual(outcome.reverted.map(file => file.path), [ALWAYS_FILE]);
+    assert.match(await f.read(HANDOFF_FILE), /昼間に書き直した/);
+  } finally { await f.cleanup(); }
+});

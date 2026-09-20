@@ -15,7 +15,9 @@ export interface MessageRow {
 export interface ConversationRow { conversation_id: string; pi_session_id: string; pi_session_file: string; created_at: string }
 export interface RotationRow {
   rotation_id: string; event_id: string; conversation_id: string; from_session_id: string; from_session_file: string;
-  state: string; handoff: string | null;
+  state: string;
+  /** The commit of `handoff.md` this switch started its new session from (ADR 0020). */
+  handoff_commit: string | null;
 }
 
 /** The row `send` finds when the same request arrives twice. */
@@ -216,18 +218,18 @@ export class ConversationStore {
       .get() as { event_id: string } | undefined)?.event_id;
   }
 
-  /** The newest handoff SQLite holds, to seed `handoff.md` on the first start (ADR 0018). */
-  latestHandoff(): string | undefined {
-    const row = this.db.prepare(`SELECT handoff FROM session_rotations
-      WHERE handoff IS NOT NULL ORDER BY updated_at DESC, rotation_id DESC LIMIT 1`).get() as { handoff: string } | undefined;
+  /**
+   * The handoff schema 8 set aside when it took the column away, to seed `handoff.md` with (ADR 0020). Undefined on
+   * every start but the first one after that upgrade, and on every database made since.
+   */
+  carriedOverHandoff(): string | undefined {
+    const row = this.db.prepare('SELECT handoff FROM handoff_carryover WHERE carryover = 1').get() as { handoff: string } | undefined;
     return row?.handoff;
   }
 
-  /** The handoff a session was started with, if it came from a nightly switch. */
-  handoffFor(sessionId: string): string | undefined {
-    const row = this.db.prepare(`SELECT handoff FROM session_rotations WHERE state = 'switched' AND to_session_id = ?`)
-      .get(sessionId) as { handoff: string } | undefined;
-    return row?.handoff;
+  /** Forgets the carried-over handoff, once the repository holds it. The text then lives in one place only. */
+  clearCarriedOverHandoff(): void {
+    this.db.prepare('DELETE FROM handoff_carryover').run();
   }
 
   /** When the switch that made this session was committed. Undefined for the session the conversation began with. */
@@ -237,10 +239,10 @@ export class ConversationStore {
     return row?.updated_at;
   }
 
-  /** A switch stopped after its handoff was written: the next start finishes it rather than lose the review. */
+  /** A switch stopped after its handoff was committed: the next start finishes it rather than lose the review. */
   unfinishedRotation(conversationId: string, sessionId: string): RotationRow | undefined {
     return this.db.prepare(`SELECT * FROM session_rotations WHERE state IN ('reviewing', 'switching')
-      AND handoff IS NOT NULL AND conversation_id = ? AND from_session_id = ?`).get(conversationId, sessionId) as
+      AND handoff_commit IS NOT NULL AND conversation_id = ? AND from_session_id = ?`).get(conversationId, sessionId) as
       RotationRow | undefined;
   }
 
@@ -257,31 +259,41 @@ export class ConversationStore {
       .run(state, reason ?? null, this.iso(), rotationId);
   }
 
-  /** The review's handoff, saved as soon as it is written so a stop after this point finishes the switch. */
-  saveHandoff(rotationId: string, handoff: string): void {
-    this.db.prepare('UPDATE session_rotations SET handoff = ?, updated_at = ? WHERE rotation_id = ?')
-      .run(handoff, this.iso(), rotationId);
+  /**
+   * The commit that carries the review's handoff, recorded as soon as the turn's commit is made, so a stop after
+   * this point finishes the switch instead of losing the review.
+   */
+  saveHandoffCommit(rotationId: string, commit: string): void {
+    this.db.prepare('UPDATE session_rotations SET handoff_commit = ?, updated_at = ? WHERE rotation_id = ?')
+      .run(commit, this.iso(), rotationId);
   }
 
-  /** Points the conversation at the new session and marks the switch done, together. */
-  commitSwitch(rotation: Pick<RotationRow, 'rotation_id' | 'conversation_id' | 'handoff'>,
+  /**
+   * Points the conversation at the new session and marks the switch done, together.
+   *
+   * A switch with no handoff commit is refused here rather than by a CHECK on the table: the rows written before
+   * the handoff was a file have none, and a CHECK would reach back over them (ADR 0020). This is where the
+   * invariant is kept instead, so no path can move the conversation onto a session started from nothing.
+   */
+  commitSwitch(rotation: Pick<RotationRow, 'rotation_id' | 'conversation_id' | 'handoff_commit'>,
     created: { sessionId: string; sessionFile: string }): void {
+    if (!rotation.handoff_commit) throw new Error('a switch cannot be finished without the commit of its handoff');
     const { db } = this;
     this.transaction(() => {
       db.prepare('UPDATE conversations SET pi_session_id = ?, pi_session_file = ? WHERE conversation_id = ?')
         .run(created.sessionId, created.sessionFile, rotation.conversation_id);
-      db.prepare(`UPDATE session_rotations SET state = 'switched', handoff = ?, to_session_id = ?, to_session_file = ?, reason = NULL, updated_at = ?
-        WHERE rotation_id = ?`).run(rotation.handoff, created.sessionId, created.sessionFile, this.iso(), rotation.rotation_id);
+      db.prepare(`UPDATE session_rotations SET state = 'switched', handoff_commit = ?, to_session_id = ?, to_session_file = ?, reason = NULL, updated_at = ?
+        WHERE rotation_id = ?`).run(rotation.handoff_commit, created.sessionId, created.sessionFile, this.iso(), rotation.rotation_id);
     });
   }
 
   /**
-   * Reviews stopped before writing a handoff, and switches that no longer start from the current session, have
-   * failed. Returns how many were closed.
+   * Reviews stopped before their handoff was committed, and switches that no longer start from the current session,
+   * have failed. Returns how many were closed.
    */
   closeInterruptedReviews(sessionId: string | null): number {
     const closed = this.db.prepare(`UPDATE session_rotations SET state = 'failed', reason = 'interrupted', updated_at = ?
-      WHERE state IN ('reviewing', 'switching') AND (handoff IS NULL OR from_session_id IS NOT ?)`).run(this.iso(), sessionId);
+      WHERE state IN ('reviewing', 'switching') AND (handoff_commit IS NULL OR from_session_id IS NOT ?)`).run(this.iso(), sessionId);
     return Number(closed.changes);
   }
 

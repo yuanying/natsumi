@@ -15,7 +15,7 @@ UPDATE_PREFIX_FIXTURES=1 node --test test/prefix.test.ts
 
 ## 中身
 
-- `systemPrompt` —— サーバーが組む指示。人格（`personality.md`）と引き継ぎは空にして測っているので、
+- `systemPrompt` —— サーバーが組む指示。`personality.md`・`always.md`・`handoff.md` は空にして測っているので、
   ここに写っているのは骨組みだけである。
 - `trailer` —— Pi が後ろに足す行。`{dataDirectory}` は実行ごとに変わるデータディレクトリを置き換えたもの。
   Pi の更新でここが増えれば、文面を変えていなくても prefix は動く。

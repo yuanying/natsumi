@@ -48,6 +48,10 @@ const HANDOFF_TEMPLATE = `# 引き継ぎ
 まだ引き継ぎはありません。
 `;
 
+/** The handoff as the file holds it: the fixed heading, then what was written. Nothing, when nothing was. */
+const handoffText = (handoff: string | undefined) =>
+  handoff?.trim() ? `# 引き継ぎ\n\n${handoff.trim()}\n` : undefined;
+
 /** The longest a machine-made commit subject gets. */
 const MAX_SUBJECT_CHARS = 120;
 /** File names a machine-made commit subject lists before it says how many more there are. */
@@ -100,6 +104,11 @@ export class MemoryRepository {
    * Makes the repository if it is not one yet, on `main`, taking whatever Markdown is already there into the first
    * commit under its own name and contents. An existing repository keeps its history: only the three fixed files
    * that are missing are written, and only those are committed.
+   *
+   * `handoff` is what SQLite carried over when the text moved into this repository (ADR 0020). It is written when
+   * `handoff.md` is missing, and also when the file is still the template nobody has written over: a repository made
+   * before that change already has the template, so the carried-over handoff would otherwise have nowhere to land
+   * and the first session after the upgrade would begin from nothing. A handoff somebody has written is left alone.
    */
   async initialize(handoff?: string): Promise<void> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
@@ -153,6 +162,20 @@ export class MemoryRepository {
     return [...shown, ...more].join('、').replace(/\s+/g, ' ');
   }
 
+  /**
+   * The handoff the nightly review wrote, put into the working tree under its fixed name (ADR 0020). It is written
+   * here and nowhere else; the turn's own commit takes it in like any other change, and the new session reads it
+   * back out of the working tree. Unlike `always.md` and `personality.md` it may be written on any day.
+   */
+  async writeHandoff(text: string): Promise<void> {
+    await writeFile(join(this.directory, HANDOFF_FILE), handoffText(text) ?? HANDOFF_TEMPLATE, { mode: 0o600 });
+  }
+
+  /** The commit the working tree was last brought level with: what a switch records as the handoff it started from. */
+  async head(): Promise<string> {
+    return (await runGit(this.directory, ['rev-parse', 'HEAD'])).stdout.trim();
+  }
+
   /** True when the directory is a repository of its own, rather than a directory inside somebody else's. */
   private async isRepository(): Promise<boolean> {
     try { await lstat(join(this.directory, '.git')); return true; } catch { return false; }
@@ -172,9 +195,14 @@ export class MemoryRepository {
       placed.push(ALWAYS_FILE);
     }
     if (!(await this.exists(HANDOFF_FILE))) {
-      const text = handoff?.trim() ? `# 引き継ぎ\n\n${handoff.trim()}\n` : HANDOFF_TEMPLATE;
-      await writeFile(join(this.directory, HANDOFF_FILE), text, { mode: 0o600 });
+      await writeFile(join(this.directory, HANDOFF_FILE), handoffText(handoff) ?? HANDOFF_TEMPLATE, { mode: 0o600 });
       placed.push(HANDOFF_FILE);
+    } else {
+      const text = handoffText(handoff);
+      if (text && (await this.readOrEmpty(HANDOFF_FILE)) === HANDOFF_TEMPLATE) {
+        await writeFile(join(this.directory, HANDOFF_FILE), text, { mode: 0o600 });
+        placed.push(HANDOFF_FILE);
+      }
     }
     return placed;
   }
@@ -194,6 +222,10 @@ export class MemoryRepository {
 
   private async exists(name: string): Promise<boolean> {
     try { await lstat(join(this.directory, name)); return true; } catch { return false; }
+  }
+
+  private async readOrEmpty(name: string): Promise<string> {
+    try { return await readFile(join(this.directory, name), 'utf8'); } catch { return ''; }
   }
 
   private async commitStaged(event: string, files: string[], message?: string): Promise<void> {
