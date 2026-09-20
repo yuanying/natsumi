@@ -79,12 +79,12 @@ test('closeInterruptedReviews fails a switch without a handoff, and keeps the on
     for (const [eventId, rotationId] of [['event-a', 'rotation-no-handoff'], ['event-b', 'rotation-kept'], ['event-c', 'rotation-stale']]) {
       event(db, eventId!, 'nightly-review', 'processing', '2026-03-02T00:00:00.000Z');
       db.prepare(`INSERT INTO session_rotations
-        (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, handoff, created_at, updated_at)
+        (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, handoff_commit, created_at, updated_at)
         VALUES (?, ?, 'conversation-1', ?, ?, ?, ?, ?, ?)`).run(rotationId!, eventId!,
         rotationId === 'rotation-stale' ? 'session-previous' : 'session-current',
         `${rotationId}.jsonl`,
         rotationId === 'rotation-no-handoff' ? 'reviewing' : 'switching',
-        rotationId === 'rotation-no-handoff' ? null : 'あしたの自分へ',
+        rotationId === 'rotation-no-handoff' ? null : 'c0ffee1',
         '2026-03-02T00:00:00.000Z', '2026-03-02T00:00:00.000Z');
     }
 
@@ -105,10 +105,46 @@ test('with no conversation yet, every unfinished switch is closed', () => withSt
     .run('conversation-1', 'session-current', 'current.jsonl', '2026-03-01T00:00:00.000Z');
   event(db, 'event-a', 'nightly-review', 'processing', '2026-03-02T00:00:00.000Z');
   db.prepare(`INSERT INTO session_rotations
-    (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, handoff, created_at, updated_at)
-    VALUES ('rotation-1', 'event-a', 'conversation-1', 'session-current', 'a.jsonl', 'switching', 'メモ', ?, ?)`)
+    (rotation_id, event_id, conversation_id, from_session_id, from_session_file, state, handoff_commit, created_at, updated_at)
+    VALUES ('rotation-1', 'event-a', 'conversation-1', 'session-current', 'a.jsonl', 'switching', 'c0ffee1', ?, ?)`)
     .run('2026-03-02T00:00:00.000Z', '2026-03-02T00:00:00.000Z');
 
   assert.equal(store.closeInterruptedReviews(null), 1);
   assert.equal(store.unfinishedRotation('conversation-1', 'session-current'), undefined);
+}));
+
+/**
+ * The CHECK that used to say "a switch being finished has a handoff" could not be carried into schema 8 (ADR 0020),
+ * so the store itself refuses to finish a switch whose handoff was never committed. Without this the conversation
+ * would be moved to a session started from nothing.
+ */
+test('a switch cannot be finished without the commit of the handoff it started from', () => withStore((store, db) => {
+  db.prepare('INSERT INTO conversations (conversation_id, pi_session_id, pi_session_file, created_at) VALUES (?, ?, ?, ?)')
+    .run('conversation-1', 'session-old', 'old.jsonl', '2026-03-01T00:00:00.000Z');
+  event(db, 'event-a', 'nightly-review', 'processing', '2026-03-02T00:00:00.000Z');
+  store.insertRotation({ rotationId: 'rotation-1', eventId: 'event-a', conversationId: 'conversation-1',
+    fromSessionId: 'session-old', fromSessionFile: 'old.jsonl' });
+
+  assert.throws(() => store.commitSwitch({ rotation_id: 'rotation-1', conversation_id: 'conversation-1', handoff_commit: null },
+    { sessionId: 'session-new', sessionFile: 'new.jsonl' }), /handoff/i);
+  // Nothing moved: the conversation still runs in the session it was in.
+  assert.equal(store.conversation()?.pi_session_id, 'session-old');
+  assert.equal((db.prepare('SELECT state FROM session_rotations').get() as { state: string }).state, 'reviewing');
+
+  store.saveHandoffCommit('rotation-1', 'c0ffee1');
+  assert.equal(store.unfinishedRotation('conversation-1', 'session-old')?.handoff_commit, 'c0ffee1');
+  store.commitSwitch({ rotation_id: 'rotation-1', conversation_id: 'conversation-1', handoff_commit: 'c0ffee1' },
+    { sessionId: 'session-new', sessionFile: 'new.jsonl' });
+  assert.equal(store.conversation()?.pi_session_id, 'session-new');
+  assert.deepEqual(plain(db.prepare('SELECT state, handoff_commit, to_session_id FROM session_rotations').all()),
+    [{ state: 'switched', handoff_commit: 'c0ffee1', to_session_id: 'session-new' }]);
+}));
+
+test('the handoff SQLite carried over is read once and then gone', () => withStore((store, db) => {
+  assert.equal(store.carriedOverHandoff(), undefined);
+  db.prepare('INSERT INTO handoff_carryover (carryover, handoff) VALUES (1, ?)').run('あしたの自分へ');
+  assert.equal(store.carriedOverHandoff(), 'あしたの自分へ');
+  store.clearCarriedOverHandoff();
+  assert.equal(store.carriedOverHandoff(), undefined);
+  assert.equal(store.clearCarriedOverHandoff(), undefined);
 }));

@@ -15,8 +15,10 @@ UPDATE_PREFIX_FIXTURES=1 node --test test/prefix.test.ts
 
 ## 中身
 
-- `systemPrompt` —— サーバーが組む指示。人格（`personality.md`）と引き継ぎは空にして測っているので、
-  ここに写っているのは骨組みだけである。
+- `systemPrompt` —— サーバーが組む指示。`personality.md`・`always.md`・`handoff.md` には固定の 1 行ずつを
+  入れて測っている。写っているのは骨組みと、サーバーが各節に付ける見出しであり、記憶の中身ではない。
+  3 つのファイルはどれも自分の見出しで始めてあるので、**サーバーの見出しと重なっていないこと**もここで固定される
+  （ADR 0020）。
 - `trailer` —— Pi が後ろに足す行。`{dataDirectory}` は実行ごとに変わるデータディレクトリを置き換えたもの。
   Pi の更新でここが増えれば、文面を変えていなくても prefix は動く。
 - `tools` —— `createLoopTools` が返す順のツール。`name`・`description`・`parameters`（JSON schema）。

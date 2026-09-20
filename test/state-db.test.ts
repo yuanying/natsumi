@@ -18,6 +18,9 @@ const tables = (db: DatabaseSync) => (db.prepare(
   "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[])
   .map(row => row.name);
 
+/** node:sqlite hands back null-prototype rows; the tests compare plain objects. */
+const plainRows = (rows: unknown[]) => rows.map(row => ({ ...row as object }));
+
 const one: Migration = { version: 1, name: 'one', sql: 'CREATE TABLE a (id TEXT PRIMARY KEY);' };
 const two: Migration = { version: 2, name: 'two', sql: 'CREATE TABLE b (id TEXT PRIMARY KEY);' };
 
@@ -102,4 +105,52 @@ test('the schema keeps the conversation shown to the owner and only references t
   insert.run('message-5', 5, 'natsumi', 'reply', 'event-1', null, null);
   assert.throws(() => insert.run('message-6', 6, 'natsumi', 'reply', 'event-1', null, null), /constraint/i);
   assert.equal(tables(db).includes('conversation_operations'), false);
+}));
+
+/**
+ * Schema 8 moves the handoff out of SQLite (ADR 0020). The rows written before it exist in production, and they
+ * were made when there was no `handoff.md` at all, so the rebuild has to carry them over without inventing a commit
+ * for them and without a CHECK that would refuse them.
+ */
+test('schema 8 keeps the switches made under schema 7 and leaves their handoff commit empty', () => withDb(db => {
+  const upTo = (version: number) => MIGRATIONS.filter(migration => migration.version <= version);
+  migrate(db, upTo(7));
+  db.prepare('INSERT INTO conversations (conversation_id, pi_session_id, pi_session_file, created_at) VALUES (?, ?, ?, ?)')
+    .run('conversation-1', 'session-new', 'new.jsonl', '2026-03-01T00:00:00.000Z');
+  const rotations: [string, string, string][] = [
+    ['rotation-old', '古い引き継ぎ', '2026-03-01T13:00:00.000Z'],
+    ['rotation-newest', 'あしたの自分へ', '2026-03-02T13:00:00.000Z'],
+  ];
+  for (const [rotationId, handoff, at] of rotations) {
+    db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at)
+      VALUES (?, 'nightly-review', 'no-reply', ?, ?)`).run(`event-${rotationId}`, at, at);
+    db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file,
+      state, handoff, to_session_id, to_session_file, created_at, updated_at)
+      VALUES (?, ?, 'conversation-1', ?, ?, 'switched', ?, ?, ?, ?, ?)`)
+      .run(rotationId, `event-${rotationId}`, `from-${rotationId}`, `from-${rotationId}.jsonl`, handoff,
+        `to-${rotationId}`, `to-${rotationId}.jsonl`, at, at);
+  }
+
+  assert.deepEqual(migrate(db, MIGRATIONS).applied, [8]);
+
+  const columns = (db.prepare('PRAGMA table_info(session_rotations)').all() as { name: string }[]).map(column => column.name);
+  assert.equal(columns.includes('handoff'), false);
+  assert.ok(columns.includes('handoff_commit'));
+  assert.deepEqual(plainRows(db.prepare(`SELECT rotation_id, state, handoff_commit, to_session_id, to_session_file
+    FROM session_rotations ORDER BY rotation_id`).all()), [
+    { rotation_id: 'rotation-newest', state: 'switched', handoff_commit: null, to_session_id: 'to-rotation-newest', to_session_file: 'to-rotation-newest.jsonl' },
+    { rotation_id: 'rotation-old', state: 'switched', handoff_commit: null, to_session_id: 'to-rotation-old', to_session_file: 'to-rotation-old.jsonl' },
+  ]);
+  // The newest handoff SQLite held is carried over, so the first start after the upgrade can write it into handoff.md.
+  assert.equal((db.prepare('SELECT handoff FROM handoff_carryover').get() as { handoff: string } | undefined)?.handoff,
+    'あしたの自分へ');
+  // The other CHECK still holds: a completed switch names the session it went to.
+  assert.throws(() => db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id,
+    from_session_file, state, created_at, updated_at)
+    VALUES ('rotation-bad', 'event-rotation-old', 'conversation-1', 'f', 'f.jsonl', 'switched', 'x', 'x')`).run(), /constraint/i);
+}));
+
+test('a fresh database carries no handoff over from SQLite', () => withDb(db => {
+  migrate(db, MIGRATIONS);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM handoff_carryover').get()?.n, 0);
 }));

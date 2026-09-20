@@ -99,7 +99,8 @@ export const FINISH_EVENT_DESCRIPTION = '届いたイベントへの対応を終
 export const SET_MAC_AVATAR_EXPRESSION_DESCRIPTION = (expressions: readonly string[]) =>
   `本人の Mac のデスクトップにいるあなたのアバターの表情を変える。候補: ${expressions.join(', ')}。`;
 
-export const WRITE_HANDOFF_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。明日の新しい思考の記録に引き継ぐメモを書く。何度か呼ぶと最後のものが使われる。';
+export const WRITE_HANDOFF_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。明日の新しい思考の記録に引き継ぐメモを書く。'
+  + '書いた内容は /memory/handoff.md になり、このターンの終わりにコミットされる。何度か呼ぶと最後のものが使われる。';
 
 export const WRITE_CHANGE_NOTE_DESCRIPTION = '夜の振り返り（nightly_review）でだけ使う。今夜の記憶の変更を自分の言葉で説明する。'
   + 'この文がそのまま今夜のコミットメッセージになるので、1 行目は短い要約にする。何度か呼ぶと最後のものが使われる。'

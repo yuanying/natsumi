@@ -185,4 +185,51 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE UNIQUE INDEX self_checks_one_pending_reason ON self_checks (reason_key) WHERE state = 'pending';
     `,
   },
+  {
+    version: 8,
+    name: 'handoff-in-the-repository',
+    sql: `
+      -- The handoff moves to handoff.md in the memory repository, which is now the only place it is written and the
+      -- only place a new session's instructions read it from (ADR 0020). What stays here is which commit of that file
+      -- a switch started its session with, so the history can be followed back without holding the text twice.
+      --
+      -- The only copy of the handoff is about to go, so the newest one is set aside first: the start that follows
+      -- this upgrade writes it into handoff.md and empties this table, and nothing ever fills it again.
+      CREATE TABLE handoff_carryover (
+        carryover INTEGER PRIMARY KEY CHECK (carryover = 1),
+        handoff TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO handoff_carryover (carryover, handoff)
+        SELECT 1, handoff FROM session_rotations WHERE handoff IS NOT NULL
+        ORDER BY updated_at DESC, rotation_id DESC LIMIT 1;
+
+      -- SQLite drops a column by rebuilding the table. The invariant "a finished switch names a handoff commit" is
+      -- deliberately not a CHECK: the switches already recorded were made before the file existed, their commit is
+      -- NULL, and a table CHECK would reach back over them and fail this migration. NULL says truthfully that there
+      -- was no file then. The code and its tests hold the invariant for the rows written from now on.
+      CREATE TABLE session_rotations_new (
+        rotation_id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE REFERENCES loop_events (event_id),
+        conversation_id TEXT NOT NULL REFERENCES conversations (conversation_id),
+        from_session_id TEXT NOT NULL,
+        from_session_file TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('reviewing', 'switching', 'switched', 'failed')),
+        -- The commit of handoff.md the new session's instructions were built from. NULL on the rows made before
+        -- the file existed, and on a switch that has not written its handoff yet.
+        handoff_commit TEXT,
+        to_session_id TEXT UNIQUE,
+        to_session_file TEXT UNIQUE,
+        reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (state <> 'switched' OR (to_session_id IS NOT NULL AND to_session_file IS NOT NULL))
+      ) STRICT;
+      INSERT INTO session_rotations_new (rotation_id, event_id, conversation_id, from_session_id, from_session_file,
+        state, handoff_commit, to_session_id, to_session_file, reason, created_at, updated_at)
+        SELECT rotation_id, event_id, conversation_id, from_session_id, from_session_file,
+          state, NULL, to_session_id, to_session_file, reason, created_at, updated_at FROM session_rotations;
+      DROP TABLE session_rotations;
+      ALTER TABLE session_rotations_new RENAME TO session_rotations;
+    `,
+  },
 ];

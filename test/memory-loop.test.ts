@@ -12,7 +12,7 @@ import { MIGRATIONS } from '../src/server/migrations.ts';
 import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ALWAYS_FILE, FIXED_FILES } from '../src/server/memory-repository.ts';
-import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
+import { sectionBody, ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { startFakeRunner } from './support/fake-runner.ts';
 import { ScriptedModel, type ScriptedStep } from './support/scripted-model.ts';
@@ -36,7 +36,7 @@ async function until<T>(check: () => T | undefined | false, timeout = 5_000): Pr
   }
 }
 
-async function setup() {
+async function setup({ schemaVersion }: { schemaVersion?: number } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-memory-loop-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -46,7 +46,7 @@ async function setup() {
   await mkdir(agentDirectory, { recursive: true });
   await writeFile(join(data, 'personality.md'), '# 性格・話し方\n落ち着いた話し方\n');
   const db = openStateDatabase(join(root, 'state.sqlite'));
-  migrate(db, MIGRATIONS);
+  migrate(db, schemaVersion === undefined ? MIGRATIONS : MIGRATIONS.filter(migration => migration.version <= schemaVersion));
   const model = new ScriptedModel();
   const sessions: AgentSession[] = [];
   const opened: ThinkingLoop[] = [];
@@ -84,6 +84,7 @@ async function setup() {
       return outcome as Extract<SendOutcome, { kind: 'accepted' }>;
     },
     rows: () => f.db.prepare('SELECT * FROM conversations').all() as Record<string, unknown>[],
+    rotations: () => f.db.prepare('SELECT * FROM session_rotations ORDER BY created_at, rotation_id').all() as Record<string, unknown>[],
     sessionFiles: async () => (await readdir(sessionDirectory)).filter(name => name.endsWith('.jsonl')).sort(),
     async cleanup() {
       for (const loop of opened) await loop.close();
@@ -313,7 +314,49 @@ test('a turn stopped at the model-call limit still commits what memory holds', a
   } finally { await f.cleanup(); }
 });
 
-test('handoff.md is seeded from the newest handoff SQLite holds, wherever the repository is put', async () => {
+/**
+ * The upgrade to schema 8, end to end (ADR 0020): a night recorded when the handoff lived only in SQLite, and the
+ * first start afterwards, which has to put that text into handoff.md or begin the next session from nothing.
+ */
+test('the handoff SQLite held reaches handoff.md and the new session reads it from there', async () => {
+  const f = await setup({ schemaVersion: 7 });
+  try {
+    f.db.prepare('INSERT INTO conversations (conversation_id, pi_session_id, pi_session_file, created_at) VALUES (?, ?, ?, ?)')
+      .run('conversation-old', 'session-old', 'old.jsonl', '2026-03-01T00:00:00.000Z');
+    f.db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at)
+      VALUES ('event-old', 'nightly-review', 'no-reply', ?, ?)`).run('2026-03-02T13:00:00.000Z', '2026-03-02T13:00:00.000Z');
+    f.db.prepare(`INSERT INTO session_rotations (rotation_id, event_id, conversation_id, from_session_id, from_session_file,
+      state, handoff, to_session_id, to_session_file, created_at, updated_at)
+      VALUES ('rotation-old', 'event-old', 'conversation-old', 'session-older', 'older.jsonl', 'switched', ?, 'session-old', 'old.jsonl', ?, ?)`)
+      .run(`${HANDOFF} \u660e\u65e5\u306f\u8cc7\u6599\u306e\u7d9a\u304d`, '2026-03-02T13:00:00.000Z', '2026-03-02T13:00:00.000Z');
+
+    migrate(f.db, MIGRATIONS);
+    // The Pi session those rows name was never written in this test, so they go once the upgrade has read them.
+    // What the start below finds is a database that has been through schema 8 and a handoff waiting to be placed.
+    f.db.exec("DELETE FROM session_rotations; DELETE FROM loop_events; DELETE FROM conversations;");
+
+    // A repository somewhere else entirely: loop.memoryRepository names it, and the carried-over handoff lands there.
+    const elsewhere = join(f.root, 'memory-elsewhere');
+    await mkdir(elsewhere, { recursive: true });
+    const { loop, events } = await f.open({ loop: { memoryRepository: elsewhere } });
+    assert.match(await readFile(join(elsewhere, 'handoff.md'), 'utf8'), new RegExp(HANDOFF));
+    assert.deepEqual((await readdir(elsewhere)).filter(name => name !== '.git').sort(), [...FIXED_FILES].sort());
+    // The data directory's own memory/ is untouched: nothing was put there.
+    assert.deepEqual(await readdir(f.memory), []);
+
+    // The instructions carry it, read from the file rather than from SQLite, which no longer holds it anywhere.
+    behave(f, {});
+    let context: Context | undefined;
+    behave(f, { owner: (event, seen) => { context = seen; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    const morning = f.send(loop, '\u304a\u306f\u3088\u3046');
+    await completed(events, morning.eventId);
+    assert.match(context!.systemPrompt ?? '', new RegExp(HANDOFF));
+    assert.equal(f.db.prepare('SELECT count(*) AS n FROM handoff_carryover').get()?.n, 0);
+  } finally { await f.cleanup(); }
+});
+
+/** The switch records which commit of handoff.md the new session was given, and nothing of the text (ADR 0020). */
+test('the nightly switch commits the handoff into memory and records that commit', async () => {
   const f = await setup();
   try {
     const { loop, events } = await f.open();
@@ -326,17 +369,20 @@ test('handoff.md is seeded from the newest handoff SQLite holds, wherever the re
     const day = f.send(loop, '\u4eca\u65e5\u306e\u8a71');
     await completed(events, day.eventId);
     await loop.idle();
-    assert.equal((await loop.rotate()).result, 'switched');
-    await loop.close();
+    const before = f.commits();
 
-    // A repository somewhere else entirely: loop.memoryRepository names it, and the newest handoff is written in.
-    const elsewhere = join(f.root, 'memory-elsewhere');
-    await mkdir(elsewhere, { recursive: true });
-    await f.open({ loop: { memoryRepository: elsewhere } });
-    assert.match(await readFile(join(elsewhere, 'handoff.md'), 'utf8'), new RegExp(HANDOFF));
-    assert.deepEqual((await readdir(elsewhere)).filter(name => name !== '.git').sort(), [...FIXED_FILES].sort());
-    // The data directory's own memory/ is untouched: it still carries the template it was seeded with.
-    assert.doesNotMatch(await readFile(join(f.memory, 'handoff.md'), 'utf8'), new RegExp(HANDOFF));
+    assert.equal((await loop.rotate()).result, 'switched');
+
+    // The note is the file, the night's commit carries it, and the row points at that commit.
+    assert.match(await readFile(join(f.memory, 'handoff.md'), 'utf8'), new RegExp(HANDOFF));
+    assert.equal(f.commits(), before + 1);
+    assert.equal(f.git('status', '--porcelain'), '');
+    const [rotation] = f.rotations();
+    assert.equal(rotation!.state, 'switched');
+    assert.equal(rotation!.handoff_commit, f.git('rev-parse', 'HEAD'));
+    assert.match(f.git('show', `${rotation!.handoff_commit as string}:handoff.md`), new RegExp(HANDOFF));
+    // The text is nowhere in SQLite: the row names a commit, and git holds the words.
+    assert.equal(JSON.stringify(f.rotations()).includes(HANDOFF), false);
   } finally { await f.cleanup(); }
 });
 
@@ -813,16 +859,21 @@ test('always.md rides in the instructions as it stands, and an empty one adds no
   const always = `# 常時記憶\n\n- 呼び方は「${ALWAYS_MARKER}」\n`;
   const prompt = await promptFor(always);
   assert.match(prompt, new RegExp(ALWAYS_MARKER));
-  // Ahead of it stands what changes less often, behind it what changes every night (there is no handoff yet here).
+  // The server writes the section's heading, so the file's own opening heading is not repeated under it.
+  assert.equal(prompt.match(/^# 常時記憶$/gm)?.length, 1, prompt);
+  // Ahead of it stands what changes less often, behind it what changes every night.
   assert.ok(prompt.indexOf('落ち着いた話し方') < prompt.indexOf(ALWAYS_MARKER), prompt);
+  assert.ok(prompt.indexOf(ALWAYS_MARKER) < prompt.indexOf('# 前の思考の記録からの引き継ぎ'), prompt);
 
   // Nothing to say, nothing in the prompt: an empty file leaves the section out, as an empty personality does.
   assert.doesNotMatch(await promptFor('   \n'), /常時記憶/);
+  // A file that is nothing but its heading says nothing either.
+  assert.doesNotMatch(await promptFor('# 常時記憶\n'), /常時記憶/);
 
   // Far past `alwaysMemoryMaxChars`, and still whole: only the writing side looks at the length (ADR 0020).
   const long = `# 常時記憶\n\n${'あ'.repeat(4000)}\n- 末尾は ${ALWAYS_MARKER}\n`;
   assert.ok([...long].length > LOOP_DEFAULTS.alwaysMemoryMaxChars * 2);
-  assert.ok((await promptFor(long)).includes(long.trim()));
+  assert.ok((await promptFor(long)).includes(sectionBody(long)));
 });
 
 test('an always.md written past its limit is not committed, and the reason reaches the new session', async () => {

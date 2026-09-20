@@ -62,11 +62,18 @@ function toolShapes(workspace: boolean): Prefix['tools'] {
 }
 
 /**
- * Opens a loop, with or without the workspace runner, and reads the prompt off the session it just made.
- * `personality.md` and `always.md` are left empty and there is no handoff: what is measured is the frame the server
- * builds, not what memory happens to hold. Both files are written before the start, so the repository takes them in
- * as they are rather than seeding its templates, which would then ride in the prompt.
+ * The three files the prompt is built from, written before the start so the repository takes them in as they are
+ * rather than seeding its templates. They hold a fixed line each rather than nothing, so that the heading the
+ * server writes over every section is pinned here too — and so that a file opening with a heading of its own is
+ * seen not to repeat it (ADR 0020). What is measured is still the frame, not what memory happens to hold.
  */
+const MEMORY: Record<string, string> = {
+  'personality.md': '# 性格・話し方\n\n固定の性格。\n',
+  'always.md': '# 常時記憶\n\n固定の常時記憶。\n',
+  'handoff.md': '# 引き継ぎ\n\n固定の引き継ぎ。\n',
+};
+
+/** Opens a loop, with or without the workspace runner, and reads the prompt off the session it just made. */
 async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: string[] }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-prefix-')));
   const data = join(root, 'data');
@@ -75,8 +82,7 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
   await mkdir(join(data, 'memory'), { recursive: true });
   await mkdir(sessionDirectory, { recursive: true });
   await mkdir(agentDirectory, { recursive: true });
-  await writeFile(join(data, 'memory', 'personality.md'), '');
-  await writeFile(join(data, 'memory', 'always.md'), '');
+  for (const [name, text] of Object.entries(MEMORY)) await writeFile(join(data, 'memory', name), text);
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   let session: AgentSession | undefined;
