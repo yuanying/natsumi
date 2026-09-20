@@ -110,7 +110,11 @@ natsumi が作ったファイルは、削除も改名も検査しません。全
 リポジトリには本人の私的なことがそのまま残るので、リモートを作るなら private にしてください。
 author と committer はサーバーが固定し、リポジトリに置かれた git の hook は実行しません。
 
-毎晩 `loop.nightlyRotationAt` に、natsumi はその日を振り返って記憶を整理し、引き継ぎのメモを持って新しい Pi session に切り替えます。
+毎晩 `loop.nightlyRotationAt` に、natsumi はその日を振り返り、引き継ぎのメモを持って新しい Pi session に切り替えます。
+夜のターンに必ず求めるのは、引き継ぎを書くこととターンを終えることの 2 つだけで、記憶の組み直し、常時記憶と性格の見直し、
+作業場の片づけなどは候補として渡し、その夜に何をするかは natsumi が選びます
+（[ADR 0020](docs/adr/0020-limits-at-write-time-and-a-nightly-menu.md)）。やらなかったことは引き継ぎに残ります。
+その夜のコミットメッセージは natsumi 自身の説明で、書かれなかった夜はサーバーが機械的に付けます。
 古い session ファイルは消さずに残るので、Pi の session 領域は日ごとに増えます。日中に context が `loop.compactionThreshold` を超えると、
 イベントの合間に古い部分を要約します。記憶のリポジトリ、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
 
