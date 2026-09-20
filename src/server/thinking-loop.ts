@@ -10,7 +10,7 @@ import { ConversationStore, type EventKind, type EventState, type MessageRow,
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REVIEW_INSTRUCTIONS,
   WORKSPACE_SECTION } from './prompts.ts';
-import { MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
+import { ALWAYS_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from './memory-repository.ts';
 import { WorkspaceShell } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
@@ -191,6 +191,7 @@ export class ThinkingLoop {
     const memoryDirectory = loop.memoryRepository ?? join(options.dataDirectory, 'memory');
     this.memoryRepository = new MemoryRepository({
       directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
+      alwaysMaxChars: loop.alwaysMemoryMaxChars,
       log: line => this.log(line),
     });
     this.store = new ConversationStore(options.db, this.now);
@@ -475,15 +476,27 @@ export class ThinkingLoop {
   private log(line: string) { this.options.log?.(line); }
 
   /**
-   * The instructions: natsumi's base, the personality, and the handoff of the night this session began with.
-   * Memories are never included; they are read through tools when needed.
+   * The instructions: natsumi's base, the personality, the always-memory and the handoff of the night this session
+   * began with. Memories themselves are never included; they are read through tools when needed.
+   *
+   * The sections stand in the order of how often they move, the steadiest first, so that a change to one of them
+   * leaves as much of the prefix as possible in front of it: the personality is rewritten rarely, the always-memory
+   * at some nights, the handoff at every one of them.
+   *
+   * Both files are read from the working tree as they stand. The always-memory's length is never looked at here:
+   * the limit is put on the writing instead, so what is in the repository is already short enough — and what the
+   * owner put there by hand arrives whole, which is what someone who just edited a file expects (ADR 0020).
    */
   private async systemPrompt(handoff?: string): Promise<string> {
-    let personality = '';
-    try { personality = (await readFile(join(this.memoryRepository.directory, PERSONALITY_FILE), 'utf8')).trim(); } catch { /* none */ }
+    const read = async (file: string) => {
+      try { return (await readFile(join(this.memoryRepository.directory, file), 'utf8')).trim(); } catch { return ''; }
+    };
+    const personality = await read(PERSONALITY_FILE);
+    const always = await read(ALWAYS_FILE);
     const instruction = BASE_INSTRUCTION(this.shell ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
     let prompt = personality ? `${instruction}\n\n# 性格・話し方\n\n${personality}` : instruction;
-    if (handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n昨夜の振り返りで、あなた自身が書いたメモです。\n\n${handoff}`;
+    if (always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${always}`;
+    if (handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${handoff}`;
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
     const notice = this.takeMemoryNotice();
     if (notice) prompt += `\n\n# 記憶の検査\n\n${notice}`;

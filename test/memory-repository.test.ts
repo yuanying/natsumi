@@ -9,7 +9,7 @@ import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNo
 // Fictional memories only.
 const PASSPHRASE = 'SYNTHETIC-HERON-208';
 
-async function setup(options: { fileMaxChars?: number } = {}) {
+async function setup(options: { fileMaxChars?: number; alwaysMaxChars?: number } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-memory-repo-')));
   const data = join(root, 'data');
   const directory = join(data, 'memory');
@@ -255,6 +255,38 @@ test('always.md and personality.md go back when a day turn changed them, and are
     assert.equal(night.committed, true);
     assert.match(await f.read(ALWAYS_FILE), /夜に書き直した/);
     assert.match(await f.read(PERSONALITY_FILE), /夜に書き直した/);
+  } finally { await f.cleanup(); }
+});
+
+/**
+ * The always-memory goes into every prompt, so the limit is put on the writing rather than on the reading: a night
+ * that writes past it is put back, and the state where it is too long is never made (ADR 0020).
+ */
+test('always.md has a smaller limit of its own, counted in code points, and a night past it goes back', async () => {
+  const f = await setup({ fileMaxChars: 4000, alwaysMaxChars: 100 });
+  try {
+    await f.repository.initialize(undefined);
+
+    // Exactly at the limit is kept.
+    const head = '# 常時記憶\n\n';
+    const exact = head + 'あ'.repeat(100 - [...head].length);
+    assert.equal([...exact].length, 100);
+    await f.write(ALWAYS_FILE, exact);
+    assert.deepEqual((await f.repository.commit({ event: 'nightly_review', night: true })).reverted, []);
+    assert.equal(await f.read(ALWAYS_FILE), exact);
+
+    // One code point more goes back, and the reason names the always-memory's limit rather than one file's.
+    await f.write(ALWAYS_FILE, `${exact}あ`);
+    // A memory file of the same size is fine: the small limit is always.md's alone.
+    await f.write('長め.md', `# 長め\n\n${'あ'.repeat(500)}\n`);
+    const over = await f.repository.commit({ event: 'nightly_review', night: true });
+    assert.deepEqual(over.reverted.map(file => file.path), [ALWAYS_FILE]);
+    assert.match(over.reverted[0]!.reason, /常時記憶/);
+    assert.match(over.reverted[0]!.reason, /100/);
+    assert.equal(await f.read(ALWAYS_FILE), exact);
+    assert.equal(over.committed, true);
+    assert.match(await f.read('長め.md'), /あ/);
+    assert.equal(f.clean(), true);
   } finally { await f.cleanup(); }
 });
 

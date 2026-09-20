@@ -25,6 +25,12 @@ export const NIGHT_ONLY_FILES: readonly string[] = [ALWAYS_FILE, PERSONALITY_FIL
 
 /** The longest one memory file may be, in characters. */
 export const DEFAULT_FILE_MAX_CHARS = 32000;
+/**
+ * The longest the always-memory may be. It rides in every prompt, so it is held far below one memory file (ADR 0018),
+ * and the limit is put on the writing rather than on the reading: the state where it is too long is never made,
+ * so whoever builds the prompt need not look at the length at all (ADR 0020).
+ */
+export const DEFAULT_ALWAYS_MAX_CHARS = 2000;
 
 const ALWAYS_TEMPLATE = `# 常時記憶
 
@@ -56,6 +62,8 @@ export interface MemoryRepositoryOptions {
   dataDirectory: string;
   /** `loop.memoryFileMaxChars`. */
   fileMaxChars?: number;
+  /** `loop.alwaysMemoryMaxChars`, for `always.md` alone. */
+  alwaysMaxChars?: number;
   log?: (line: string) => void;
 }
 
@@ -85,6 +93,8 @@ export class MemoryRepository {
   }
 
   private get fileMaxChars(): number { return this.options.fileMaxChars ?? DEFAULT_FILE_MAX_CHARS; }
+
+  private get alwaysMaxChars(): number { return this.options.alwaysMaxChars ?? DEFAULT_ALWAYS_MAX_CHARS; }
 
   /**
    * Makes the repository if it is not one yet, on `main`, taking whatever Markdown is already there into the first
@@ -225,6 +235,9 @@ export class MemoryRepository {
     let text: string;
     try { text = await readFile(join(this.directory, path), 'utf8'); } catch { return '読めないファイルです'; }
     if (text.trim() === '') return '中身が空です';
+    if (path === ALWAYS_FILE && [...text].length > this.alwaysMaxChars) {
+      return `毎回のプロンプトに入る常時記憶の上限（${this.alwaysMaxChars} 文字）を超えています`;
+    }
     if ([...text].length > this.fileMaxChars) return `1 ファイルの上限（${this.fileMaxChars} 文字）を超えています`;
     const control = findControlStrings(text);
     if (control.length > 0) return `テンプレートの制御文字列（${control.join(' ')}）が含まれています`;

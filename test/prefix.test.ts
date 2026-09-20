@@ -62,8 +62,9 @@ function toolShapes(workspace: boolean): Prefix['tools'] {
 
 /**
  * Opens a loop, with or without the workspace runner, and reads the prompt off the session it just made.
- * `personality.md` is left empty and there is no handoff: what is measured is the frame the server builds,
- * not what memory happens to hold.
+ * `personality.md` and `always.md` are left empty and there is no handoff: what is measured is the frame the server
+ * builds, not what memory happens to hold. Both files are written before the start, so the repository takes them in
+ * as they are rather than seeding its templates, which would then ride in the prompt.
  */
 async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: string[] }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-prefix-')));
@@ -74,6 +75,7 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
   await mkdir(sessionDirectory, { recursive: true });
   await mkdir(agentDirectory, { recursive: true });
   await writeFile(join(data, 'memory', 'personality.md'), '');
+  await writeFile(join(data, 'memory', 'always.md'), '');
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   let session: AgentSession | undefined;

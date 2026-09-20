@@ -11,7 +11,7 @@ import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { LOOP_DEFAULTS, type LoopConfig } from '../src/server/config.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
-import { FIXED_FILES } from '../src/server/memory-repository.ts';
+import { ALWAYS_FILE, FIXED_FILES } from '../src/server/memory-repository.ts';
 import { ThinkingLoop, type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { startFakeRunner } from './support/fake-runner.ts';
@@ -24,6 +24,7 @@ type OpenOptions = Partial<Omit<LoopOptions, 'loop'>> & { loop?: Partial<LoopCon
 const PASSPHRASE = 'SYNTHETIC-HERON-208';
 const HANDOFF = 'HANDOFF-MARKER-5530';
 const EARLIER = 'EARLIER-DAY-TOKEN-77';
+const ALWAYS_MARKER = 'ALWAYS-MEMORY-TOKEN-31';
 
 async function until<T>(check: () => T | undefined | false, timeout = 5_000): Promise<T> {
   const deadline = Date.now() + timeout;
@@ -786,4 +787,76 @@ test('the review turn has thirty minutes where an ordinary turn has ten, and a t
     t.mock.timers.reset();
     await f.cleanup();
   }
+});
+
+/**
+ * The always-memory (ADR 0018, ADR 0020): `always.md` goes into the instructions of every new session, as it
+ * stands. The length is looked at when it is written, never when it is read, so what the owner put there by hand
+ * arrives whole even when it is past the limit.
+ */
+test('always.md rides in the instructions as it stands, and an empty one adds no section', async () => {
+  const promptFor = async (always: string) => {
+    const f = await setup();
+    try {
+      // Written before the first start, so the repository takes it in rather than seeding the template.
+      await f.writeMemory(ALWAYS_FILE, always);
+      const { loop, events } = await f.open();
+      const sent = f.send(loop, 'おはよう');
+      const call1 = await f.model.next();
+      call1.call('finish_event', { event_id: sent.eventId });
+      call1.finish();
+      await completed(events, sent.eventId);
+      return call1.context.systemPrompt ?? '';
+    } finally { await f.cleanup(); }
+  };
+
+  const always = `# 常時記憶\n\n- 呼び方は「${ALWAYS_MARKER}」\n`;
+  const prompt = await promptFor(always);
+  assert.match(prompt, new RegExp(ALWAYS_MARKER));
+  // Ahead of it stands what changes less often, behind it what changes every night (there is no handoff yet here).
+  assert.ok(prompt.indexOf('落ち着いた話し方') < prompt.indexOf(ALWAYS_MARKER), prompt);
+
+  // Nothing to say, nothing in the prompt: an empty file leaves the section out, as an empty personality does.
+  assert.doesNotMatch(await promptFor('   \n'), /常時記憶/);
+
+  // Far past `alwaysMemoryMaxChars`, and still whole: only the writing side looks at the length (ADR 0020).
+  const long = `# 常時記憶\n\n${'あ'.repeat(4000)}\n- 末尾は ${ALWAYS_MARKER}\n`;
+  assert.ok([...long].length > LOOP_DEFAULTS.alwaysMemoryMaxChars * 2);
+  assert.ok((await promptFor(long)).includes(long.trim()));
+});
+
+test('an always.md written past its limit is not committed, and the reason reaches the new session', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open({ loop: { alwaysMemoryMaxChars: 200 } });
+    const kept = await readFile(join(f.memory, ALWAYS_FILE), 'utf8');
+    behave(f, {
+      review: event => {
+        // The night rewrites the always-memory past its limit, and tidies a memory file that is fine.
+        writeFileSync(join(f.memory, ALWAYS_FILE), `# 常時記憶\n\n${'あ'.repeat(300)}\n`);
+        writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER}\n`);
+        return { calls: [
+          call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 明日の朝に常時記憶を短く書き直す` }),
+          call('finish_event', { event_id: event.event_id }),
+        ] };
+      },
+    });
+    const day = f.send(loop, '今日の話');
+    await completed(events, day.eventId);
+    await loop.idle();
+    assert.equal((await loop.rotate()).result, 'switched');
+
+    // Put back as it was, while the rest of the night was committed.
+    assert.equal(await readFile(join(f.memory, ALWAYS_FILE), 'utf8'), kept);
+    assert.match(await readFile(join(f.memory, '一日の記録.md'), 'utf8'), new RegExp(EARLIER));
+    assert.equal(f.git('status', '--porcelain'), '');
+
+    // A review has no next turn, so the reason rides in the new session's instructions.
+    let next: Context | undefined;
+    behave(f, { owner: (event, context) => { next = context; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    const morning = f.send(loop, 'おはよう');
+    await completed(events, morning.eventId);
+    assert.match(next!.systemPrompt ?? '', /always\.md/);
+    assert.match(next!.systemPrompt ?? '', /200/);
+  } finally { await f.cleanup(); }
 });
