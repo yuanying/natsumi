@@ -6,7 +6,8 @@
 
 この一文がこのディレクトリの規約である。以下はそれを、判断に使える形に開いたものである。
 画面に出るもの（配置・見た目・キーボード・未読と知らせの扱い）の仕様は [ADR 0010](../docs/adr/0010-mac-app-structure.md)
-（会話のウインドウは [ADR 0021](../docs/adr/0021-the-input-and-the-history-in-one-window.md)）、
+（会話のウインドウは [ADR 0021](../docs/adr/0021-the-input-and-the-history-in-one-window.md)、
+返事の吹き出しと既読になるできごとは [ADR 0022](../docs/adr/0022-only-her-last-line-in-the-balloon.md)）、
 この構造そのものの理由は [ADR 0015](../docs/adr/0015-mac-ui-passive-view-tree.md) にある。
 
 ## 1. Root からなる階層構造
@@ -85,7 +86,8 @@
 | `NatsumiCore/UI/UIState.swift` | `UIState`、`ConnectionStatus` |
 | `NatsumiCore/UI/UIMediator.swift` | 裁定そのもの |
 | `NatsumiCore/UI/Props.swift` | `RootProps` と各パネルの Props、`ColumnPlacement`、`UIProps` の導出 |
-| `NatsumiCore/UI/Stacks.swift` | 束の数え方（`ReplyStack`・`NoticeStack`・`BalloonText`・`CharacterBadge`） |
+| `NatsumiCore/UI/Stacks.swift` | 束の数え方（`NoticeStack`・`BalloonText`・`CharacterBadge`） |
+| `NatsumiCore/UI/HistoryReading.swift` | 会話のウインドウで見えた返事のどこまでを既読にするか（`HistoryReading`） |
 | `NatsumiCore/UI/StageProps.swift` | 舞台の描画パラメータ（`StageProps`・`StageTransition`）と舞台の座標への変換 |
 | `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）、大きさ（`CharacterScale`・`OverlaySettings`）、会話のウインドウの大きさと置き場所（`ConversationWindow`・`ConversationPlacement`）、走っての移動とポインタを避ける規則（`CharacterRun`・`PointerDodge`） |
 | `Natsumi/Components/` | Root と各部品のコンポーネント、`OverlayPanel` と hosting view、キャラクターのマウスの受け口（`CharacterMouseArea`） |
