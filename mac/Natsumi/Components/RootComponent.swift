@@ -20,6 +20,7 @@ final class RootComponent: Component {
     private let account = AccountStore(secrets: KeychainSecretStore(), defaults: .standard)
     private let overlaySettings = OverlaySettings(defaults: .standard)
     private let loginFlow = GitHubLoginFlow()
+    private let hotKey = GlobalHotKey()
 
     private var character: CharacterComponent!
     private let balloon = BalloonComponent()
@@ -109,6 +110,8 @@ final class RootComponent: Component {
         stage.ignoresMouseEvents = true
 
         menuBar.send = sink
+        // The shortcut belongs to no panel: it is the world outside telling the root, like the socket does.
+        hotKey.onPress = { [weak self] in self?.deliver(.hotKeyPressed) }
         conversation.panel.delegate = windows
         settings.panel.delegate = windows
         windows.willClose = { [weak self] window in
@@ -117,8 +120,10 @@ final class RootComponent: Component {
             if window === self.settings.panel { self.settings.dispatch(.settingsCloseRequested) }
         }
         windows.didChangeKey = { [weak self] window, isKey in
-            guard let self, window === self.conversation.panel else { return }
-            self.conversation.dispatch(.conversationKeyChanged(isKey))
+            guard let self else { return }
+            if window === self.conversation.panel { self.conversation.dispatch(.conversationKeyChanged(isKey)) }
+            // Keys pressed elsewhere never reach the recorder, so leaving the settings stops recording.
+            if window === self.settings.panel, !isKey { self.settings.dispatch(.hotKeyRecordingCancelled) }
         }
         windows.didMoveOrResize = { [weak self] window in
             guard let self, window === self.conversation.panel, !self.conversationAnimating else { return }
@@ -154,7 +159,7 @@ final class RootComponent: Component {
         watchPointer()
         deliver(.launched(LaunchInfo(
             characterScale: overlaySettings.characterScale, columnWidth: overlaySettings.columnWidth,
-            conversationWindow: overlaySettings.conversationWindow,
+            conversationWindow: overlaySettings.conversationWindow, hotKey: overlaySettings.hotKey,
             serverOrigin: account.serverAddress?.origin.absoluteString, avatarDirectory: avatarDirectory,
             defaultAvatarDirectory: Self.defaultAvatarDirectory.path)))
         deliver(.characterFrameChanged(characterFrame, visible: visibleFrame))
@@ -499,6 +504,10 @@ final class RootComponent: Component {
             overlaySettings.characterScale = scale
         case .saveConversationWindow(let window):
             overlaySettings.conversationWindow = window
+        case .saveHotKey(let key):
+            overlaySettings.hotKey = key
+        case .registerHotKey(let key):
+            if !hotKey.register(key), let key { deliver(.hotKeyRegistrationFailed(key)) }
         case .saveAvatarDirectory(let path):
             if let path {
                 UserDefaults.standard.set(path, forKey: Self.avatarDirectoryKey)

@@ -31,10 +31,12 @@ public struct UIMediator {
             state.characterScale = info.characterScale
             state.columnWidth = info.columnWidth
             state.conversationWindow = info.conversationWindow
+            state.hotKey = info.hotKey
             state.serverOrigin = info.serverOrigin
             state.avatarDirectory = info.avatarDirectory
             state.defaultAvatarDirectory = info.defaultAvatarDirectory
-            return [.loadAvatar(directory: info.avatarDirectory)] + resume()
+            return [.loadAvatar(directory: info.avatarDirectory)] + (info.hotKey.map { [.registerHotKey($0)] } ?? [])
+                + resume()
 
         case .sessionResumed(let hasSession, let deviceId):
             state.hasSession = hasSession
@@ -91,6 +93,37 @@ public struct UIMediator {
 
         case .talkRequested:
             return openConversation()
+
+        case .hotKeyPressed:
+            // Unlike her click, it never takes the window away: it brings it out and to the front, ready to type in,
+            // from whatever app the owner is in.
+            return state.isConversationOpen ? [.focusInput] : openConversation()
+
+        case .hotKeyRegistrationFailed(let key):
+            state.hotKeyMessage = "\(key.displayName) はほかのアプリが使っているため登録できませんでした"
+            return []
+
+        case .hotKeyRecordingRequested:
+            state.isRecordingHotKey = true
+            state.hotKeyMessage = nil
+            return [.registerHotKey(nil)]
+
+        case .hotKeyRecorded(let key):
+            guard state.isRecordingHotKey else { return [] }
+            guard key.isUsable else {
+                state.hotKeyMessage = "⌘・⌃・⌥ のどれかと組み合わせてください"
+                return []
+            }
+            return setHotKey(key)
+
+        case .hotKeyRecordingCancelled:
+            return stopRecordingHotKey()
+
+        case .hotKeyCleared:
+            return setHotKey(nil)
+
+        case .hotKeyResetRequested:
+            return setHotKey(.default)
 
         case .conversationCloseRequested:
             return closeConversation()
@@ -193,7 +226,7 @@ public struct UIMediator {
 
         case .settingsCloseRequested:
             state.isSettingsOpen = false
-            return [.hideSettings]
+            return stopRecordingHotKey() + [.hideSettings]
 
         case .quitRequested:
             return [.terminate]
@@ -323,6 +356,22 @@ public struct UIMediator {
     /// Opens a card to its whole text, or folds it when it is the one already open. Only one is open at a time.
     private mutating func open(_ card: ExpandedCard) {
         state.expanded = state.expanded == card ? nil : card
+    }
+
+    /// Takes a new shortcut, or none, in place of the one there was.
+    private mutating func setHotKey(_ key: HotKey?) -> [UIEffect] {
+        state.isRecordingHotKey = false
+        state.hotKeyMessage = nil
+        state.hotKey = key
+        return [.saveHotKey(key), .registerHotKey(key)]
+    }
+
+    /// Gives up waiting for a new shortcut and puts the one there was back.
+    private mutating func stopRecordingHotKey() -> [UIEffect] {
+        guard state.isRecordingHotKey else { return [] }
+        state.isRecordingHotKey = false
+        state.hotKeyMessage = nil
+        return state.hotKey.map { [.registerHotKey($0)] } ?? []
     }
 
     /// Drops the connection and asks whether there is still a session to come back with.

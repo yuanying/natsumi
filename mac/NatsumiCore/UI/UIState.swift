@@ -78,6 +78,14 @@ public struct UIState {
     /// The rectangle the root watches the pointer around, so that the same one is not asked for twice.
     var watchedPointerRect: CGRect?
 
+    /// The global shortcut, or nil when there is none (ADR 0023).
+    public internal(set) var hotKey: HotKey? = .default
+    /// The settings are waiting for the owner to press the new shortcut. The old one is not registered meanwhile,
+    /// so that it can be pressed as the new one.
+    public internal(set) var isRecordingHotKey = false
+    /// What the settings say about the shortcut: a key that cannot be one, or one another app has.
+    public internal(set) var hotKeyMessage: String?
+
     public internal(set) var avatar = AvatarArt.placeholder
     public internal(set) var avatarDescription = ""
     public internal(set) var avatarDirectory = ""

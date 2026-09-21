@@ -6,6 +6,8 @@ public struct LaunchInfo: Equatable, Sendable {
     public var characterScale: CharacterScale
     public var columnWidth: CGFloat
     public var conversationWindow: ConversationWindow
+    /// The global shortcut, or nil when the owner turned it off.
+    public var hotKey: HotKey?
     /// The server the owner set, or nil when there is none yet.
     public var serverOrigin: String?
     public var avatarDirectory: String
@@ -13,12 +15,13 @@ public struct LaunchInfo: Equatable, Sendable {
 
     public init(
         characterScale: CharacterScale, columnWidth: CGFloat = OverlaySettings.defaultColumnWidth,
-        conversationWindow: ConversationWindow = .default, serverOrigin: String?,
+        conversationWindow: ConversationWindow = .default, hotKey: HotKey? = .default, serverOrigin: String?,
         avatarDirectory: String, defaultAvatarDirectory: String
     ) {
         self.characterScale = characterScale
         self.columnWidth = columnWidth
         self.conversationWindow = conversationWindow
+        self.hotKey = hotKey
         self.serverOrigin = serverOrigin
         self.avatarDirectory = avatarDirectory
         self.defaultAvatarDirectory = defaultAvatarDirectory
@@ -99,6 +102,13 @@ public enum UIEvent: Equatable, Sendable {
     /// A row of the unfolded history came into sight or went out of it.
     case historyRowVisibilityChanged(messageId: String, isVisible: Bool)
 
+    // MARK: The global shortcut (ADR 0023)
+
+    /// The owner pressed the global shortcut, in whichever app they were.
+    case hotKeyPressed
+    /// The system would not take the shortcut: another app has it.
+    case hotKeyRegistrationFailed(HotKey)
+
     // MARK: The menus and the settings
 
     case talkRequested
@@ -114,5 +124,12 @@ public enum UIEvent: Equatable, Sendable {
     case characterScaleChanged(CharacterScale)
     case avatarDirectorySubmitted(String)
     case avatarDirectoryResetRequested
+    /// The shortcut's button in the settings: the next key pressed there is the new shortcut.
+    case hotKeyRecordingRequested
+    case hotKeyRecorded(HotKey)
+    /// Esc while recording, the button pressed again, or the settings closed or left.
+    case hotKeyRecordingCancelled
+    case hotKeyCleared
+    case hotKeyResetRequested
     case quitRequested
 }

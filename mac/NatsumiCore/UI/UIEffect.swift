@@ -22,6 +22,8 @@ public enum UIEffect: Equatable, Sendable {
     case saveServerAddress(ServerAddress)
     case saveCharacterScale(CharacterScale)
     case saveConversationWindow(ConversationWindow)
+    /// nil saves that there is no shortcut.
+    case saveHotKey(HotKey?)
     /// nil puts the setting back to the default directory.
     case saveAvatarDirectory(String?)
     /// Read the avatar and answer with `.avatarLoaded`.
@@ -40,6 +42,9 @@ public enum UIEffect: Equatable, Sendable {
     case saveCharacterPlace
     /// Watch the pointer around this rectangle and report when it settles by it or leaves it; nil stops watching.
     case watchPointer(near: CGRect?)
+    /// Register this as the global shortcut in place of the one before, or register none. A shortcut the system
+    /// will not take is answered with `.hotKeyRegistrationFailed`.
+    case registerHotKey(HotKey?)
     case showSettings
     case hideSettings
     case terminate

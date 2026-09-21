@@ -38,6 +38,8 @@ public struct OverlaySettings {
     /// input field's saved size is what it is read from when nothing has been saved under its own key.
     public static let columnWidthKey = "columnWidth"
     public static let conversationWindowKey = "conversationWindow"
+    /// The global shortcut. Nothing saved is the default; saved as none, there is none (ADR 0023).
+    public static let hotKeyKey = "hotKey"
     /// Where earlier versions saved the input field's width and height (ADR 0010).
     public static let legacyInputBoxSizeKey = "inputBoxSize"
 
@@ -111,6 +113,24 @@ public struct OverlaySettings {
                 saved["unfoldedFrame"] = [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)]
             }
             defaults.set(saved, forKey: Self.conversationWindowKey)
+        }
+    }
+
+    /// The global shortcut, or nil when the owner turned it off.
+    public var hotKey: HotKey? {
+        get {
+            guard let saved = defaults.dictionary(forKey: Self.hotKeyKey) else { return .default }
+            if (saved["none"] as? NSNumber)?.boolValue == true { return nil }
+            guard let code = saved["keyCode"] as? NSNumber, let modifiers = saved["modifiers"] as? NSNumber,
+                  let keyCode = UInt16(exactly: code.intValue)
+            else { return .default }
+            let key = HotKey(keyCode: keyCode, modifiers: HotKey.Modifiers(rawValue: modifiers.intValue))
+            return key.isUsable ? key : .default
+        }
+        nonmutating set {
+            let saved: [String: Any] = newValue.map { ["keyCode": Int($0.keyCode), "modifiers": $0.modifiers.rawValue] }
+                ?? ["none": true]
+            defaults.set(saved, forKey: Self.hotKeyKey)
         }
     }
 
