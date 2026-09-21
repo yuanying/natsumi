@@ -5,19 +5,20 @@
 > イベントをバブリングさせて、ステートマシンとして振る舞う Mediator に裁定させること。
 
 この一文がこのディレクトリの規約である。以下はそれを、判断に使える形に開いたものである。
-画面に出るもの（配置・見た目・キーボード・未読と知らせの扱い）の仕様は [ADR 0010](../docs/adr/0010-mac-app-structure.md)、
+画面に出るもの（配置・見た目・キーボード・未読と知らせの扱い）の仕様は [ADR 0010](../docs/adr/0010-mac-app-structure.md)
+（会話のウインドウは [ADR 0021](../docs/adr/0021-the-input-and-the-history-in-one-window.md)）、
 この構造そのものの理由は [ADR 0015](../docs/adr/0015-mac-ui-passive-view-tree.md) にある。
 
 ## 1. Root からなる階層構造
 
 - 画面に出るものはすべて `Component` として木に属し、根は `RootComponent` ひとつである。
   親が子を作り、子は親を弱く持つ。`adopt` で親子にし、木の形は生涯変わらない。
-- 6 つの部品（キャラクター・返事の吹き出し・知らせの束・入力欄・履歴・設定）が Root の直下の子である。
+- 5 つの部品（キャラクター・返事の吹き出し・知らせの束・会話のウインドウ・設定）が Root の直下の子である。
   部品の中でイベントを出す部分は、さらにその子にする。
   **キャラクター・吹き出し・知らせの束は、Root が持つ 1 枚の透明なウインドウ（舞台）の中の View として描く**
   （ADR 0016）。この 3 つのコンポーネントはウインドウを持たず、Props から自分の View を作って Root に渡す。
-  入力欄・履歴・設定は自分のウインドウを持つ。いまある子は、キャラクターの印、
-  吹き出しの本文・×・「続きは履歴で」、知らせのカード・×・「続きは履歴で」、入力欄の文字の欄・履歴のボタン・つまみである。
+  会話のウインドウと設定は自分のウインドウを持つ。いまある子は、キャラクターの印、
+  吹き出しの本文・×・「続きは履歴で」、知らせのカード・×・「続きは履歴で」、会話のウインドウの文字の欄・履歴のひらく⇔とじるのボタンである。
 - **木の外から個々のコンポーネントを掴まない。** アプリが持ってよいのは Root だけで、`AppDelegate` もそれしか持たない。
   新しいパネルを足すときは、Root の子として作り、Root から描画パラメータを渡す。
 - メニューバーの scene だけは SwiftUI の都合で値を渡せないので、`MenuBarModel` が最後に渡された
@@ -41,7 +42,7 @@
 ## 3. Chain of Responsibility
 
 - 利用者の操作は `UIEvent` として、**それが起きたコンポーネントから** `dispatch` する。
-  吹き出しの本文のクリックは吹き出しの本文のコンポーネントから、入力欄の Esc は入力欄から出す。
+  吹き出しの本文のクリックは吹き出しの本文のコンポーネントから、会話のウインドウの ⌘W はそのウインドウから出す。
 - コンポーネントが処理しなければ、そのまま親へ渡る。Root まで上がったものは Mediator へ渡る。
 - **途中で握りつぶしてよいのは、自分の描画パラメータだけで完結するものに限る。** 既定は「握りつぶさない」。
   `Component.handle` の既定は `false` であり、いまこれを `true` にしているのは Root だけである。
@@ -49,7 +50,7 @@
 - サーバーから来る出来事（envelope・接続の状態・ログインの結果・アバターの読み込み）も、同じ `UIEvent` の形で
   Root から Mediator へ入れる。**入口を 2 本にしない。**
 - イベントは 1 件ずつ順に裁定する。効果が次のイベントを生むので、Root は入れ子にせずに待ち行列に積む。
-  パネルが画面に出ていないと成り立たない効果（入力欄に焦点を移す、履歴を key にする、設定を出す）だけは、
+  パネルが画面に出ていないと成り立たない効果（入力欄に焦点を移す、設定を出す）だけは、
   描き終えてから実行する。
 
 ## 4. ステートマシンとしての Mediator
@@ -67,7 +68,10 @@
   Root は描画パスごとに `StageTransition`（即座・カードの開閉・走り）を選び、舞台の View がそれを時間と曲線に
   変える。長さは `NatsumiCore`（`CardAnimation.duration`・`CharacterRun.duration`）にそろえる。
   **ウインドウの枠をアニメーションさせない。** 動くものはすべて舞台の中の View である。
-- **画面の座標は Root が知らせる。** キャラクターの枠と表示できる範囲は `UIEvent` で Mediator に入れ、状態として持つ。
+  例外は会話のウインドウの履歴の開閉だけで（ADR 0021）、Root が `NSAnimationContext` で枠を動かす。
+  その間に届くウインドウの移動・大きさの変更の通知は Mediator に入れず、終わってから 1 回だけ枠を知らせる。
+- **画面の座標は Root が知らせる。** キャラクターの枠と表示できる範囲、会話のウインドウの枠は `UIEvent` で Mediator に入れ、状態として持つ。
+  会話のウインドウをどこに置くか（初回はキャラクターの真下、開閉は上下に均等）は `NatsumiCore` の純粋関数が決め、Root は置くだけである。
   Mediator が `NSScreen` を見に行かない。生の座標の流れ（マウスの移動など）は Root で間引き、Mediator には
   「近づいた」「離れた」のような意味のイベントだけを渡す。
 
@@ -83,7 +87,7 @@
 | `NatsumiCore/UI/Props.swift` | `RootProps` と各パネルの Props、`ColumnPlacement`、`UIProps` の導出 |
 | `NatsumiCore/UI/Stacks.swift` | 束の数え方（`ReplyStack`・`NoticeStack`・`BalloonText`・`CharacterBadge`） |
 | `NatsumiCore/UI/StageProps.swift` | 舞台の描画パラメータ（`StageProps`・`StageTransition`）と舞台の座標への変換 |
-| `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）、大きさ（`CharacterScale`・`InputBoxSize`・`OverlaySettings`）、走っての移動とポインタを避ける規則（`CharacterRun`・`PointerDodge`） |
+| `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）、大きさ（`CharacterScale`・`OverlaySettings`）、会話のウインドウの大きさと置き場所（`ConversationWindow`・`ConversationPlacement`）、走っての移動とポインタを避ける規則（`CharacterRun`・`PointerDodge`） |
 | `Natsumi/Components/` | Root と各部品のコンポーネント、`OverlayPanel` と hosting view、キャラクターのマウスの受け口（`CharacterMouseArea`） |
 | `Natsumi/Views/` | SwiftUI の Passive View、舞台（`StageView`）、`Comic` の見た目 |
 | `Natsumi/Adapters/` | OS に触る部分（WebSocket・GitHub ログイン） |
