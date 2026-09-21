@@ -50,7 +50,9 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      最も遠い先 `maxDelayDays` 既定 7 日、同時に待たせる件数 `maxPending` 既定 5 件、1 日の件数 `maxPerDay` 既定 20 件）、
      表情が neutral に戻るまでの時間 `expressionResetMinutes`（既定 3 分）。
      夜の振り返りのターンの上限 `reviewModelCalls`（モデル呼び出しの回数。既定 40 回）と `reviewTimeoutMinutes`
-     （時間。既定 30 分）。昼のふつうのターンの上限（8 回・10 分）は変わりません。上限で打ち切られたターンはログに残ります。
+     （時間。既定 30 分）。昼のふつうのターンの上限 `eventModelCalls`（既定 8 回）と `eventTimeoutMinutes`（既定 10 分）。
+     回数を上げるときは、1 回の呼び出しにかかる時間を掛けても時間の上限に収まるかを確かめてください。
+     上限で打ち切られたターンはログに残ります。
      記憶のリポジトリの場所 `memoryRepository`（絶対パス。既定は data directory の `memory/`）と、
      記憶 1 ファイルの上限 `memoryFileMaxChars`（既定 32000 文字）、常時記憶の上限 `alwaysMemoryMaxChars`
      （既定 2000 文字。毎回のプロンプトに入るので、1 ファイルの上限より小さくします）。

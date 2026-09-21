@@ -30,6 +30,8 @@
     "expressionResetMinutes": 3,
     "reviewModelCalls": 40,
     "reviewTimeoutMinutes": 30,
+    "eventModelCalls": 8,
+    "eventTimeoutMinutes": 10,
     "workspaceSocket": "/run/natsumi-workspace/runner.sock",
     "memoryFileMaxChars": 32000,
     "alwaysMemoryMaxChars": 2000

@@ -32,6 +32,8 @@ const SCHEDULE_DEFAULTS = {
   expressionResetMinutes: 3,
   reviewModelCalls: 40,
   reviewTimeoutMinutes: 30,
+  eventModelCalls: 8,
+  eventTimeoutMinutes: 10,
 };
 const base = () => ({ pi: pi(), publicOrigin: 'https://natsumi.example.test', listen: listen(), github: github() });
 
@@ -131,6 +133,17 @@ test('the loop section sets the nightly review limits, each with a default (ADR 
   assert.deepEqual([set.reviewModelCalls, set.reviewTimeoutMinutes], [12, 5]);
   for (const calls of [0, -1, 1.5, '40', true]) rejects({ ...base(), loop: { reviewModelCalls: calls } }, 'loop.reviewModelCalls');
   for (const minutes of [0, -1, 2.5, '30', false]) rejects({ ...base(), loop: { reviewTimeoutMinutes: minutes } }, 'loop.reviewTimeoutMinutes');
+});
+
+test('the loop section sets an ordinary turn\'s limits, each with a default', () => {
+  // The defaults are the limits an ordinary turn has always had; a deployment raises them in its config.
+  const defaults = parseConfig(base()).loop;
+  assert.equal(defaults.eventModelCalls, 8);
+  assert.equal(defaults.eventTimeoutMinutes, 10);
+  const set = parseConfig({ ...base(), loop: { eventModelCalls: 20, eventTimeoutMinutes: 15 } }).loop;
+  assert.deepEqual([set.eventModelCalls, set.eventTimeoutMinutes], [20, 15]);
+  for (const calls of [0, -1, 1.5, '8', true]) rejects({ ...base(), loop: { eventModelCalls: calls } }, 'loop.eventModelCalls');
+  for (const minutes of [0, -1, 2.5, '10', false]) rejects({ ...base(), loop: { eventTimeoutMinutes: minutes } }, 'loop.eventTimeoutMinutes');
 });
 
 test('the workspace shell is off unless the loop names the runner socket by absolute path', () => {

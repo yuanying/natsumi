@@ -106,13 +106,20 @@ export interface LoopConfig {
   expressionResetMinutes: number;
   /** Model calls the nightly review turn may make: it reads and rewrites memory file by file (ADR 0018). */
   reviewModelCalls: number;
-  /** Minutes the nightly review turn may take. An ordinary turn keeps the thinking loop's own limit. */
+  /** Minutes the nightly review turn may take. */
   reviewTimeoutMinutes: number;
+  /** Model calls an ordinary turn may make before it is stopped and its open events fail. */
+  eventModelCalls: number;
+  /** Minutes an ordinary turn may take. */
+  eventTimeoutMinutes: number;
 }
 
-// The nightly review's limits live here rather than in the thinking loop, which loads Pi's SDK on import.
+// The turns' limits live here rather than in the thinking loop, which loads Pi's SDK on import.
 export const DEFAULT_REVIEW_MODEL_CALLS = 40;
 export const DEFAULT_REVIEW_TIMEOUT_MINUTES = 30;
+/** An ordinary turn's limits (the evaluation stopped at 8 calls). */
+export const DEFAULT_EVENT_MODEL_CALLS = 8;
+export const DEFAULT_EVENT_TIMEOUT_MINUTES = 10;
 
 export const LOOP_DEFAULTS: LoopConfig = {
   timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
@@ -122,6 +129,7 @@ export const LOOP_DEFAULTS: LoopConfig = {
   awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES, selfCheck: DEFAULT_SELF_CHECK_LIMITS,
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
   reviewModelCalls: DEFAULT_REVIEW_MODEL_CALLS, reviewTimeoutMinutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
+  eventModelCalls: DEFAULT_EVENT_MODEL_CALLS, eventTimeoutMinutes: DEFAULT_EVENT_TIMEOUT_MINUTES,
 };
 
 /** The shortest ping interval, so a typo cannot make natsumi think all day. */
@@ -346,7 +354,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   }
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
     'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'awakeHours',
-    'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes']);
+    'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes',
+    'eventModelCalls', 'eventTimeoutMinutes']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -390,6 +399,10 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!positiveInteger(reviewCalls, 1)) throw new ConfigError(`${path}.reviewModelCalls`, 'must be a positive integer');
   const reviewMinutes = loop.reviewTimeoutMinutes ?? LOOP_DEFAULTS.reviewTimeoutMinutes;
   if (!positiveInteger(reviewMinutes, 1)) throw new ConfigError(`${path}.reviewTimeoutMinutes`, 'must be a positive integer');
+  const eventCalls = loop.eventModelCalls ?? LOOP_DEFAULTS.eventModelCalls;
+  if (!positiveInteger(eventCalls, 1)) throw new ConfigError(`${path}.eventModelCalls`, 'must be a positive integer');
+  const eventMinutes = loop.eventTimeoutMinutes ?? LOOP_DEFAULTS.eventTimeoutMinutes;
+  if (!positiveInteger(eventMinutes, 1)) throw new ConfigError(`${path}.eventTimeoutMinutes`, 'must be a positive integer');
   return {
     timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep,
     ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, workspaceSizeWarnBytes: warnBytes as number,
@@ -400,6 +413,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     selfCheck: parseSelfCheck(loop.selfCheck ?? {}, `${path}.selfCheck`),
     expressionResetMinutes: reset as number,
     reviewModelCalls: reviewCalls as number, reviewTimeoutMinutes: reviewMinutes as number,
+    eventModelCalls: eventCalls as number, eventTimeoutMinutes: eventMinutes as number,
   };
 }
 
