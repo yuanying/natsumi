@@ -41,7 +41,6 @@ function toolHost(workspace: boolean): LoopToolHost {
   return {
     reply: () => outcome('replied'),
     notify: () => outcome('notified'),
-    finish: () => outcome('finished'),
     setExpression: () => outcome('expression'),
     writeHandoff: () => outcome('handoff'),
     writeChangeNote: () => outcome('change note'),

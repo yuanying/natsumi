@@ -106,17 +106,15 @@ const from = (start: number, count: number) => Array.from({ length: count }, (_,
 const shared = (client: Client) => client.messages
   .filter(m => !m.type.startsWith('command.') && m.type !== 'session.snapshot').map(({ type, requestId, payload }) => ({ type, requestId, payload }));
 const shown = (messages: { role: string; text: string }[]) => messages.map(m => [m.role, m.text]);
-const latestEventId = (context: Context) => {
-  const user = context.messages.filter(m => m.role === 'user').at(-1)!;
-  return JSON.stringify(user.content).match(/event_id\\":\\"([^\\"]+)/)![1]!;
-};
+/** Whether a model call is the first of its turn, rather than one after the tools answered. */
+const freshPrompt = (context: Context) => context.messages.at(-1)?.role === 'user';
 
-/** A model that answers every event with one reply and ends the turn. */
+/** A model that answers every event with one reply, and then stops, which ends the turn. */
 function replyWith(f: Fixture, text: (context: Context) => string) {
   f.model.auto = context => {
-    const eventId = latestEventId(context);
+    if (!freshPrompt(context)) return {};
     return { thinking: 'hidden-thought-4417', text: '（内心）',
-      calls: [{ name: 'reply_to_mac', arguments: { event_id: eventId, text: text(context) } }, { name: 'finish_event', arguments: { event_id: eventId } }] };
+      calls: [{ name: 'reply_to_mac', arguments: { text: text(context) } }] };
   };
 }
 
@@ -146,12 +144,11 @@ test('two devices see the owner message, the thinking expression and the one rep
   const typesA = a.messages.map(m => m.type);
   assert.ok(typesA.indexOf('command.accepted') < typesA.indexOf('conversation.message'));
 
-  const eventId = accepted.payload.eventId as string;
   call.think('hidden-thought-4417');
   call.delta('（内心）返事を書く');
-  call.call('reply_to_mac', { event_id: eventId, text: 'こんにちは' });
-  call.call('finish_event', { event_id: eventId });
+  call.call('reply_to_mac', { text: 'こんにちは' });
   call.finish();
+  (await f.model.next()).finish();
   for (const client of [a, b]) {
     await client.until(m => m.type === 'avatar.expression' && m.payload.expression === 'neutral');
     assert.deepEqual(seqs(client.messages), from(1, client.messages.length));
@@ -205,7 +202,8 @@ test('a resent requestId is not handled twice and a different body is refused', 
   await a.until(m => m.type === 'conversation.event.completed');
   // A second message while the first is being handled is accepted, not refused as busy.
   await a.sendAndComplete('second');
-  assert.equal(f.model.calls, 2);
+  // Two turns, each a reply and then a stop without a tool (ADR 0024).
+  assert.equal(f.model.calls, 4);
   assert.equal(a.messages.filter(m => m.type === 'conversation.message' && m.payload.role === 'owner').length, 2);
   await a.close();
 }));
@@ -317,7 +315,7 @@ test('after a server restart the same device sees the same conversation from SQL
   assert.notEqual(snapshot.epoch, left.epoch);
   assert.equal(snapshot.payload.deviceId, deviceId);
   assert.deepEqual(shown(snapshot.payload.messages), [['owner', `Remember ${TOKEN}`], ['natsumi', 'OK']]);
-  for (const hidden of ['hidden-thought', '内心', 'reply_to_mac', 'finish_event', '<events>']) {
+  for (const hidden of ['hidden-thought', '内心', 'reply_to_mac', '<events>']) {
     assert.equal(again.raw.at(-1)!.includes(hidden), false, hidden);
   }
   await again.sendAndComplete('What was it?');
@@ -343,7 +341,8 @@ test('a lost session file is reported as unavailable and no new session is start
   const mark = again.messages.length;
   const refused = await again.reply(again.send('conversation.send', { text: 'hello again' }), mark);
   assert.deepEqual([refused.type, refused.payload.code], ['service.unavailable', 'conversation-restore-failed']);
-  assert.equal(f.model.calls, 1);
+  // Only the first turn's reply and stop: nothing reached a model after the restart.
+  assert.equal(f.model.calls, 2);
   assert.deepEqual((await readdir(sessions)).filter(name => name.endsWith('.jsonl')), []);
   await again.close();
 }));
@@ -354,11 +353,8 @@ test('reading and acknowledging reach every device, are replayed after a reconne
   const b = await Client.open(f, token);
   await a.sync();
   await b.sync();
-  f.model.auto = context => {
-    const eventId = latestEventId(context);
-    return { calls: [{ name: 'notify_owner', arguments: { text: 'お知らせ' } },
-      { name: 'reply_to_mac', arguments: { event_id: eventId, text: 'はい' } }, { name: 'finish_event', arguments: { event_id: eventId } }] };
-  };
+  f.model.auto = context => freshPrompt(context) ? { calls: [{ name: 'notify_owner', arguments: { text: 'お知らせ' } },
+    { name: 'reply_to_mac', arguments: { text: 'はい' } }] } : {};
   await a.sendAndComplete('hello');
   const said = a.messages.filter(m => m.type === 'conversation.message').map(m => m.payload);
   const noticeId = said.find(m => m.kind === 'notice')!.messageId as string;

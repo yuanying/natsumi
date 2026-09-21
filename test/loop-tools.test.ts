@@ -10,7 +10,6 @@ function host(overrides: Partial<LoopToolHost> = {}): LoopToolHost {
   return {
     reply: () => ok('replied'),
     notify: () => ok('notified'),
-    finish: () => ok('finished'),
     setExpression: () => ok('expression'),
     writeHandoff: () => ok('handoff'),
     writeChangeNote: () => ok('change note'),
@@ -34,7 +33,7 @@ test('run_shell is registered with a runner, and the old memory tools are regist
     assert.equal(LOOP_TOOL_NAMES.includes(gone), false, gone);
   }
   // Everything else is as ADR 0008 left it, with the night's change note added by ADR 0020.
-  assert.deepEqual([...LOOP_TOOL_NAMES].sort(), ['cancel_self_check', 'finish_event', 'list_self_checks', 'notify_owner',
+  assert.deepEqual([...LOOP_TOOL_NAMES].sort(), ['cancel_self_check', 'list_self_checks', 'notify_owner',
     'reply_to_mac', 'schedule_self_check', 'set_mac_avatar_expression', 'write_change_note', 'write_handoff_note']);
 });
 
@@ -70,4 +69,21 @@ test('run_shell hands the command to the host and carries its sentence back', as
   const result = await tool.execute('call-1', { command: 'rg -n 合言葉 /memory' } as never, undefined, undefined, {} as never);
   assert.deepEqual(commands, ['rg -n 合言葉 /memory']);
   assert.equal((result.content[0] as { text: string }).text, '動きました');
+});
+
+// ADR 0024: natsumi is never asked for an event ID, and there is no tool to end an event with.
+test('no tool takes an event ID and finish_event is gone', () => {
+  const tools = createLoopTools(host({ runShell: () => ok('ran') }));
+  assert.equal(LOOP_TOOL_NAMES.includes('finish_event'), false);
+  assert.equal(tools.some(tool => tool.name === 'finish_event'), false);
+  for (const tool of tools) {
+    const properties = Object.keys((tool.parameters as { properties?: Record<string, unknown> }).properties ?? {});
+    assert.equal(properties.some(name => name.includes('event_id')), false, tool.name);
+    assert.doesNotMatch(tool.description, /event_id|finish_event/, tool.name);
+  }
+  const shape = (name: string) => Object.keys((tools.find(tool => tool.name === name)!.parameters as { properties: object }).properties);
+  assert.deepEqual(shape('reply_to_mac'), ['text']);
+  assert.deepEqual(shape('notify_owner'), ['text']);
+  assert.deepEqual(shape('write_handoff_note'), ['text']);
+  assert.deepEqual(shape('write_change_note'), ['text']);
 });
