@@ -9,9 +9,10 @@ import SwiftUI
 /// avatar) are raised here. Both go into the same mediator, and what comes back is drawn and done.
 ///
 /// The character and her two cards are drawn on the stage: one transparent panel the size of her screen, in which
-/// they are views placed at the frames the layout gives them (ADR 0016). The input field, the history and the
-/// settings are windows of their own. The root decides how each drawing pass is shown — at once, as a card opening,
-/// or as a run — and the stage's view animates it; nothing here animates a window's frame.
+/// they are views placed at the frames the layout gives them (ADR 0016). The conversation window and the settings
+/// are windows of their own. The root decides how each drawing pass is shown — at once, as a card opening, or as a
+/// run — and the stage's view animates it. The one window frame animated here is the conversation window's, when
+/// its history unfolds or folds (ADR 0021).
 @MainActor
 final class RootComponent: Component {
     private var mediator = UIMediator()
@@ -23,8 +24,7 @@ final class RootComponent: Component {
     private var character: CharacterComponent!
     private let balloon = BalloonComponent()
     private let notices = NoticeBundleComponent()
-    private let input = InputComponent()
-    private let history = HistoryComponent()
+    private let conversation = ConversationComponent()
     private let settings = SettingsComponent()
     private let windows = PanelDelegate()
 
@@ -46,12 +46,15 @@ final class RootComponent: Component {
     private var dragOrigin: CGPoint?
     /// How the next drawing pass is shown, when something other than the usual rule has decided it.
     private var forcedTransition: StageTransition?
-    private var placeHistoryNext = false
+    /// The frame the conversation window was last asked to take, and whether it is on its way there. What the
+    /// owner does to the window is told to the mediator; what the root does to it is not told back while it is
+    /// happening.
+    private var requestedConversationFrame: CGRect?
+    private var conversationAnimating = false
 
     private var socket: WebSocketClient?
     private var socketID: UUID?
     private var reconnectTask: Task<Void, Never>?
-    private var outsideClickMonitor: Any?
 
     /// The pointer. The stage covers the screen, so where it takes the mouse is decided here: only over the
     /// character and her cards, and everywhere else the click goes through to whatever is underneath. The same
@@ -79,7 +82,6 @@ final class RootComponent: Component {
     private var appliedStage: StageProps?
     /// The cards' frames on the screen, as last laid out, for telling a pointer on a card from one on its way past.
     private var cardRects: [CGRect] = []
-    private var wasHistoryOpen = false
 
     private static let avatarDirectoryKey = "avatarDirectory"
     private static let characterOriginKey = "natsumi.characterOrigin"
@@ -92,7 +94,7 @@ final class RootComponent: Component {
         character = CharacterComponent(
             carried: { [weak self] phase in self?.carried(phase) },
             menu: { [weak self] in self?.contextMenu() })
-        for child in [character as Component, balloon, notices, input, history, settings] { adopt(child) }
+        for child in [character as Component, balloon, notices, conversation, settings] { adopt(child) }
 
         stageHosting = StageHostingView(rootView: Stage(
             props: StageProps(
@@ -107,12 +109,16 @@ final class RootComponent: Component {
         stage.ignoresMouseEvents = true
 
         menuBar.send = sink
-        history.panel.delegate = windows
+        conversation.panel.delegate = windows
         settings.panel.delegate = windows
         windows.willClose = { [weak self] window in
             guard let self else { return }
-            if window === self.history.panel { self.history.dispatch(.historyCloseRequested) }
+            if window === self.conversation.panel { self.conversation.dispatch(.conversationCloseRequested) }
             if window === self.settings.panel { self.settings.dispatch(.settingsCloseRequested) }
+        }
+        windows.didMoveOrResize = { [weak self] window in
+            guard let self, window === self.conversation.panel, !self.conversationAnimating else { return }
+            self.reportConversationFrame()
         }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -143,7 +149,8 @@ final class RootComponent: Component {
         stage.orderFrontRegardless()
         watchPointer()
         deliver(.launched(LaunchInfo(
-            characterScale: overlaySettings.characterScale, inputBoxSize: overlaySettings.inputBoxSize,
+            characterScale: overlaySettings.characterScale, columnWidth: overlaySettings.columnWidth,
+            conversationWindow: overlaySettings.conversationWindow,
             serverOrigin: account.serverAddress?.origin.absoluteString, avatarDirectory: avatarDirectory,
             defaultAvatarDirectory: Self.defaultAvatarDirectory.path)))
         deliver(.characterFrameChanged(characterFrame, visible: visibleFrame))
@@ -177,7 +184,7 @@ final class RootComponent: Component {
             while !pending.isEmpty {
                 for effect in mediator.handle(pending.removeFirst()) {
                     switch effect {
-                    case .focusInput, .makeHistoryKey, .showSettings: afterDrawing.append(effect)
+                    case .focusInput, .showSettings: afterDrawing.append(effect)
                     default: perform(effect)
                     }
                 }
@@ -195,20 +202,12 @@ final class RootComponent: Component {
         let state = mediator.state
         let scaleChanged = fitCharacter(state)
         let stageMoved = placeStage()
-        placement.width = state.inputBoxSize.width
+        placement.width = state.columnWidth
         // Measuring is what settles these, so they are not in play while it happens.
         placement.balloonHeight = nil
         placement.noticesHeight = nil
         var props = UIProps.root(state, placement: placement)
-        let inputSize = props.input.map { fittingSize(of: input.probe($0), width: $0.boxSize.width) }
-        let historyOpening = props.history != nil && !wasHistoryOpen
-        let placeHistory = placeHistoryNext
-        placeHistoryNext = false
-
-        let historySize = props.history != nil && (placeHistory || historyOpening) ? history.panel.frame.size : nil
-        let inputs = LayoutInputs(
-            props: props.withoutThinkingLine, character: characterFrame, visible: visibleFrame, input: inputSize,
-            history: historySize)
+        let inputs = LayoutInputs(props: props.withoutThinkingLine, character: characterFrame, visible: visibleFrame)
         let layout: OverlayLayout
         if let cached = laidOut, cached.inputs == inputs {
             layout = cached.layout
@@ -216,8 +215,7 @@ final class RootComponent: Component {
         } else {
             layout = OverlayLayout.fit(
                 visible: visibleFrame, character: characterFrame,
-                spacing: OverlayLayout.spacing(for: state.characterScale), input: inputSize, history: historySize,
-                steps: UIProps.budgetSteps(state)
+                spacing: OverlayLayout.spacing(for: state.characterScale), steps: UIProps.budgetSteps(state)
             ) { budget in
                 placement.budget = budget
                 let stacked = UIProps.root(state, placement: placement)
@@ -249,11 +247,10 @@ final class RootComponent: Component {
         }
         forcedTransition = nil
 
+        let wasUnfolded = appliedProps?.conversation?.history != nil
         render(props, layout: layout, transition: transition)
         cardRects = [layout.balloon, layout.notices].compactMap { $0 }
-        place(input.panel, at: layout.input)
-        placeHistoryWindow(props.history != nil, frame: layout.history)
-        wasHistoryOpen = props.history != nil
+        placeConversation(props.conversation, unfolding: (props.conversation?.history != nil) != wasUnfolded)
     }
 
     /// Hands the stage and every window their drawing parameters, when they are not the ones they already have.
@@ -273,8 +270,7 @@ final class RootComponent: Component {
         }
         guard props != appliedProps else { return }
         appliedProps = props
-        input.render(props.input)
-        history.render(props.history)
+        conversation.render(props.conversation)
         settings.render(props.settings)
         menuBar.props = props.menu
     }
@@ -357,7 +353,7 @@ final class RootComponent: Component {
     }
 
     /// Runs her to a place the mediator chose. The stage animates her there over the run's time, and the column
-    /// goes with her over the same time; the history is a window of its own and is put back once she arrives.
+    /// goes with her over the same time.
     private func runCharacter(to origin: CGPoint) {
         let from = characterFrame.origin
         guard origin != from else {
@@ -373,7 +369,6 @@ final class RootComponent: Component {
             try? await Task.sleep(for: .seconds(duration))
             guard let self, self.runToken == token else { return }
             self.run = nil
-            self.placeHistoryNext = true
             self.deliver(.characterFrameChanged(self.characterFrame, visible: self.visibleFrame))
             self.deliver(.characterMoveFinished)
         }
@@ -390,28 +385,45 @@ final class RootComponent: Component {
         forcedTransition = .immediate
     }
 
-    /// The input field is a window of its own, above the stage, so that it can take the keyboard.
-    private func place(_ panel: NSPanel, at frame: CGRect?) {
-        guard let frame else {
-            if panel.parent != nil { stage.removeChildWindow(panel) }
-            panel.orderOut(nil)
+    /// The conversation window is not on the stage and not a child window: a titled window kept on the screen by
+    /// AppKit would otherwise pull the stage along with it. Its frame is the mediator's; the owner's moving and
+    /// resizing come back to the mediator as events. Unfolding and folding the history are the one place a window's
+    /// frame is animated (ADR 0021): the window is alone, and nothing beside it has to keep up.
+    private func placeConversation(_ props: ConversationProps?, unfolding: Bool) {
+        let panel = conversation.panel
+        guard let props else {
+            if panel.isVisible { panel.orderOut(nil) }
+            requestedConversationFrame = nil
             return
         }
-        if panel.frame != frame { panel.setFrame(frame, display: true) }
-        if panel.parent == nil { stage.addChildWindow(panel, ordered: .above) }
+        if props.frame != requestedConversationFrame, props.frame != panel.frame {
+            requestedConversationFrame = props.frame
+            if unfolding, panel.isVisible {
+                conversationAnimating = true
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = CardAnimation.duration
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    panel.animator().setFrame(props.frame, display: true)
+                } completionHandler: { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.conversationAnimating = false
+                        // The screen may have given it less than was asked for.
+                        self.reportConversationFrame()
+                    }
+                }
+            } else {
+                panel.setFrame(props.frame, display: true)
+            }
+        }
         if !panel.isVisible { panel.orderFront(nil) }
     }
 
-    /// The history is not on the stage and not a child window: a titled window kept on the screen by AppKit would
-    /// otherwise pull the stage along with it.
-    private func placeHistoryWindow(_ isOpen: Bool, frame: CGRect?) {
-        let panel = history.panel
-        guard isOpen else {
-            if panel.isVisible { panel.orderOut(nil) }
-            return
-        }
-        if let frame, panel.frame != frame { panel.setFrame(frame, display: true) }
-        if !panel.isVisible { panel.orderFront(nil) }
+    /// Where the conversation window is and which screen it is on, for the mediator to remember.
+    private func reportConversationFrame() {
+        let panel = conversation.panel
+        guard panel.isVisible else { return }
+        deliver(.conversationFrameChanged(panel.frame, visible: panel.screen?.visibleFrame ?? visibleFrame))
     }
 
     private func fittingSize<V: View>(of view: V, width: CGFloat) -> CGSize {
@@ -481,8 +493,8 @@ final class RootComponent: Component {
             account.serverAddress = address
         case .saveCharacterScale(let scale):
             overlaySettings.characterScale = scale
-        case .saveInputBoxSize(let size):
-            overlaySettings.inputBoxSize = size
+        case .saveConversationWindow(let window):
+            overlaySettings.conversationWindow = window
         case .saveAvatarDirectory(let path):
             if let path {
                 UserDefaults.standard.set(path, forKey: Self.avatarDirectoryKey)
@@ -492,9 +504,7 @@ final class RootComponent: Component {
         case .loadAvatar(let directory):
             loadAvatar(directory)
         case .focusInput:
-            input.focus()
-        case .watchOutsideClicks(let watching):
-            watchOutsideClicks(watching)
+            conversation.focus()
         case .moveCharacter(let origin):
             runCharacter(to: origin)
         case .stopCharacterMove:
@@ -503,8 +513,6 @@ final class RootComponent: Component {
             saveCharacterPlace()
         case .watchPointer(let anchor):
             watchPointer(near: anchor)
-        case .makeHistoryKey:
-            history.panel.makeKey()
         case .showSettings:
             showSettings()
         case .hideSettings:
@@ -570,18 +578,6 @@ final class RootComponent: Component {
         }
     }
 
-    /// A click in another app closes the input field.
-    private func watchOutsideClicks(_ watching: Bool) {
-        if watching, outsideClickMonitor == nil {
-            outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-                MainActor.assumeIsolated { self?.input.dispatch(.clickedOutsideApp) }
-            }
-        } else if !watching, let monitor = outsideClickMonitor {
-            NSEvent.removeMonitor(monitor)
-            outsideClickMonitor = nil
-        }
-    }
-
     // MARK: - The pointer
 
     /// Watches the pointer for as long as the app runs. A global monitor sees it everywhere but inside this app's
@@ -616,9 +612,8 @@ final class RootComponent: Component {
         guard now.timeIntervalSince(lastPointerSample) >= PointerDodge.sampleInterval else { return }
         lastPointerSample = now
         let scale = mediator.state.characterScale.textScale
-        // The cards and the input field are there to be clicked: a pointer on one of them is not on its way past her.
+        // The cards are there to be clicked: a pointer on one of them is not on its way past her.
         let onAPanel = cardRects.contains { $0.contains(pointer) }
-            || (input.panel.isVisible && input.panel.frame.contains(pointer))
         if !pointerIsNear, !onAPanel, PointerDodge.isNear(pointer, of: anchor, textScale: scale) {
             pointerIsNear = true
             waitThen(PointerDodge.linger) { [weak self] in
@@ -700,17 +695,24 @@ struct LayoutInputs: Equatable {
     var props: RootProps
     var character: CGRect
     var visible: CGRect
-    var input: CGSize?
-    var history: CGSize?
 }
 
 /// The window callbacks the root needs. `Component` is not an `NSObject`, so the windows report here.
 @MainActor
 final class PanelDelegate: NSObject, NSWindowDelegate {
     var willClose: (NSWindow) -> Void = { _ in }
+    var didMoveOrResize: (NSWindow) -> Void = { _ in }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         willClose(sender)
         return false
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        if let window = notification.object as? NSWindow { didMoveOrResize(window) }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        if let window = notification.object as? NSWindow { didMoveOrResize(window) }
     }
 }

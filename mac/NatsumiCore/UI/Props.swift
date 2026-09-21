@@ -8,9 +8,9 @@ public struct ColumnPlacement: Equatable, Sendable {
     /// The tail's position from the balloon's left side.
     public var tailX: CGFloat
     public var budget: StackBudget
-    /// The input field's width, which the column keeps to.
+    /// The widest a panel in the column may be; a setting the owner keeps.
     public var width: CGFloat
-    /// What an opened card may widen to. Cards that are not open, and the input field, keep to `width`.
+    /// What an opened card may widen to. Cards that are not open keep to `width`.
     public var expandedWidth: CGFloat
     /// The height the layout gave each card's panel. A card draws its box at exactly this height, so that opening
     /// and folding animate the one number the panel will end up at and arrive there together with it. nil while the
@@ -20,7 +20,7 @@ public struct ColumnPlacement: Equatable, Sendable {
 
     public init(
         tail: BalloonTail = .down, tailX: CGFloat = 40, budget: StackBudget = .full,
-        width: CGFloat = InputBoxSize.default.width, expandedWidth: CGFloat = InputBoxSize.default.width
+        width: CGFloat = OverlaySettings.defaultColumnWidth, expandedWidth: CGFloat = OverlaySettings.defaultColumnWidth
     ) {
         self.tail = tail
         self.tailX = tailX
@@ -225,26 +225,6 @@ public struct FailureProps: Equatable, Sendable, Identifiable {
     public var id: String { requestId }
 }
 
-public struct InputProps: Equatable, Sendable {
-    public var boxSize: InputBoxSize
-    /// How tall the text is, so that the box can grow with it.
-    public var measuredTextHeight: CGFloat
-    public var textScale: Double
-    public var status: StatusProps?
-    public var failures: [FailureProps]
-
-    public init(
-        boxSize: InputBoxSize, measuredTextHeight: CGFloat, textScale: Double, status: StatusProps?,
-        failures: [FailureProps]
-    ) {
-        self.boxSize = boxSize
-        self.measuredTextHeight = measuredTextHeight
-        self.textScale = textScale
-        self.status = status
-        self.failures = failures
-    }
-}
-
 public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var messageId: String
     public var text: String
@@ -279,18 +259,45 @@ public struct OutgoingRowProps: Equatable, Sendable, Identifiable {
     public var id: String { requestId }
 }
 
+/// The whole conversation, unfolded above the input field.
 public struct HistoryProps: Equatable, Sendable {
-    /// The history always says where the connection stands, even when it is fine.
-    public var status: StatusProps
     public var rows: [HistoryRowProps]
     public var outgoing: [OutgoingRowProps]
     public var isThinking: Bool
 
-    public init(status: StatusProps, rows: [HistoryRowProps], outgoing: [OutgoingRowProps], isThinking: Bool) {
-        self.status = status
+    public init(rows: [HistoryRowProps], outgoing: [OutgoingRowProps], isThinking: Bool) {
         self.rows = rows
         self.outgoing = outgoing
         self.isThinking = isThinking
+    }
+}
+
+/// The conversation window (ADR 0021): the input field, and the history when it is unfolded above it.
+public struct ConversationProps: Equatable, Sendable {
+    /// Where the window is, in screen coordinates. The root puts it there; unfolding and folding are seen happening.
+    public var frame: CGRect
+    /// The window's height while folded. The input field keeps the height it has then, and the history takes
+    /// the rest.
+    public var foldedHeight: CGFloat
+    /// The window always says where the connection stands, even when it is fine.
+    public var status: StatusProps
+    /// nil while the history is folded away.
+    public var history: HistoryProps?
+    /// Messages that could not be recorded, over the input field. While the history is unfolded they are in it.
+    public var failures: [FailureProps]
+    /// What the button under the title bar does.
+    public var toggleHelp: String
+
+    public init(
+        frame: CGRect, foldedHeight: CGFloat, status: StatusProps, history: HistoryProps?,
+        failures: [FailureProps], toggleHelp: String
+    ) {
+        self.frame = frame
+        self.foldedHeight = foldedHeight
+        self.status = status
+        self.history = history
+        self.failures = failures
+        self.toggleHelp = toggleHelp
     }
 }
 
@@ -345,8 +352,7 @@ public struct RootProps: Equatable, Sendable {
     public var character: CharacterProps
     public var balloon: BalloonProps?
     public var notices: NoticeBundleProps?
-    public var input: InputProps?
-    public var history: HistoryProps?
+    public var conversation: ConversationProps?
     public var settings: SettingsProps
     public var menu: MenuProps
     public var isSettingsOpen: Bool
@@ -368,7 +374,7 @@ public struct RootProps: Equatable, Sendable {
 public enum UIProps {
     public static func root(_ state: UIState, placement: ColumnPlacement) -> RootProps {
         var placement = placement
-        placement.width = state.inputBoxSize.width
+        placement.width = state.columnWidth
         // An opened card takes the room at the sides as well as the room above or below (ADR 0016).
         placement.expandedWidth = OverlayLayout.expandedWidth(placement.width, visible: state.visibleFrame)
         let conversation = state.conversation
@@ -380,12 +386,7 @@ public enum UIProps {
             notices: notices(
                 conversation, hidden: state.noticesHidden, expanded: state.expanded, placement: placement,
                 scale: state.characterScale),
-            input: state.isInputOpen
-                ? input(
-                    conversation, status: state.status, scale: state.characterScale, boxSize: state.inputBoxSize,
-                    textHeight: state.inputTextHeight)
-                : nil,
-            history: state.isHistoryOpen ? history(conversation, status: state.status) : nil,
+            conversation: state.isConversationOpen ? self.conversation(state) : nil,
             settings: settings(state),
             menu: menu(state),
             isSettingsOpen: state.isSettingsOpen)
@@ -530,24 +531,31 @@ public enum UIProps {
         state.expanded == nil ? StackBudget.steps : StackBudget.expandedSteps
     }
 
-    public static func input(
-        _ conversation: ConversationState, status: ConnectionStatus, scale: CharacterScale, boxSize: InputBoxSize,
-        textHeight: CGFloat
-    ) -> InputProps {
-        InputProps(
-            boxSize: boxSize, measuredTextHeight: textHeight, textScale: scale.textScale, status: statusRow(status),
-            failures: conversation.outbox.compactMap { item in
-                switch item.status {
-                case .sending: nil
-                case .rejected(let code), .unavailable(let code):
-                    FailureProps(requestId: item.requestId, text: "「\(item.text)」を送れませんでした（\(code)）")
-                }
-            })
+    /// The conversation window. It has been placed by the time it is drawn: opening it gives it its first place.
+    public static func conversation(_ state: UIState) -> ConversationProps {
+        let window = state.conversationWindow
+        let conversation = state.conversation
+        return ConversationProps(
+            frame: window.frame ?? CGRect(origin: .zero, size: window.size), foldedHeight: window.foldedHeight,
+            status: statusRow(state.status),
+            history: window.showsHistory ? history(conversation) : nil,
+            failures: window.showsHistory ? [] : failures(conversation),
+            toggleHelp: window.showsHistory ? "履歴をとじる（⌘L）" : "履歴をひらく（⌘L）")
     }
 
-    public static func history(_ conversation: ConversationState, status: ConnectionStatus) -> HistoryProps {
+    /// The messages that could not be recorded, as the folded window lists them over the input field.
+    public static func failures(_ conversation: ConversationState) -> [FailureProps] {
+        conversation.outbox.compactMap { item in
+            switch item.status {
+            case .sending: nil
+            case .rejected(let code), .unavailable(let code):
+                FailureProps(requestId: item.requestId, text: "「\(item.text)」を送れませんでした（\(code)）")
+            }
+        }
+    }
+
+    public static func history(_ conversation: ConversationState) -> HistoryProps {
         HistoryProps(
-            status: StatusProps(text: status.text, action: action(for: status)),
             rows: conversation.messages.map { message in
                 HistoryRowProps(
                     messageId: message.messageId, text: message.text, isOwner: message.role == .owner,
@@ -578,11 +586,9 @@ public enum UIProps {
             showsLogin: state.status == .needsLogin, canLogout: state.hasSession)
     }
 
-    /// The connection and what to do about it. The input field says nothing while the connection is fine; the
-    /// history says where it stands either way.
-    private static func statusRow(_ status: ConnectionStatus) -> StatusProps? {
-        guard status != .connected else { return nil }
-        return StatusProps(text: status.text, action: action(for: status))
+    /// The connection and what to do about it. The window says where it stands either way (ADR 0021).
+    static func statusRow(_ status: ConnectionStatus) -> StatusProps {
+        StatusProps(text: status.text, action: action(for: status))
     }
 
     /// The one thing the owner can do about the connection as it is.

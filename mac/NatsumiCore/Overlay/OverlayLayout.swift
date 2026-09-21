@@ -43,20 +43,17 @@ public struct StackBudget: Equatable, Sendable {
 
 /// Where the panels around the character go, in screen coordinates (origin at the bottom left).
 ///
-/// The panels stand in one column on the character's vertical center line: from the top, the notices, the balloon,
-/// the character and the input field. When there is not room above, the column flips (notices and balloon below,
-/// input field above); a panel that would leave the screen sideways moves inward on its own. The balloon and the
-/// notices always stay next to the character; when the input field has no room on its own side, it goes to the far
-/// end of the column, past the notices. The history is not in the column; it opens beside it. The column grows
-/// towards whichever side of the character has the room for it; the character herself is never moved.
+/// The panels stand in one column on the character's vertical center line: from the top, the notices, the balloon
+/// and the character. When there is not room above, the column flips (notices and balloon below); a panel that
+/// would leave the screen sideways moves inward on its own. The balloon always stays next to the character. The
+/// conversation window is not in the column and does not follow her (ADR 0021). The column grows towards whichever
+/// side of the character has the room for it; the character herself is never moved.
 public struct OverlayLayout: Equatable, Sendable {
     /// How far the tail stays from the balloon's sides.
     public static let tailInset: CGFloat = 18
 
     public var notices: CGRect?
     public var balloon: CGRect?
-    public var input: CGRect?
-    public var history: CGRect?
     public var tail: BalloonTail = .down
     /// The tail's position from the balloon's left side.
     public var tailX: CGFloat = 0
@@ -86,8 +83,7 @@ public struct OverlayLayout: Equatable, Sendable {
     /// Lays the column out with the most of the stacks that fits. `measure` gives the sizes of the notices and the
     /// balloon when they show that much.
     public static func fit(
-        visible: CGRect, character: CGRect, spacing: CGFloat, input: CGSize?, history: CGSize?,
-        steps: [StackBudget] = StackBudget.steps,
+        visible: CGRect, character: CGRect, spacing: CGFloat, steps: [StackBudget] = StackBudget.steps,
         measure: (StackBudget) -> (notices: CGSize?, balloon: CGSize?)
     ) -> OverlayLayout {
         var layout = OverlayLayout()
@@ -95,8 +91,7 @@ public struct OverlayLayout: Equatable, Sendable {
         for budget in steps {
             last = measure(budget)
             layout = make(
-                visible: visible, character: character, spacing: spacing,
-                notices: last.notices, balloon: last.balloon, input: input, history: history)
+                visible: visible, character: character, spacing: spacing, notices: last.notices, balloon: last.balloon)
             layout.budget = budget
             if layout.overflow == 0 { break }
         }
@@ -104,48 +99,31 @@ public struct OverlayLayout: Equatable, Sendable {
             // Still too tall: leave the notices out (the badge still counts them) rather than piling panels on each
             // other.
             let budget = layout.budget
-            layout = make(
-                visible: visible, character: character, spacing: spacing,
-                notices: nil, balloon: last.balloon, input: input, history: history)
+            layout = make(visible: visible, character: character, spacing: spacing, notices: nil, balloon: last.balloon)
             layout.budget = budget
         }
         return layout
     }
 
     public static func make(
-        visible: CGRect, character: CGRect, spacing: CGFloat,
-        notices: CGSize?, balloon: CGSize?, input: CGSize?, history: CGSize?
+        visible: CGRect, character: CGRect, spacing: CGFloat, notices: CGSize?, balloon: CGSize?
     ) -> OverlayLayout {
         let roomAbove = visible.maxY - character.maxY
         let roomBelow = character.minY - visible.minY
         func need(_ size: CGSize?) -> CGFloat { size.map { $0.height + spacing } ?? 0 }
         let speech = need(balloon) + need(notices)
-        let inputNeed = need(input)
 
-        func arrangement(flipped: Bool) -> (overflow: CGFloat, inputBeyond: Bool) {
-            let speechRoom = flipped ? roomBelow : roomAbove
-            let otherRoom = flipped ? roomAbove : roomBelow
-            let beyond = input != nil && inputNeed > otherRoom
-            return (max(0, speech + (beyond ? inputNeed : 0) - speechRoom), beyond)
-        }
         // The column goes to whichever side of her has the room for it; upright is the default, and it gives way
         // only when the other side can hold more of the column (ADR 0016).
-        let normal = arrangement(flipped: false)
-        let flip = arrangement(flipped: true)
-        let flipped = flip.overflow < normal.overflow
-        let chosen = flipped ? flip : normal
+        let normal = max(0, speech - roomAbove)
+        let flip = max(0, speech - roomBelow)
+        let flipped = flip < normal
 
         var layout = OverlayLayout()
         layout.isFlipped = flipped
         layout.tail = flipped ? .up : .down
-        layout.overflow = chosen.overflow
+        layout.overflow = flipped ? flip : normal
 
-        func placed(_ size: CGSize, y: CGFloat) -> CGRect {
-            CGRect(
-                x: min(max(character.midX - size.width / 2, visible.minX), visible.maxX - size.width),
-                y: min(max(y, visible.minY), visible.maxY - size.height),
-                width: size.width, height: size.height)
-        }
         // Panels on the speech side stack away from the character, each at its own distance.
         var edge = flipped ? character.minY : character.maxY
         var stack: [WritableKeyPath<OverlayLayout, CGRect?>] = []
@@ -160,13 +138,6 @@ public struct OverlayLayout: Equatable, Sendable {
         // The balloon is always next to the character, so nothing comes between the tail and her.
         if let balloon { stacked(balloon, into: \.balloon) }
         if let notices { stacked(notices, into: \.notices) }
-        if let input {
-            if chosen.inputBeyond {
-                stacked(input, into: \.input)
-            } else {
-                layout.input = placed(input, y: flipped ? character.maxY + spacing : character.minY - spacing - input.height)
-            }
-        }
         // A stack that runs off the screen moves back as a whole, so its panels never pile on each other; it may then
         // cover the character, which is better than covering itself.
         let excess = flipped ? visible.minY - edge : edge - visible.maxY
@@ -176,19 +147,6 @@ public struct OverlayLayout: Equatable, Sendable {
 
         if let rect = layout.balloon {
             layout.tailX = min(max(character.midX - rect.minX, tailInset), max(tailInset, rect.width - tailInset))
-        }
-
-        if let history {
-            let column = [layout.notices, layout.balloon, layout.input].compactMap { $0 }.reduce(character) { $0.union($1) }
-            let rightRoom = visible.maxX - column.maxX - spacing
-            let leftRoom = column.minX - visible.minX - spacing
-            let onRight = rightRoom >= history.width || (leftRoom < history.width && rightRoom >= leftRoom)
-            let x = onRight ? column.maxX + spacing : column.minX - spacing - history.width
-            let top = min(column.maxY, visible.maxY)
-            layout.history = CGRect(
-                x: min(max(x, visible.minX), visible.maxX - history.width),
-                y: min(max(top - history.height, visible.minY), visible.maxY - history.height),
-                width: history.width, height: history.height)
         }
         return layout
     }

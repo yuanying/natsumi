@@ -4,18 +4,21 @@ import Foundation
 /// What the app knows about itself when it starts: the settings it saved and where the avatar comes from.
 public struct LaunchInfo: Equatable, Sendable {
     public var characterScale: CharacterScale
-    public var inputBoxSize: InputBoxSize
+    public var columnWidth: CGFloat
+    public var conversationWindow: ConversationWindow
     /// The server the owner set, or nil when there is none yet.
     public var serverOrigin: String?
     public var avatarDirectory: String
     public var defaultAvatarDirectory: String
 
     public init(
-        characterScale: CharacterScale, inputBoxSize: InputBoxSize, serverOrigin: String?,
+        characterScale: CharacterScale, columnWidth: CGFloat = OverlaySettings.defaultColumnWidth,
+        conversationWindow: ConversationWindow = .default, serverOrigin: String?,
         avatarDirectory: String, defaultAvatarDirectory: String
     ) {
         self.characterScale = characterScale
-        self.inputBoxSize = inputBoxSize
+        self.columnWidth = columnWidth
+        self.conversationWindow = conversationWindow
         self.serverOrigin = serverOrigin
         self.avatarDirectory = avatarDirectory
         self.defaultAvatarDirectory = defaultAvatarDirectory
@@ -80,22 +83,17 @@ public enum UIEvent: Equatable, Sendable {
     /// "続きは履歴で", under a reply or a notice.
     case historyLinkClicked
 
-    // MARK: The input field
+    // MARK: The conversation window
 
     case inputSubmitted(String)
-    case inputEscaped
-    case clickedOutsideApp
-    case historyButtonClicked
     case outgoingDismissed(requestId: String)
-    /// How tall the text has become, as the text view measured it.
-    case inputTextHeightMeasured(CGFloat)
-    /// The grip in the bottom-right corner, with the mouse in screen coordinates.
-    case gripDragged(to: CGPoint)
-    case gripReleased
-
-    // MARK: The history
-
-    case historyCloseRequested
+    /// The button under the title bar, or ⌘L: the history unfolds above the input field, or folds away.
+    case historyToggleRequested
+    /// ⌘W or the title bar's close button.
+    case conversationCloseRequested
+    /// Where the window is and which screen it is on, after the owner moved or resized it, or after the screen
+    /// gave it less than was asked for.
+    case conversationFrameChanged(CGRect, visible: CGRect)
 
     // MARK: The menus and the settings
 

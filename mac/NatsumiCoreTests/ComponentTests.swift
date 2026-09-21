@@ -57,7 +57,7 @@ struct ComponentTests {
     @Test("イベントを出す口は、そのコンポーネントから dispatch する")
     func sink() {
         let (root, _, leaf) = tree()
-        leaf.sink(.inputEscaped)
-        #expect(root.seen == [.inputEscaped])
+        leaf.sink(.conversationCloseRequested)
+        #expect(root.seen == [.conversationCloseRequested])
     }
 }

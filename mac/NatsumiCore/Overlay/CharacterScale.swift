@@ -31,40 +31,21 @@ public struct CharacterScale: Equatable, Sendable {
     public var textScale: Double { min(max(value, Self.textRange.lowerBound), Self.textRange.upperBound) }
 }
 
-/// The size the owner gave the input field: its width and the height of its text area. It is kept apart from the
-/// character's scale.
-public struct InputBoxSize: Equatable, Sendable {
-    public static let widthRange: ClosedRange<Double> = 200...640
-    public static let heightRange: ClosedRange<Double> = 40...400
-    /// How tall the text area grows with its lines when the chosen height is smaller; beyond it, the text scrolls.
-    public static let growthLimit: Double = 160
-    public static let `default` = InputBoxSize(width: 280, height: 40)
-
-    public let width: Double
-    public let height: Double
-
-    public init(width: Double, height: Double) {
-        guard width.isFinite, height.isFinite else {
-            self.width = 280
-            self.height = 40
-            return
-        }
-        self.width = min(max(width, Self.widthRange.lowerBound), Self.widthRange.upperBound)
-        self.height = min(max(height, Self.heightRange.lowerBound), Self.heightRange.upperBound)
-    }
-
-    /// The text area is at least the chosen height (and one line), grows with its lines, and stops at the larger of
-    /// the growth limit and the chosen height.
-    public func textHeight(content: CGFloat, minimum: CGFloat) -> CGFloat {
-        let floor = max(height, minimum)
-        return min(max(content, floor), max(floor, Self.growthLimit))
-    }
-}
-
 /// The look of the character and its conversation, kept in the settings. Nothing here is secret.
 public struct OverlaySettings {
     public static let characterScaleKey = "characterScale"
-    public static let inputBoxSizeKey = "inputBoxSize"
+    /// The widest a panel in the column may be (ADR 0010). Until ADR 0021 it was the input field's width, and the
+    /// input field's saved size is what it is read from when nothing has been saved under its own key.
+    public static let columnWidthKey = "columnWidth"
+    public static let conversationWindowKey = "conversationWindow"
+    /// Where earlier versions saved the input field's width and height (ADR 0010).
+    public static let legacyInputBoxSizeKey = "inputBoxSize"
+
+    public static let columnWidthRange: ClosedRange<CGFloat> = 200...640
+    public static let defaultColumnWidth: CGFloat = 280
+    /// What the input field's box had around its text: the title bar, the status row and the paddings the window
+    /// has instead. Only for reading an old size as a folded height once.
+    static let legacyChrome: CGFloat = 84
 
     private let defaults: UserDefaults
 
@@ -80,11 +61,63 @@ public struct OverlaySettings {
         nonmutating set { defaults.set(newValue.value, forKey: Self.characterScaleKey) }
     }
 
-    public var inputBoxSize: InputBoxSize {
+    public var columnWidth: CGFloat {
         get {
-            guard let pair = defaults.array(forKey: Self.inputBoxSizeKey) as? [NSNumber], pair.count == 2 else { return .default }
-            return InputBoxSize(width: pair[0].doubleValue, height: pair[1].doubleValue)
+            let saved = (defaults.object(forKey: Self.columnWidthKey) as? NSNumber).map { CGFloat($0.doubleValue) }
+                ?? legacyInputBoxSize?.width
+            guard let saved, saved.isFinite else { return Self.defaultColumnWidth }
+            return min(max(saved, Self.columnWidthRange.lowerBound), Self.columnWidthRange.upperBound)
         }
-        nonmutating set { defaults.set([newValue.width, newValue.height], forKey: Self.inputBoxSizeKey) }
+        nonmutating set { defaults.set(Double(newValue), forKey: Self.columnWidthKey) }
+    }
+
+    public var conversationWindow: ConversationWindow {
+        get {
+            guard let saved = defaults.dictionary(forKey: Self.conversationWindowKey) else {
+                // The input field's size is the nearest thing an earlier version kept: its width, and its box as
+                // the folded height.
+                guard let legacy = legacyInputBoxSize else { return .default }
+                return ConversationWindow(
+                    origin: nil, width: legacy.width, foldedHeight: legacy.height + Self.legacyChrome,
+                    unfoldedHeight: ConversationWindow.default.unfoldedHeight, showsHistory: false)
+            }
+            func number(_ key: String) -> CGFloat? { (saved[key] as? NSNumber).map { CGFloat($0.doubleValue) } }
+            func point(_ key: String) -> CGPoint? {
+                guard let pair = saved[key] as? [NSNumber], pair.count == 2 else { return nil }
+                return CGPoint(x: pair[0].doubleValue, y: pair[1].doubleValue)
+            }
+            var window = ConversationWindow(
+                origin: point("origin"), width: number("width") ?? .nan, foldedHeight: number("foldedHeight") ?? .nan,
+                unfoldedHeight: number("unfoldedHeight") ?? .nan,
+                showsHistory: (saved["showsHistory"] as? NSNumber)?.boolValue ?? false)
+            window.foldedOrigin = point("foldedOrigin")
+            if let rect = saved["unfoldedFrame"] as? [NSNumber], rect.count == 4 {
+                window.unfoldedFrame = CGRect(
+                    x: rect[0].doubleValue, y: rect[1].doubleValue, width: rect[2].doubleValue, height: rect[3].doubleValue)
+            }
+            return window
+        }
+        nonmutating set {
+            var saved: [String: Any] = [
+                "width": Double(newValue.width), "foldedHeight": Double(newValue.foldedHeight),
+                "unfoldedHeight": Double(newValue.unfoldedHeight), "showsHistory": newValue.showsHistory,
+            ]
+            func store(_ point: CGPoint?, as key: String) {
+                if let point { saved[key] = [Double(point.x), Double(point.y)] }
+            }
+            store(newValue.origin, as: "origin")
+            store(newValue.foldedOrigin, as: "foldedOrigin")
+            if let rect = newValue.unfoldedFrame {
+                saved["unfoldedFrame"] = [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)]
+            }
+            defaults.set(saved, forKey: Self.conversationWindowKey)
+        }
+    }
+
+    private var legacyInputBoxSize: (width: CGFloat, height: CGFloat)? {
+        guard let pair = defaults.array(forKey: Self.legacyInputBoxSizeKey) as? [NSNumber], pair.count == 2,
+              pair[0].doubleValue.isFinite, pair[1].doubleValue.isFinite
+        else { return nil }
+        return (CGFloat(pair[0].doubleValue), CGFloat(pair[1].doubleValue))
     }
 }

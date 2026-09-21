@@ -15,7 +15,7 @@ struct CharacterPlaceTests {
             return "r\(counter)"
         }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, inputBoxSize: .default, serverOrigin: nil,
+            characterScale: .default, serverOrigin: nil,
             avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
         _ = mediator.handle(.characterFrameChanged(frame ?? character, visible: visible ?? screen))
         return mediator
@@ -132,12 +132,12 @@ struct CharacterPlaceTests {
         #expect(mediator.state.motion == .running(.left))
     }
 
-    @Test("入力欄が開いている間は、ポインタを見張らずにどかない")
-    func noDodgeWhileTheInputIsOpen() {
+    @Test("会話のウインドウが開いていても、ポインタを見張り、普段どおりどく")
+    func dodgesWhileTheConversationIsOpen() {
         var mediator = self.mediator()
-        #expect(mediator.handle(.characterClicked).contains(.watchPointer(near: nil)))
-        #expect(moves(mediator.handle(.pointerCameNear(at: CGPoint(x: 450, y: 350)))).isEmpty)
-        #expect(mediator.handle(.characterClicked).contains(.watchPointer(near: character)))
+        #expect(mediator.handle(.characterClicked).contains(.watchPointer(near: nil)) == false)
+        #expect(mediator.state.watchedPointerRect == character)
+        #expect(moves(mediator.handle(.pointerCameNear(at: CGPoint(x: 450, y: 350)))).isEmpty == false)
     }
 
     @Test("どこへどいてもポインタの前から退けないときは、どかない")

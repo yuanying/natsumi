@@ -22,7 +22,7 @@ struct StageTests {
     func stageProps() {
         var mediator = UIMediator { "r" }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, inputBoxSize: .default, serverOrigin: nil,
+            characterScale: .default, serverOrigin: nil,
             avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
         let root = UIProps.root(mediator.state, placement: ColumnPlacement())
         let character = CGRect(x: 1400, y: 150, width: 100, height: 100)

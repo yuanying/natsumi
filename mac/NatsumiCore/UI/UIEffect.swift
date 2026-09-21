@@ -21,7 +21,7 @@ public enum UIEffect: Equatable, Sendable {
     case logout
     case saveServerAddress(ServerAddress)
     case saveCharacterScale(CharacterScale)
-    case saveInputBoxSize(InputBoxSize)
+    case saveConversationWindow(ConversationWindow)
     /// nil puts the setting back to the default directory.
     case saveAvatarDirectory(String?)
     /// Read the avatar and answer with `.avatarLoaded`.
@@ -29,10 +29,8 @@ public enum UIEffect: Equatable, Sendable {
 
     // MARK: Panels, keyboard and the app
 
-    /// Make the input panel key and put the caret in the text field.
+    /// Make the conversation window key and put the caret in the text field.
     case focusInput
-    /// Watch for clicks in other apps while the input field is open.
-    case watchOutsideClicks(Bool)
     /// Run the character to this place, and answer with `.characterMoveFinished`.
     case moveCharacter(to: CGPoint)
     /// Stop a run in flight and leave her where it got to. Nothing is answered: whoever stopped it decides what
@@ -42,7 +40,6 @@ public enum UIEffect: Equatable, Sendable {
     case saveCharacterPlace
     /// Watch the pointer around this rectangle and report when it settles by it or leaves it; nil stops watching.
     case watchPointer(near: CGRect?)
-    case makeHistoryKey
     case showSettings
     case hideSettings
     case terminate

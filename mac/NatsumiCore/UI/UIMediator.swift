@@ -29,7 +29,8 @@ public struct UIMediator {
         // MARK: The app and the world outside
         case .launched(let info):
             state.characterScale = info.characterScale
-            state.inputBoxSize = info.inputBoxSize
+            state.columnWidth = info.columnWidth
+            state.conversationWindow = info.conversationWindow
             state.serverOrigin = info.serverOrigin
             state.avatarDirectory = info.avatarDirectory
             state.defaultAvatarDirectory = info.defaultAvatarDirectory
@@ -86,13 +87,30 @@ public struct UIMediator {
 
         // MARK: The character and the panels
         case .characterClicked:
-            return state.isInputOpen ? closeInput() : openInput()
+            return state.isConversationOpen ? closeConversation() : openConversation()
 
         case .talkRequested:
-            return openInput()
+            return openConversation()
 
-        case .inputEscaped, .clickedOutsideApp:
-            return closeInput()
+        case .conversationCloseRequested:
+            return closeConversation()
+
+        case .historyOpenRequested, .historyLinkClicked:
+            // The history is asked for by name: the window opens if it is not there, and unfolds if it is folded.
+            let opened = openConversation()
+            guard !state.conversationWindow.showsHistory else { return opened }
+            return opened + toggleHistory()
+
+        case .historyToggleRequested:
+            guard state.isConversationOpen else { return [] }
+            return toggleHistory()
+
+        case .conversationFrameChanged(let frame, let visible):
+            state.conversationVisible = visible
+            let left = state.conversationWindow.left(at: frame)
+            guard left != state.conversationWindow else { return [] }
+            state.conversationWindow = left
+            return [.saveConversationWindow(left)]
 
         case .characterFrameChanged(let frame, let visible):
             let before = state.characterFrame
@@ -139,7 +157,7 @@ public struct UIMediator {
             return run(to: frame.origin)
 
         case .pointerCameNear(let pointer):
-            guard !state.isInputOpen, !state.isDragging, !state.isMoving, state.dodgeHome == nil else { return [] }
+            guard !state.isDragging, !state.isMoving, state.dodgeHome == nil else { return [] }
             guard let origin = PointerDodge.target(
                 character: state.characterFrame, pointer: pointer, visible: state.visibleFrame)
             else { return [] }
@@ -154,15 +172,6 @@ public struct UIMediator {
         case .badgeClicked:
             guard UIProps.noticeStack(state.conversation) != nil else { return [] }
             state.noticesHidden.toggle()
-            return []
-
-        case .historyOpenRequested, .historyButtonClicked, .historyLinkClicked:
-            guard !state.isHistoryOpen else { return [] }
-            state.isHistoryOpen = true
-            return [.makeHistoryKey]
-
-        case .historyCloseRequested:
-            state.isHistoryOpen = false
             return []
 
         case .settingsOpenRequested:
@@ -262,27 +271,6 @@ public struct UIMediator {
             state.characterScale = scale
             return [.saveCharacterScale(scale)]
 
-        case .inputTextHeightMeasured(let height):
-            guard height != state.inputTextHeight else { return [] }
-            state.inputTextHeight = height
-            return []
-
-        case .gripDragged(let mouse):
-            let anchor = state.gripAnchor ?? GripAnchor(mouse: mouse, size: state.inputBoxSize)
-            state.gripAnchor = anchor
-            // Dragging right widens the box on both sides (it stays centered under the character); down makes the
-            // text area taller.
-            let size = InputBoxSize(
-                width: anchor.size.width + (mouse.x - anchor.mouse.x) * 2,
-                height: anchor.size.height + (anchor.mouse.y - mouse.y))
-            guard size != state.inputBoxSize else { return [] }
-            state.inputBoxSize = size
-            return [.saveInputBoxSize(size)]
-
-        case .gripReleased:
-            state.gripAnchor = nil
-            return []
-
         case .avatarDirectorySubmitted(let path):
             let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
             let saved: String? = trimmed.isEmpty || trimmed == state.defaultAvatarDirectory ? nil : trimmed
@@ -306,11 +294,11 @@ public struct UIMediator {
     }
 
     /// Asks for the pointer to be watched around the place she would come back to, and not at all while the owner
-    /// is holding her or has the input field open. Watching where she comes back to, rather than where she stands,
-    /// is what keeps her from setting off again the moment she lands.
+    /// is holding her. Watching where she comes back to, rather than where she stands, is what keeps her from
+    /// setting off again the moment she lands.
     private mutating func watchPointer() -> [UIEffect] {
         var rect: CGRect?
-        if !state.isInputOpen, !state.isDragging, !state.characterFrame.isEmpty {
+        if !state.isDragging, !state.characterFrame.isEmpty {
             rect = CGRect(origin: state.dodgeHome ?? state.characterFrame.origin, size: state.characterFrame.size)
         }
         guard rect != state.watchedPointerRect else { return [] }
@@ -333,18 +321,31 @@ public struct UIMediator {
         return [.disconnect, .resumeSession]
     }
 
-    /// The input field opens right under her, so she stays put while it is open: a pointer on its way to it must
-    /// not send her running.
-    private mutating func openInput() -> [UIEffect] {
-        guard !state.isInputOpen else { return [] }
-        state.isInputOpen = true
-        return [.focusInput, .watchOutsideClicks(true)] + watchPointer()
+    /// Opens the conversation window in the state it was left in. The first time, it opens right under her; after
+    /// that it comes back to where it was, and she goes on as if it were any other window (ADR 0021).
+    private mutating func openConversation() -> [UIEffect] {
+        guard !state.isConversationOpen else { return [] }
+        state.isConversationOpen = true
+        guard state.conversationWindow.origin == nil else { return [.focusInput] }
+        state.conversationWindow.origin = ConversationPlacement.first(
+            under: state.characterFrame, size: state.conversationWindow.size,
+            spacing: OverlayLayout.spacing(for: state.characterScale), visible: state.visibleFrame
+        ).origin
+        return [.focusInput, .saveConversationWindow(state.conversationWindow)]
     }
 
-    private mutating func closeInput() -> [UIEffect] {
-        guard state.isInputOpen else { return [] }
-        state.isInputOpen = false
-        return [.watchOutsideClicks(false)] + watchPointer()
+    private mutating func closeConversation() -> [UIEffect] {
+        guard state.isConversationOpen else { return [] }
+        state.isConversationOpen = false
+        return []
+    }
+
+    /// Unfolds the history above the input field, or folds it away, about the middle of where the window is. The
+    /// visible area is the one of the screen the window was last seen on.
+    private mutating func toggleHistory() -> [UIEffect] {
+        state.conversationWindow = state.conversationWindow.togglingHistory(
+            within: state.conversationVisible ?? state.visibleFrame)
+        return [.saveConversationWindow(state.conversationWindow)]
     }
 
     /// Passes the session machine's effects on as the mediator's own, and reads the connection's state off it.

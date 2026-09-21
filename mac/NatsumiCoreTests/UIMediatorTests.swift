@@ -14,7 +14,7 @@ struct UIMediatorTests {
             return "r\(counter)"
         }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, inputBoxSize: .default, serverOrigin: server,
+            characterScale: .default, serverOrigin: server,
             avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
         _ = mediator.handle(.sessionResumed(hasSession: hasSession, deviceId: nil))
         return mediator
@@ -46,51 +46,111 @@ struct UIMediatorTests {
 
     // MARK: - Panels
 
-    @Test("キャラのクリックで入力欄を開き、もう一度のクリックで閉じる")
-    func clickTogglesInput() {
+    private let screen = CGRect(x: 0, y: 0, width: 1600, height: 1000)
+    private let character = CGRect(x: 800, y: 500, width: 96, height: 104)
+
+    /// A mediator whose character stands in the middle of a screen.
+    private func placed() -> UIMediator {
         var mediator = launched()
-        #expect(props(mediator).input == nil)
+        _ = mediator.handle(.characterFrameChanged(character, visible: screen))
+        return mediator
+    }
+
+    @Test("キャラのクリックで会話のウインドウを開き、もう一度のクリックで消す。初回はキャラの真下に置き、それを覚える")
+    func clickTogglesTheConversation() {
+        var mediator = placed()
+        #expect(props(mediator).conversation == nil)
         let opened = mediator.handle(.characterClicked)
-        #expect(props(mediator).input != nil)
-        #expect(opened.contains(.focusInput))
-        #expect(opened.contains(.watchOutsideClicks(true)))
-        let closed = mediator.handle(.characterClicked)
-        #expect(props(mediator).input == nil)
-        #expect(closed == [.watchOutsideClicks(false)])
+        let window = try! #require(props(mediator).conversation)
+        let size = ConversationWindow.default.size
+        #expect(window.frame == CGRect(
+            x: character.midX - size.width / 2, y: character.minY - 8 - size.height,
+            width: size.width, height: size.height))
+        #expect(window.history == nil)
+        #expect(window.status == StatusProps(text: ConnectionStatus.connecting.text, action: nil))
+        #expect(opened == [.focusInput, .saveConversationWindow(mediator.state.conversationWindow)])
+        #expect(mediator.handle(.characterClicked).isEmpty)
+        #expect(props(mediator).conversation == nil)
+        // The next time it comes back to where it was, wherever she is now.
+        _ = mediator.handle(.characterFrameChanged(character.offsetBy(dx: -500, dy: 0), visible: screen))
+        #expect(mediator.handle(.characterClicked) == [.focusInput])
+        #expect(props(mediator).conversation?.frame == window.frame)
     }
 
-    @Test("Esc と、アプリの外のクリックで入力欄を閉じる。履歴は開いたまま")
-    func escapeAndOutside() {
-        var mediator = launched()
+    @Test("⌘W で消える。Esc とアプリの外のクリックでは消えない（そのイベントはもう無い）")
+    func closeRequested() {
+        var mediator = placed()
         _ = mediator.handle(.characterClicked)
-        _ = mediator.handle(.historyOpenRequested)
-        _ = mediator.handle(.inputEscaped)
-        #expect(props(mediator).input == nil)
-        #expect(props(mediator).history != nil)
-
-        _ = mediator.handle(.characterClicked)
-        _ = mediator.handle(.clickedOutsideApp)
-        #expect(props(mediator).input == nil)
-        #expect(props(mediator).history != nil)
+        #expect(mediator.handle(.conversationCloseRequested).isEmpty)
+        #expect(props(mediator).conversation == nil)
+        #expect(mediator.handle(.conversationCloseRequested).isEmpty)
     }
 
-    @Test("メニューから話しかけると、閉じていても入力欄を開く。開いていれば何もしない")
-    func talkOpensInput() {
-        var mediator = launched()
+    @Test("メニューから話しかけると、消えていても覚えている状態で開く。開いていれば何もしない")
+    func talkOpensTheConversation() {
+        var mediator = placed()
         #expect(mediator.handle(.talkRequested).contains(.focusInput))
         #expect(mediator.handle(.talkRequested).isEmpty)
-        #expect(props(mediator).input != nil)
+        #expect(props(mediator).conversation?.history == nil)
+        _ = mediator.handle(.historyToggleRequested)
+        _ = mediator.handle(.conversationCloseRequested)
+        #expect(mediator.handle(.talkRequested) == [.focusInput])
+        #expect(props(mediator).conversation?.history != nil)
     }
 
-    @Test("履歴は開くときだけ前に出し、閉じる操作で閉じる")
-    func history() {
-        var mediator = launched()
-        #expect(mediator.handle(.historyOpenRequested) == [.makeHistoryKey])
-        #expect(mediator.handle(.historyButtonClicked).isEmpty)
-        _ = mediator.handle(.historyCloseRequested)
-        #expect(props(mediator).history == nil)
-        #expect(mediator.handle(.historyLinkClicked) == [.makeHistoryKey])
-        #expect(props(mediator).history != nil)
+    @Test("ひらく⇔とじるは履歴を畳んだり開いたりするだけで、ウインドウは消えない。消えている間は何もしない")
+    func toggleHistory() {
+        var mediator = placed()
+        #expect(mediator.handle(.historyToggleRequested).isEmpty)
+        _ = mediator.handle(.characterClicked)
+        let folded = try! #require(props(mediator).conversation)
+        let effects = mediator.handle(.historyToggleRequested)
+        let unfolded = try! #require(props(mediator).conversation)
+        #expect(unfolded.history != nil)
+        #expect(unfolded.frame.midY == folded.frame.midY)
+        #expect(unfolded.frame.height == ConversationWindow.default.unfoldedHeight)
+        #expect(unfolded.foldedHeight == folded.frame.height)
+        #expect(unfolded.toggleHelp == "履歴をとじる（⌘L）")
+        #expect(effects == [.saveConversationWindow(mediator.state.conversationWindow)])
+        _ = mediator.handle(.historyToggleRequested)
+        #expect(props(mediator).conversation == folded)
+    }
+
+    @Test("「履歴を開く」と「続きは履歴で」は、ウインドウを出して履歴を開く。開いていれば何もしない")
+    func historyRequested() {
+        var mediator = placed()
+        let effects = mediator.handle(.historyOpenRequested)
+        #expect(effects.first == .focusInput)
+        #expect(props(mediator).conversation?.history != nil)
+        #expect(mediator.handle(.historyLinkClicked).isEmpty)
+        _ = mediator.handle(.conversationCloseRequested)
+        #expect(mediator.handle(.historyLinkClicked) == [.focusInput])
+        #expect(props(mediator).conversation?.history != nil)
+    }
+
+    @Test("動かした・大きさを変えたウインドウは、その幅といまの状態の高さを覚えて保存する")
+    func frameChanged() {
+        var mediator = placed()
+        _ = mediator.handle(.characterClicked)
+        let moved = CGRect(x: 10, y: 20, width: 400, height: 200)
+        #expect(mediator.handle(.conversationFrameChanged(moved, visible: screen))
+            == [.saveConversationWindow(mediator.state.conversationWindow)])
+        #expect(props(mediator).conversation?.frame == moved)
+        #expect(mediator.handle(.conversationFrameChanged(moved, visible: screen)).isEmpty)
+        _ = mediator.handle(.historyToggleRequested)
+        #expect(props(mediator).conversation?.frame.width == 400)
+        #expect(props(mediator).conversation?.foldedHeight == 200)
+        #expect(props(mediator).conversation?.frame.height == ConversationWindow.default.unfoldedHeight)
+    }
+
+    @Test("開くときの上下の余裕は、ウインドウのある画面で見る")
+    func unfoldsOnTheWindowsScreen() {
+        var mediator = placed()
+        _ = mediator.handle(.characterClicked)
+        let other = CGRect(x: 1600, y: 0, width: 1000, height: 300)
+        _ = mediator.handle(.conversationFrameChanged(CGRect(x: 1700, y: 50, width: 320, height: 140), visible: other))
+        _ = mediator.handle(.historyToggleRequested)
+        #expect(props(mediator).conversation?.frame == CGRect(x: 1700, y: 0, width: 320, height: 300))
     }
 
     @Test("設定は開く指示と閉じる指示を出す")
@@ -320,11 +380,11 @@ struct UIMediatorTests {
     func logout() {
         var mediator = synced(messages: [Fixture.message("r1")], readThrough: "r1")
         _ = mediator.handle(.historyOpenRequested)
-        #expect(props(mediator).history?.rows.count == 1)
+        #expect(props(mediator).conversation?.history?.rows.count == 1)
         let effects = mediator.handle(.logoutRequested)
         #expect(effects.contains(.disconnect))
         #expect(effects.contains(.logout))
-        #expect(props(mediator).history?.rows.isEmpty == true)
+        #expect(props(mediator).conversation?.history?.rows.isEmpty == true)
         #expect(props(mediator).menu.canLogout == false)
     }
 
@@ -354,28 +414,27 @@ struct UIMediatorTests {
 
     // MARK: - Size and avatar
 
-    @Test("倍率と入力欄の大きさは、変わったときだけ保存する")
+    @Test("倍率は変わったときだけ保存する")
     func sizes() {
         var mediator = launched()
         #expect(mediator.handle(.characterScaleChanged(CharacterScale(1.5))) == [.saveCharacterScale(CharacterScale(1.5))])
         #expect(props(mediator).character.scale == CharacterScale(1.5))
-        #expect(mediator.handle(.inputTextHeightMeasured(40)) == [])
-        #expect(mediator.handle(.inputTextHeightMeasured(40)).isEmpty)
+        #expect(mediator.handle(.characterScaleChanged(CharacterScale(1.5))).isEmpty)
     }
 
-    @Test("つまみのドラッグは、つかんだところからの差で大きさを決める")
-    func grip() {
-        var mediator = launched()
-        _ = mediator.handle(.gripDragged(to: CGPoint(x: 100, y: 100)))
-        let effects = mediator.handle(.gripDragged(to: CGPoint(x: 120, y: 80)))
-        // Right widens both sides, down makes the text area taller.
-        let expected = InputBoxSize(width: InputBoxSize.default.width + 40, height: InputBoxSize.default.height + 20)
-        #expect(effects == [.saveInputBoxSize(expected)])
-        _ = mediator.handle(.gripReleased)
-        // A new drag starts from the size it has now.
-        _ = mediator.handle(.gripDragged(to: CGPoint(x: 200, y: 200)))
-        #expect(mediator.handle(.gripDragged(to: CGPoint(x: 210, y: 200)))
-            == [.saveInputBoxSize(InputBoxSize(width: expected.width + 20, height: expected.height))])
+    @Test("起動時に読んだ一列の幅と会話のウインドウは、そのまま描画に使う")
+    func launchInfo() {
+        var mediator = UIMediator { "r" }
+        let window = ConversationWindow(
+            origin: CGPoint(x: 30, y: 40), width: 400, foldedHeight: 150, unfoldedHeight: 600, showsHistory: true)
+        _ = mediator.handle(.launched(LaunchInfo(
+            characterScale: .default, columnWidth: 360, conversationWindow: window, serverOrigin: nil,
+            avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
+        #expect(props(mediator).balloon == nil)
+        #expect(mediator.state.columnWidth == 360)
+        #expect(mediator.handle(.characterClicked) == [.focusInput])
+        #expect(props(mediator).conversation?.frame == CGRect(x: 30, y: 40, width: 400, height: 600))
+        #expect(props(mediator).conversation?.history != nil)
     }
 
     @Test("アバターは読み込みを指示し、結果を受け取って描く")
@@ -391,7 +450,7 @@ struct UIMediatorTests {
 
     // MARK: - Connection
 
-    @Test("接続の状態は接続の状態機械から決まり、入力欄の案内になる")
+    @Test("接続の状態は接続の状態機械から決まり、会話のウインドウの案内になる")
     func status() {
         var mediator = launched()
         #expect(props(mediator).character.disconnectedHelp == ConnectionStatus.connecting.text)
@@ -400,11 +459,11 @@ struct UIMediatorTests {
         #expect(props(mediator).character.disconnectedHelp == nil)
 
         _ = mediator.handle(.characterClicked)
-        #expect(props(mediator).input?.status == nil)
+        #expect(props(mediator).conversation?.status == StatusProps(text: ConnectionStatus.connected.text, action: nil))
 
         let effects = mediator.handle(.socketClosed(.code(1008)))
         #expect(effects.contains(.clearSession))
-        #expect(props(mediator).input?.status
+        #expect(props(mediator).conversation?.status
             == StatusProps(text: ConnectionStatus.needsLogin.text, action: ActionProps(title: "GitHub でログイン", event: .loginRequested)))
     }
 
