@@ -56,8 +56,8 @@ async function setup(start: string) {
     async open({ loop: settings, ...options }: OpenOptions = {}) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-        runtime: fixtureRuntime, maxModelCalls: 6, now: () => f.clock,
-        loop: { ...LOOP_DEFAULTS, timeZone: TZ, awakeHours: AWAKE, selfCheck: LIMITS, ...settings },
+        runtime: fixtureRuntime, now: () => f.clock,
+        loop: { ...LOOP_DEFAULTS, timeZone: TZ, awakeHours: AWAKE, selfCheck: LIMITS, eventModelCalls: 6, ...settings },
         configureSession: (session: AgentSession) => { session.agent.streamFunction = model.streamFunction; },
         ...options,
       });

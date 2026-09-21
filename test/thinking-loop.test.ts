@@ -56,7 +56,7 @@ async function setup(beforeReadState?: (db: DatabaseSync) => void) {
     async open({ loop: settings, ...options }: OpenOptions = {}) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-        runtime: fixtureRuntime, maxModelCalls: 4, loop: { ...LOOP_DEFAULTS, ...settings },
+        runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, eventModelCalls: 4, ...settings },
         configureSession: session => { session.agent.streamFunction = model.streamFunction; sessions.push(session); },
         ...options,
       });
@@ -202,7 +202,7 @@ test('text written without a tool stays inside: nothing reaches the owner and th
 test('a turn that keeps calling tools stops at the model call limit and the event fails without touching the owner record', async () => {
   const f = await setup();
   try {
-    const { loop, events } = await f.open({ maxModelCalls: 3 });
+    const { loop, events } = await f.open({ loop: { eventModelCalls: 3 } });
     f.model.auto = () => ({ calls: [call('set_mac_avatar_expression', { expression: 'happy' })] });
     const sent = f.send(loop, '止まらない場面');
     const done = await completed(events, sent.eventId);
@@ -217,6 +217,54 @@ test('a turn that keeps calling tools stops at the model call limit and the even
     const next = f.send(loop, '次');
     assert.equal((await completed(events, next.eventId)).payload.status, 'replied');
   } finally { await f.cleanup(); }
+});
+
+test('an ordinary turn has as many model calls as the config gives it, eight unless told otherwise', async () => {
+  const f = await setup();
+  try {
+    const logs: string[] = [];
+    // The default comes from the config, not from the loop: the fixture's own shorter limit is set aside here.
+    const { loop, events } = await f.open({ loop: { eventModelCalls: LOOP_DEFAULTS.eventModelCalls }, log: line => { logs.push(line); } });
+    f.model.auto = () => ({ calls: [call('set_mac_avatar_expression', { expression: 'thinking' })] });
+    const sent = f.send(loop, '直し続ける場面');
+    assert.equal((await completed(events, sent.eventId)).payload.reason, 'model-call-limit');
+    await loop.idle();
+    assert.equal(f.model.calls, 8);
+    await loop.close();
+
+    // A deployment that raises the limit gets that many calls, and the log says where the turn was cut.
+    const raised = await f.open({ loop: { eventModelCalls: 20 }, log: line => { logs.push(line); } });
+    const again = f.send(raised.loop, 'もっと直し続ける場面');
+    assert.equal((await completed(raised.events, again.eventId)).payload.reason, 'model-call-limit');
+    await raised.loop.idle();
+    assert.equal(f.model.calls, 8 + 20);
+    assert.ok(logs.includes('thinking loop: the events turn was stopped at the model-call limit (20 calls)'), logs.join('\n'));
+  } finally { await f.cleanup(); }
+});
+
+test('an ordinary turn is cut at the time the config gives it, not a moment sooner', async t => {
+  const f = await setup();
+  try {
+    const logs: string[] = [];
+    const { loop, events } = await f.open({ loop: { eventTimeoutMinutes: 3 }, log: line => { logs.push(line); } });
+    const settled = (eventId: string) => events.find(e => e.type === 'conversation.event.completed' && e.payload.eventId === eventId);
+    const flush = () => new Promise(resolve => setImmediate(resolve));
+    f.model.takeOver();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const sent = f.send(loop, '返事のない場面');
+    const reply = await f.model.next();
+    t.mock.timers.tick(3 * 60_000 - 1);
+    await flush();
+    assert.equal(settled(sent.eventId), undefined);
+    t.mock.timers.tick(1);
+    await loop.idle();
+    assert.deepEqual([settled(sent.eventId)?.payload.status, settled(sent.eventId)?.payload.reason], ['failed', 'timeout']);
+    assert.ok(logs.includes('thinking loop: the events turn was stopped by the time limit (180 seconds)'), logs.join('\n'));
+    reply.finish();
+  } finally {
+    t.mock.timers.reset();
+    await f.cleanup();
+  }
 });
 
 test('a reply carrying template control strings or non-Japanese script is refused before it is sent', async () => {
@@ -706,7 +754,7 @@ test('reply_to_mac takes only the text, answers the message being handled, and i
 test('one reply answers every message steered in before it, and a message steered in after it can be answered again', async () => {
   const f = await setup();
   try {
-    const { loop, events } = await f.open({ maxModelCalls: 8 });
+    const { loop, events } = await f.open({ loop: { eventModelCalls: 8 } });
     const first = f.send(loop, '一件目');
     const call1 = await f.model.next();
     const second = f.send(loop, '二件目');

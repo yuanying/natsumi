@@ -69,7 +69,7 @@ async function setup({ schemaVersion }: { schemaVersion?: number } = {}) {
     async open({ loop: settings, ...options }: OpenOptions = {}) {
       const loop = await ThinkingLoop.open({
         db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-        runtime: fixtureRuntime, maxModelCalls: 4, loop: { ...LOOP_DEFAULTS, timeZone: 'Asia/Tokyo', ...settings },
+        runtime: fixtureRuntime, loop: { ...LOOP_DEFAULTS, timeZone: 'Asia/Tokyo', eventModelCalls: 4, ...settings },
         configureSession: session => { session.agent.streamFunction = model.streamFunction; sessions.push(session); },
         ...options,
       });
@@ -294,7 +294,7 @@ test('a file the check catches goes back, and the reason reaches the next turn o
 test('a turn stopped at the model-call limit still commits what memory holds', async () => {
   const f = await setup();
   try {
-    const { loop, events } = await f.open({ maxModelCalls: 1 });
+    const { loop, events } = await f.open({ loop: { eventModelCalls: 1 } });
     const base = f.commits();
     const sent = f.send(loop, '\u9577\u3044\u4f5c\u696d');
     const call1 = await f.model.next();

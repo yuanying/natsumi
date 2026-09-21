@@ -36,12 +36,10 @@ export interface StartOptions {
   log?: (line: string) => void;
   /** ACME polling interval. Tests shorten it. */
   acme?: { pollIntervalMs?: number };
-  /** Replaces the configured model route and loop limits. Tests supply a synthetic runtime and model stream here. */
+  /** Replaces the configured model route. Tests supply a synthetic runtime and model stream here. */
   pi?: {
     runtime?: () => Promise<ModelRuntime>;
     configureSession?: (session: AgentSession) => void;
-    maxModelCalls?: number;
-    runTimeoutMs?: number;
   };
   /** Events kept per device stream for replay after a reconnect. */
   streamBufferSize?: number;
@@ -113,8 +111,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       db, dataDirectory, sessionDirectory: config.pi.sessionDirectory, agentDirectory: config.pi.agentDirectory,
       target: { provider: config.pi.model.provider, model: config.pi.model.id }, thinking: config.pi.thinking,
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
-      configureSession: options.pi?.configureSession, maxModelCalls: options.pi?.maxModelCalls,
-      runTimeoutMs: options.pi?.runTimeoutMs, now, log, loop: config.loop,
+      configureSession: options.pi?.configureSession, now, log, loop: config.loop,
     });
 
     // The nightly switch (ADR 0009), self-checks natsumi booked, pings in quiet moments and expressions
