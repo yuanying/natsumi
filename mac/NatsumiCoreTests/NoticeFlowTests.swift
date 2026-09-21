@@ -66,7 +66,7 @@ struct NoticeFlowTests {
         receive("conversation.event.completed", ["eventId": "e1", "messageId": "m1", "status": "replied"])
         #expect(m.state.conversation.thinkingLine == nil)
         #expect(props(m).balloon?.body == .reply(ReplyProps(
-            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
+            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, unread: 1,
             help: "クリックで全文を出す")))
         if resetExpression { receive("avatar.expression", ["expression": "neutral"]) }
         return m
@@ -89,7 +89,7 @@ struct NoticeFlowTests {
         #expect(m.state.conversation.isThinking == false)
         #expect(props(m).character.expression == .thinking)
         #expect(props(m).balloon?.body == .reply(ReplyProps(
-            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
+            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, unread: 1,
             help: "クリックで全文を出す")))
         #expect(props(m).balloon?.outline == .speech)
         #expect(props(m).notices?.text == "架空のお知らせ")
@@ -100,7 +100,7 @@ struct NoticeFlowTests {
     func afterReset() {
         let m = exchange(resetExpression: true)
         #expect(props(m).balloon?.body == .reply(ReplyProps(
-            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
+            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, unread: 1,
             help: "クリックで全文を出す")))
         #expect(props(m).character.badge?.count == 1)
     }
@@ -118,7 +118,7 @@ struct NoticeFlowTests {
         ], expression: "thinking", readThrough: "m00", unreadReplyCount: 1, unacknowledged: ["n1"])))
         #expect(m.state.conversation.messages.map(\.messageId) == ["m00", "m1", "n1", "m2"])
         #expect(props(m).balloon?.body == .reply(ReplyProps(
-            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 0,
+            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, unread: 1,
             help: "クリックで全文を出す")))
         #expect(props(m).notices?.text == "架空のお知らせ")
     }

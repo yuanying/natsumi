@@ -89,11 +89,21 @@ public struct UIState {
     /// whole of it — through every line and through the reply — and opens again once she has nothing to handle
     /// (ADR 0017).
     var isIndicatorDismissed = false
+    /// The conversation window is the key window: the owner is using it.
+    var isConversationKey = false
+    /// The rows of the history in sight, by message ID, while the history is unfolded.
+    var visibleHistoryIds: Set<String> = []
     /// The badge hid the bundle. Hiding checks nothing, and a notice not seen before brings it back.
     var noticesHidden = false
     var seenNoticeIds: Set<String> = []
 
     public var conversation: ConversationState { session.conversation }
+
+    /// The owner is reading the history: the window is out, unfolded and the key one. What they see there is read,
+    /// and the balloon keeps out of the way (ADR 0022).
+    public var isReadingHistory: Bool {
+        isConversationOpen && conversationWindow.showsHistory && isConversationKey
+    }
 
     /// She is standing out of the pointer's way. Her own place is elsewhere, and must not be overwritten.
     public var isSteppedAside: Bool { dodgeHome != nil }

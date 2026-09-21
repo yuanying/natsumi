@@ -1,7 +1,7 @@
 # 0021. 入力欄と履歴を 1 つのウインドウにする
 
 - Date: 2026-09-21
-- Status: Accepted
+- Status: Accepted（§5 の「開いても既読にしない」は [ADR 0022](0022-only-her-last-line-in-the-balloon.md) で置き換え）
 
 ## Context
 

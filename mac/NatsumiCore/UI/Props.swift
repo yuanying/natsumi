@@ -88,7 +88,7 @@ public struct CharacterProps: Equatable, Sendable {
     }
 }
 
-/// The reply at the front of the balloon.
+/// natsumi's last reply, in the balloon while it is unread (ADR 0022).
 public struct ReplyProps: Equatable, Sendable {
     public var text: String
     public var lineLimit: Int
@@ -96,18 +96,18 @@ public struct ReplyProps: Equatable, Sendable {
     public var isExpanded: Bool
     /// "続きは履歴で": the text is cut, or the column had to show fewer lines.
     public var showsHistoryLink: Bool
-    /// "あと N 件".
-    public var more: Int
+    /// "未読 N 件": every unread reply, this one included.
+    public var unread: Int
     public var help: String
 
     public init(
-        text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, more: Int, help: String
+        text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, unread: Int, help: String
     ) {
         self.text = text
         self.lineLimit = lineLimit
         self.isExpanded = isExpanded
         self.showsHistoryLink = showsHistoryLink
-        self.more = more
+        self.unread = unread
         self.help = help
     }
 }
@@ -139,7 +139,7 @@ public struct BalloonProps: Equatable, Sendable {
         case thinking(ThinkingProps)
         case reply(ReplyProps)
 
-        /// Whether the front reply is opened to its whole text.
+        /// Whether the reply is opened to its whole text.
         public var isExpanded: Bool {
             if case .reply(let reply) = self { return reply.isExpanded }
             return false
@@ -148,8 +148,6 @@ public struct BalloonProps: Equatable, Sendable {
 
     public var body: Body
     public var outline: BalloonOutline
-    /// Replies drawn as edges behind the front one.
-    public var edges: Int
     public var tail: BalloonTail
     public var tailX: CGFloat
     public var width: CGFloat
@@ -159,12 +157,11 @@ public struct BalloonProps: Equatable, Sendable {
     public var closeHelp: String
 
     public init(
-        body: Body, outline: BalloonOutline, edges: Int, tail: BalloonTail, tailX: CGFloat, width: CGFloat,
+        body: Body, outline: BalloonOutline, tail: BalloonTail, tailX: CGFloat, width: CGFloat,
         textScale: Double, panelHeight: CGFloat? = nil, closeHelp: String
     ) {
         self.body = body
         self.outline = outline
-        self.edges = edges
         self.tail = tail
         self.tailX = tailX
         self.width = width
@@ -230,7 +227,7 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var text: String
     public var isOwner: Bool
     public var isNotice: Bool
-    /// An unread reply or a notice not checked yet. Opening the history does not read it.
+    /// An unread reply or a notice not checked yet. A reply is read once its row is seen in the key window.
     public var isUnread: Bool
 
     public init(messageId: String, text: String, isOwner: Bool, isNotice: Bool, isUnread: Bool) {
@@ -381,8 +378,8 @@ public enum UIProps {
         return RootProps(
             character: character(state, stack: noticeStack(conversation)),
             balloon: balloon(
-                conversation, dismissed: state.isIndicatorDismissed, expanded: state.expanded, placement: placement,
-                scale: state.characterScale),
+                conversation, dismissed: state.isIndicatorDismissed, readingHistory: state.isReadingHistory,
+                expanded: state.expanded, placement: placement, scale: state.characterScale),
             notices: notices(
                 conversation, hidden: state.noticesHidden, expanded: state.expanded, placement: placement,
                 scale: state.characterScale),
@@ -394,10 +391,11 @@ public enum UIProps {
 
     // MARK: - What the conversation says
 
-    /// The unread replies, oldest in front; nil when there are none.
-    public static func replyStack(_ conversation: ConversationState) -> ReplyStack? {
-        guard let front = conversation.unreadReplies.first else { return nil }
-        return ReplyStack(front: front, count: conversation.unreadReplyCount)
+    /// The reply the balloon says: her last one, while it is unread (ADR 0022). The read position is one cursor, so
+    /// when the last reply is read, every reply is.
+    public static func unreadReply(_ conversation: ConversationState) -> ShownMessage? {
+        guard let last = conversation.lastReply, conversation.isUnread(last) else { return nil }
+        return last
     }
 
     /// The unchecked notices, oldest in front; nil when there are none.
@@ -415,7 +413,7 @@ public enum UIProps {
         return NoticeStack(front: .notice(first), frontIds: [first.messageId], count: ids.count, cards: cards)
     }
 
-    /// What the balloon would say if there were no unread reply.
+    /// What the balloon says instead of her last reply, while there is something to wait for.
     public static func indicator(_ conversation: ConversationState) -> BalloonIndicator? {
         if conversation.outbox.contains(where: { $0.status == .sending }) { return .receiving }
         return conversation.isThinking ? .thinking : nil
@@ -437,17 +435,19 @@ public enum UIProps {
             badge: badge)
     }
 
-    /// What the balloon says. While natsumi is receiving or handling something, the bubble is hers: the unread
-    /// replies wait behind it and come back when she has finished (ADR 0017, which overturns ADR 0010's spinner).
+    /// What the balloon says: her last reply while it is unread, one only (ADR 0022). While natsumi is receiving or
+    /// handling something, the bubble is hers: the reply waits behind it and comes back when she has finished
+    /// (ADR 0017). While the owner is reading the history, the reply is left to the window, so that one arriving
+    /// there does not flash up here before it is read.
     public static func balloon(
-        _ conversation: ConversationState, dismissed: Bool, expanded: ExpandedCard? = nil,
-        placement: ColumnPlacement, scale: CharacterScale
+        _ conversation: ConversationState, dismissed: Bool, readingHistory: Bool = false,
+        expanded: ExpandedCard? = nil, placement: ColumnPlacement, scale: CharacterScale
     ) -> BalloonProps? {
         func props(
-            body: BalloonProps.Body, outline: BalloonOutline, edges: Int, width: CGFloat, closeHelp: String
+            body: BalloonProps.Body, outline: BalloonOutline, width: CGFloat, closeHelp: String
         ) -> BalloonProps {
             BalloonProps(
-                body: body, outline: outline, edges: edges, tail: placement.tail, tailX: placement.tailX,
+                body: body, outline: outline, tail: placement.tail, tailX: placement.tailX,
                 width: width, textScale: scale.textScale, panelHeight: placement.balloonHeight,
                 closeHelp: closeHelp)
         }
@@ -456,19 +456,18 @@ public enum UIProps {
             let thinking = ThinkingProps(
                 label: indicator == .receiving ? "受付中" : "考え中", line: conversation.thinkingLine)
             return props(
-                body: .thinking(thinking), outline: .thought, edges: 0, width: placement.width, closeHelp: "閉じる")
+                body: .thinking(thinking), outline: .thought, width: placement.width, closeHelp: "閉じる")
         }
-        guard let stack = replyStack(conversation) else { return nil }
-        let isExpanded = expanded == .reply(stack.front.messageId)
-        let shown = card(stack.front.text, isExpanded: isExpanded, budget: placement.budget)
+        guard !readingHistory, let last = unreadReply(conversation) else { return nil }
+        let isExpanded = expanded == .reply(last.messageId)
+        let shown = card(last.text, isExpanded: isExpanded, budget: placement.budget)
         let reply = ReplyProps(
             text: shown.text, lineLimit: shown.lineLimit, isExpanded: isExpanded,
-            showsHistoryLink: shown.showsHistoryLink, more: stack.more,
+            showsHistoryLink: shown.showsHistoryLink, unread: conversation.unreadReplyCount,
             help: isExpanded ? "クリックで畳む" : "クリックで全文を出す")
         return props(
-            body: .reply(reply), outline: .speech, edges: min(stack.behind, placement.budget.behind),
-            width: isExpanded ? placement.expandedWidth : placement.width,
-            closeHelp: stack.more > 0 ? "この返事を既読にして次へ" : "この返事を既読にして閉じる")
+            body: .reply(reply), outline: .speech, width: isExpanded ? placement.expandedWidth : placement.width,
+            closeHelp: "既読にして閉じる")
     }
 
     /// What a card puts on the screen: the preview, or the whole text when the owner opened it, and whether the

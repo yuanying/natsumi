@@ -71,6 +71,11 @@ public struct ConversationState: Equatable, Sendable {
 
     // MARK: - Read state
 
+    /// natsumi's newest reply, read or not: what the balloon says (ADR 0022).
+    public var lastReply: ShownMessage? {
+        messages.last { $0.kind == .reply }
+    }
+
     /// Unread replies in `messages`, oldest first.
     public var unreadReplies: [ShownMessage] {
         messages[(readIndex + 1)...].filter { $0.kind == .reply }

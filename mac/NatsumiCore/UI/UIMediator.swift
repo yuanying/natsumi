@@ -19,7 +19,7 @@ public struct UIMediator {
     public mutating func handle(_ event: UIEvent) -> [UIEffect] {
         let effects = decide(event)
         settle()
-        return effects
+        return effects + readSeenReplies()
     }
 
     // MARK: - Deciding
@@ -112,6 +112,19 @@ public struct UIMediator {
             state.conversationWindow = left
             return [.saveConversationWindow(left)]
 
+        case .conversationKeyChanged(let isKey):
+            state.isConversationKey = isKey
+            return []
+
+        case .historyRowVisibilityChanged(let id, let isVisible):
+            guard state.isConversationOpen, state.conversationWindow.showsHistory else { return [] }
+            if isVisible {
+                state.visibleHistoryIds.insert(id)
+            } else {
+                state.visibleHistoryIds.remove(id)
+            }
+            return []
+
         case .characterFrameChanged(let frame, let visible):
             let before = state.characterFrame
             state.characterFrame = frame
@@ -196,19 +209,20 @@ public struct UIMediator {
 
         case .balloonTextClicked:
             // Opening a reply reads nothing: only the × tells the server anything.
-            guard let front = UIProps.replyStack(state.conversation)?.front else { return [] }
-            open(.reply(front.messageId))
+            guard let last = UIProps.unreadReply(state.conversation) else { return [] }
+            open(.reply(last.messageId))
             return []
 
         case .balloonCloseClicked:
             // On the thought bubble there is nothing to read, so the × only hides it, for the whole of the handling
-            // it belongs to (ADR 0017). On a reply it reads the one at the front and brings the next one forward.
+            // it belongs to (ADR 0017). On her last reply it reads everything up to it, and a read reply is not
+            // shown (ADR 0022).
             guard UIProps.indicator(state.conversation) == nil else {
                 state.isIndicatorDismissed = true
                 return []
             }
-            guard UIProps.replyStack(state.conversation) != nil else { return [] }
-            return apply(state.session.confirmFrontReply())
+            guard let last = UIProps.unreadReply(state.conversation) else { return [] }
+            return apply(state.session.readReplies(through: last.messageId))
 
         case .readAllRepliesRequested:
             return apply(state.session.confirmAllReplies())
@@ -337,6 +351,7 @@ public struct UIMediator {
     private mutating func closeConversation() -> [UIEffect] {
         guard state.isConversationOpen else { return [] }
         state.isConversationOpen = false
+        state.visibleHistoryIds = []
         return []
     }
 
@@ -345,7 +360,18 @@ public struct UIMediator {
     private mutating func toggleHistory() -> [UIEffect] {
         state.conversationWindow = state.conversationWindow.togglingHistory(
             within: state.conversationVisible ?? state.visibleFrame)
+        // The rows come back into sight one by one when it unfolds again.
+        state.visibleHistoryIds = []
         return [.saveConversationWindow(state.conversationWindow)]
+    }
+
+    /// Reads the replies the owner has seen in the conversation window: its history is unfolded, the window is the
+    /// key one, and the rows are in sight (ADR 0022). Asked after every event, since any of them can bring these
+    /// together — the window becoming key, a row coming into sight, a reply arriving under the owner's eyes.
+    private mutating func readSeenReplies() -> [UIEffect] {
+        guard state.isReadingHistory, let id = HistoryReading.target(state.conversation, visible: state.visibleHistoryIds)
+        else { return [] }
+        return apply(state.session.readReplies(through: id))
     }
 
     /// Passes the session machine's effects on as the mediator's own, and reads the connection's state off it.
@@ -385,7 +411,7 @@ public struct UIMediator {
         // A card that is no longer at the front folds by itself; what is open is always what is shown.
         switch state.expanded {
         case .reply(let id):
-            if UIProps.replyStack(state.conversation)?.front.messageId != id { state.expanded = nil }
+            if UIProps.unreadReply(state.conversation)?.messageId != id { state.expanded = nil }
         case .notice(let id):
             if case .notice(let front) = UIProps.noticeStack(state.conversation)?.front, front.messageId == id {
             } else {

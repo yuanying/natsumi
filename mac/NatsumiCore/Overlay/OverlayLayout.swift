@@ -19,7 +19,7 @@ public struct StackBudget: Equatable, Sendable {
         self.lines = lines
     }
 
-    public static let full = StackBudget(behind: ReplyStack.maxBehind, lines: BalloonText.maxLines)
+    public static let full = StackBudget(behind: NoticeStack.maxBehind, lines: BalloonText.maxLines)
     public static let steps: [StackBudget] = [
         full, StackBudget(behind: 0, lines: BalloonText.maxLines), StackBudget(behind: 0, lines: 2), StackBudget(behind: 0, lines: 1),
     ]
@@ -27,7 +27,7 @@ public struct StackBudget: Equatable, Sendable {
     /// opened card that cannot fit ends up no worse than a closed one. The steps are close together near the top so
     /// that a card takes as much of the room on its side as there is, rather than falling a long way past it.
     public static let expandedSteps: [StackBudget] = [
-        StackBudget(behind: ReplyStack.maxBehind, lines: BalloonText.expandedMaxLines),
+        StackBudget(behind: NoticeStack.maxBehind, lines: BalloonText.expandedMaxLines),
         StackBudget(behind: 0, lines: BalloonText.expandedMaxLines),
         StackBudget(behind: 0, lines: 32),
         StackBudget(behind: 0, lines: 24),

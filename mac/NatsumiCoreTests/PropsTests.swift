@@ -30,9 +30,12 @@ struct PropsTests {
     }
 
     private func balloon(
-        _ conversation: ConversationState, dismissed: Bool = false, placement: ColumnPlacement = ColumnPlacement()
+        _ conversation: ConversationState, dismissed: Bool = false, readingHistory: Bool = false,
+        placement: ColumnPlacement = ColumnPlacement()
     ) -> BalloonProps? {
-        UIProps.balloon(conversation, dismissed: dismissed, placement: placement, scale: .default)
+        UIProps.balloon(
+            conversation, dismissed: dismissed, readingHistory: readingHistory, placement: placement,
+            scale: .default)
     }
 
     private func thinking(_ label: String, line: String? = nil) -> BalloonProps.Body {
@@ -52,47 +55,53 @@ struct PropsTests {
         #expect(balloon(ConversationState()) == nil)
     }
 
-    @Test("未読の返事を古い順に前へ出し、件数を持つ。本人のメッセージと知らせは入れない")
-    func oldestFirst() {
+    @Test("未読の最後の返事を 1 件だけ出し、未読の件数を持つ。本人のメッセージと知らせは入れない")
+    func lastReply() {
         let state = conversation(
-            [reply("r0"), owner("m1", event: "e1"), notice("n2"), reply("r3", to: "e1"), reply("r4"), reply("r5"), reply("r6")],
+            [reply("r0"), owner("m1", event: "e1"), reply("r3", to: "e1"), reply("r4"), reply("r5"), reply("r6"), notice("n7")],
             readThrough: "r0", unread: 4)
-        #expect(UIProps.replyStack(state) == ReplyStack(front: reply("r3", to: "e1"), count: 4))
+        #expect(UIProps.unreadReply(state) == reply("r6"))
         let props = balloon(state)
         #expect(props?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 3, help: "クリックで全文を出す")))
-        #expect(props?.edges == ReplyStack.maxBehind)
-        #expect(props?.closeHelp == "この返事を既読にして次へ")
+            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, unread: 4,
+            help: "クリックで全文を出す")))
+        #expect(props?.closeHelp == "既読にして閉じる")
         // A reply is said out loud: it keeps the speech balloon.
         #expect(props?.outline == .speech)
     }
 
-    @Test("後ろに重ねる枚数には上限があり、超えた分は件数だけにする")
-    func behindLimit() {
-        #expect(ReplyStack(front: reply("r1"), count: 1).behind == 0)
-        #expect(ReplyStack(front: reply("r1"), count: 2).behind == 1)
-        #expect(ReplyStack(front: reply("r1"), count: 3).behind == 2)
-        #expect(ReplyStack(front: reply("r1"), count: 9).behind == ReplyStack.maxBehind)
-        #expect(ReplyStack(front: reply("r1"), count: 9).more == 8)
+    @Test("最後の返事が既読なら、吹き出しは出さない")
+    func readLastReply() {
+        let state = conversation([reply("r1"), reply("r2")], readThrough: "r2")
+        #expect(UIProps.unreadReply(state) == nil)
+        #expect(balloon(state) == nil)
     }
 
-    @Test("一覧より古い未読は、件数にだけ入る")
+    @Test("履歴を読んでいる間は返事を出さないが、考え中は出す")
+    func readingHistory() {
+        var state = conversation([reply("r1")], readThrough: nil, unread: 1)
+        #expect(balloon(state, readingHistory: true) == nil)
+        #expect(balloon(state, readingHistory: false) != nil)
+        state.enqueue(text: "やあ", requestId: "q1")
+        #expect(balloon(state, readingHistory: true)?.body == thinking("受付中"))
+    }
+
+    @Test("一覧より古い未読も、件数には入る")
     func olderUnread() {
         let state = conversation([reply("r5"), reply("r6")], readThrough: "r0", unread: 5)
-        #expect(UIProps.replyStack(state) == ReplyStack(front: reply("r5"), count: 5))
+        #expect(UIProps.unreadReply(state) == reply("r6"))
         #expect(balloon(state)?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, more: 4, help: "クリックで全文を出す")))
+            text: "こんにちは", lineLimit: BalloonText.maxLines, showsHistoryLink: false, unread: 5,
+            help: "クリックで全文を出す")))
     }
 
-    @Test("高さが足りないときは、重ねる枚数と行数を減らし、続きを履歴へ送る")
+    @Test("高さが足りないときは、行数を減らし、続きを履歴へ送る")
     func budget() {
         let state = conversation([reply("r1"), reply("r2"), reply("r3")], readThrough: nil, unread: 3)
         var placement = ColumnPlacement()
         placement.budget = StackBudget(behind: 0, lines: 2)
-        let props = balloon(state, placement: placement)
-        #expect(props?.edges == 0)
-        #expect(props?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: 2, showsHistoryLink: true, more: 2, help: "クリックで全文を出す")))
+        #expect(balloon(state, placement: placement)?.body == .reply(ReplyProps(
+            text: "こんにちは", lineLimit: 2, showsHistoryLink: true, unread: 3, help: "クリックで全文を出す")))
     }
 
     @Test("長い発言は切って、続きは履歴で読めることを示す")
@@ -101,7 +110,7 @@ struct PropsTests {
         let state = conversation([reply("r1", text: long)], readThrough: nil, unread: 1)
         #expect(balloon(state)?.body == .reply(ReplyProps(
             text: String(repeating: "あ", count: BalloonText.maxCharacters) + "…", lineLimit: BalloonText.maxLines,
-            showsHistoryLink: true, more: 0, help: "クリックで全文を出す")))
+            showsHistoryLink: true, unread: 1, help: "クリックで全文を出す")))
     }
 
     @Test("開いたカードは横にも広がり、閉じているカードは今までの幅のまま")
@@ -145,7 +154,7 @@ struct PropsTests {
         let props = UIProps.balloon(
             state, dismissed: false, expanded: .reply("r1"), placement: placement, scale: .default)
         #expect(props?.body == .reply(ReplyProps(
-            text: long, lineLimit: BalloonText.expandedMaxLines, isExpanded: true, showsHistoryLink: false, more: 0,
+            text: long, lineLimit: BalloonText.expandedMaxLines, isExpanded: true, showsHistoryLink: false, unread: 1,
             help: "クリックで畳む")))
     }
 
@@ -158,7 +167,7 @@ struct PropsTests {
         let props = UIProps.balloon(
             state, dismissed: false, expanded: .reply("r1"), placement: placement, scale: .default)
         #expect(props?.body == .reply(ReplyProps(
-            text: many, lineLimit: 12, isExpanded: true, showsHistoryLink: true, more: 0, help: "クリックで畳む")))
+            text: many, lineLimit: 12, isExpanded: true, showsHistoryLink: true, unread: 1, help: "クリックで畳む")))
     }
 
     @Test("拡大していない側のカードは、切った本文と 5 行までのまま")
@@ -189,7 +198,6 @@ struct PropsTests {
         #expect(balloon(state)?.body == thinking("受付中"))
         #expect(balloon(state)?.outline == .thought)
         #expect(balloon(state)?.closeHelp == "閉じる")
-        #expect(balloon(state)?.edges == 0)
 
         state.apply(.accepted(CommandAccepted(messageId: "m1", eventId: "e1", state: .processing)), requestId: "q1")
         #expect(balloon(state)?.body == thinking("考え中"))
@@ -202,7 +210,7 @@ struct PropsTests {
         state.apply(.message(reply("r2", to: "e1")))
         #expect(balloon(state)?.body == thinking("考え中"))
         state.apply(.eventCompleted(EventCompletion(eventId: "e1", messageId: "m1", status: .replied, reason: nil)))
-        #expect(UIProps.replyStack(state)?.front.messageId == "r2")
+        #expect(UIProps.unreadReply(state)?.messageId == "r2")
         #expect(balloon(state)?.outline == .speech)
         if case .reply = balloon(state)?.body {} else { Issue.record("返事に戻っていない") }
     }
@@ -226,7 +234,7 @@ struct PropsTests {
         #expect(balloon(state)?.body == thinking("考え中"))
     }
 
-    @Test("閉じた印は出さないが、未読の返事は閉じても出し続ける")
+    @Test("閉じた印は出さないが、考え中を閉じても返事は出し続ける")
     func dismissed() {
         var working = conversation(
             [owner("m1", event: "e1")], readThrough: "m1",
