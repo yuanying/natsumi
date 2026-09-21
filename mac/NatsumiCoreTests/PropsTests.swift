@@ -104,10 +104,10 @@ struct PropsTests {
             showsHistoryLink: true, more: 0, help: "クリックで全文を出す")))
     }
 
-    @Test("開いたカードは横にも広がり、閉じているカードと入力欄は今までの幅のまま")
+    @Test("開いたカードは横にも広がり、閉じているカードは今までの幅のまま")
     func expandedIsWider() {
         let screen = CGRect(x: 0, y: 0, width: 1710, height: 950)
-        let column = CGFloat(InputBoxSize.default.width)
+        let column = OverlaySettings.defaultColumnWidth
         let wide = OverlayLayout.expandedWidth(column, visible: screen)
         #expect(wide == column * OverlayLayout.expandedWidthFactor)
         // 画面が狭ければ、そこで止まる。
@@ -117,8 +117,7 @@ struct PropsTests {
         let atEdge = CGRect(x: 1493, y: 90, width: 192, height: 208)
         #expect(OverlayLayout.expandedWidth(column, visible: screen) == wide)
         let layout = OverlayLayout.make(
-            visible: screen, character: atEdge, spacing: 8, notices: nil, balloon: CGSize(width: wide, height: 120),
-            input: nil, history: nil)
+            visible: screen, character: atEdge, spacing: 8, notices: nil, balloon: CGSize(width: wide, height: 120))
         #expect(layout.balloon?.maxX == screen.maxX)
         #expect(layout.balloon.map { $0.minX + layout.tailX } == atEdge.midX)
 
@@ -322,19 +321,17 @@ struct PropsTests {
         #expect(CharacterBadge.frame(for: CharacterScale(0.5)) == CGRect(x: 48 - 14, y: 0, width: 14, height: 14))
     }
 
-    // MARK: - The input field and the history
+    // MARK: - The conversation window
 
-    @Test("送れなかった送信は入力欄に、受付中と併せて履歴に出る")
+    @Test("送れなかった送信は畳んだウインドウでは入力欄の上に、開いたウインドウでは受付中と併せて履歴に出る")
     func failures() {
         var state = ConversationState()
         state.enqueue(text: "架空のメッセージ", requestId: "q1")
         state.enqueue(text: "もう一つ", requestId: "q2")
         state.apply(.rejected(code: "invalid"), requestId: "q2")
-        let input = UIProps.input(state, status: .connected, scale: .default, boxSize: .default, textHeight: 0)
-        #expect(input.failures == [FailureProps(requestId: "q2", text: "「もう一つ」を送れませんでした（invalid）")])
-        #expect(input.status == nil)
+        #expect(UIProps.failures(state) == [FailureProps(requestId: "q2", text: "「もう一つ」を送れませんでした（invalid）")])
 
-        let history = UIProps.history(state, status: .connected)
+        let history = UIProps.history(state)
         #expect(history.outgoing == [
             OutgoingRowProps(requestId: "q1", text: "架空のメッセージ", failure: nil),
             OutgoingRowProps(requestId: "q2", text: "もう一つ", failure: "送れませんでした（invalid）"),
@@ -346,7 +343,7 @@ struct PropsTests {
         let state = conversation(
             [owner("m1", event: "e1"), reply("r2", to: "e1"), notice("n3")],
             readThrough: "m1", unread: 1, notices: ["n3"])
-        let rows = UIProps.history(state, status: .connected).rows
+        let rows = UIProps.history(state).rows
         #expect(rows == [
             HistoryRowProps(messageId: "m1", text: "やあ", isOwner: true, isNotice: false, isUnread: false),
             HistoryRowProps(messageId: "r2", text: "こんにちは", isOwner: false, isNotice: false, isUnread: true),
@@ -354,11 +351,10 @@ struct PropsTests {
         ])
     }
 
-    @Test("接続していないときの案内は、状態ごとに次の一手を持つ")
+    @Test("接続の案内は常にあり、状態ごとに次の一手を持つ")
     func statusRow() {
-        func action(_ status: ConnectionStatus) -> ActionProps? {
-            UIProps.input(ConversationState(), status: status, scale: .default, boxSize: .default, textHeight: 0).status?.action
-        }
+        func action(_ status: ConnectionStatus) -> ActionProps? { UIProps.statusRow(status).action }
+        #expect(UIProps.statusRow(.connected) == StatusProps(text: ConnectionStatus.connected.text, action: nil))
         #expect(action(.needsServer) == ActionProps(title: "設定を開く", event: .settingsOpenRequested))
         #expect(action(.needsLogin) == ActionProps(title: "GitHub でログイン", event: .loginRequested))
         #expect(action(.stopped) == ActionProps(title: "接続し直す", event: .reconnectRequested))

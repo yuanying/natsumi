@@ -35,12 +35,6 @@ public enum ExpandedCard: Equatable, Sendable {
     case notice(String)
 }
 
-/// Where the grip was taken hold of, so that a drag is measured from there.
-struct GripAnchor: Equatable {
-    var mouse: CGPoint
-    var size: InputBoxSize
-}
-
 /// Everything the UI is, in one value. Only the mediator changes it, and every drawing parameter is derived from
 /// it; nothing else is kept anywhere in the tree.
 public struct UIState {
@@ -55,14 +49,18 @@ public struct UIState {
     /// What the settings panel says about the server the owner just entered.
     public internal(set) var settingsMessage: String?
 
-    public internal(set) var isInputOpen = false
-    public internal(set) var isHistoryOpen = false
+    /// The conversation window is on the screen (ADR 0021). Whether its history is unfolded is in the window.
+    public internal(set) var isConversationOpen = false
     public internal(set) var isSettingsOpen = false
 
     public internal(set) var characterScale = CharacterScale.default
-    public internal(set) var inputBoxSize = InputBoxSize.default
-    /// How tall the text in the input field is, as the text view measured it.
-    public internal(set) var inputTextHeight: CGFloat = 0
+    /// The widest a panel in the column may be.
+    public internal(set) var columnWidth = OverlaySettings.defaultColumnWidth
+    /// Where the conversation window is and how large, in both of its states.
+    public internal(set) var conversationWindow = ConversationWindow.default
+    /// The visible area of the screen the conversation window is on, as the root last reported it; nil until the
+    /// window has been on a screen, when it is the character's.
+    public internal(set) var conversationVisible: CGRect?
 
     /// Where the character stands and which screen she is on, as the root last reported them. The mediator works
     /// out where she should go from these; it never asks the screen itself.
@@ -94,7 +92,6 @@ public struct UIState {
     /// The badge hid the bundle. Hiding checks nothing, and a notice not seen before brings it back.
     var noticesHidden = false
     var seenNoticeIds: Set<String> = []
-    var gripAnchor: GripAnchor?
 
     public var conversation: ConversationState { session.conversation }
 

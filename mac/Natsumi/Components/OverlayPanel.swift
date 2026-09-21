@@ -4,15 +4,27 @@ import SwiftUI
 /// A panel in the character's layer: above other windows and full-screen apps, on every Space, without activating
 /// the app.
 final class OverlayPanel: NSPanel {
-    /// The input field and the history take keyboard focus; the character and the balloon never do.
+    /// The conversation window and the settings take keyboard focus; the character and the balloon never do.
     var acceptsKey = false
     var onCancel: (() -> Void)?
+    /// A ⌘-key the panel answers itself, by the key's lowercase letter. The app is never the active one, so its
+    /// menu's shortcuts do not reach a key panel; what a panel wants from the keyboard it takes here.
+    var onCommand: ((String) -> Bool)?
 
     override var canBecomeKey: Bool { acceptsKey }
     override var canBecomeMain: Bool { false }
 
     override func cancelOperation(_ sender: Any?) {
         onCancel?()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           let key = event.charactersIgnoringModifiers?.lowercased(), onCommand?(key) == true
+        {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     static func make(style: NSWindow.StyleMask = [.borderless], acceptsKey: Bool = false) -> OverlayPanel {

@@ -5,7 +5,9 @@
   カードを確かめる操作・本文の拡大・キャラクターと吹き出し・知らせを 1 枚の舞台のウインドウに描くこと・
   キャラクターが走って動くことは [ADR 0016](0016-opening-a-card-and-moving-the-character.md) で改訂。
   未読の返事があるときに「考え中」「受付中」を出さず小さな回る印で処理中を示すことは
-  [ADR 0017](0017-streaming-the-line-she-is-thinking.md) で改訂）
+  [ADR 0017](0017-streaming-the-line-she-is-thinking.md) で改訂。
+  入力欄と履歴を 1 つのタイトルバーのあるウインドウにし、入力欄を一列から外すこと・ほかのアプリのクリックで
+  閉じないこと・つまみを廃止することは [ADR 0021](0021-the-input-and-the-history-in-one-window.md) で置き換え）
 
 ## Context
 

@@ -11,7 +11,7 @@ struct NoticeFlowTests {
             return "r\(counter)"
         }
         _ = mediator.handle(.launched(LaunchInfo(
-            characterScale: .default, inputBoxSize: .default, serverOrigin: "https://natsumi.example.net",
+            characterScale: .default, serverOrigin: "https://natsumi.example.net",
             avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
         _ = mediator.handle(.sessionResumed(hasSession: true, deviceId: nil))
         return mediator

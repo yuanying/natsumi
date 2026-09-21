@@ -15,7 +15,7 @@ public enum StageTransition: Equatable, Sendable {
 }
 
 /// Everything drawn on the stage, and where: the character and the two cards, each with its frame in the stage's
-/// own coordinates (origin at the top left, as SwiftUI lays out). The input field, the history and the settings are
+/// own coordinates (origin at the top left, as SwiftUI lays out). The conversation window and the settings are
 /// windows of their own and are not here.
 public struct StageProps: Equatable, Sendable {
     public var size: CGSize

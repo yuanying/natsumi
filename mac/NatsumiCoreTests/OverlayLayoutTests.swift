@@ -8,30 +8,24 @@ struct OverlayLayoutTests {
     private let spacing: CGFloat = 8
     private let notices = CGSize(width: 200, height: 60)
     private let balloon = CGSize(width: 240, height: 80)
-    private let input = CGSize(width: 280, height: 40)
-    private let history = CGSize(width: 300, height: 400)
 
     private func make(
-        _ character: CGRect, notices: CGSize? = nil, balloon: CGSize? = nil, input: CGSize? = nil, history: CGSize? = nil,
-        visible: CGRect? = nil
+        _ character: CGRect, notices: CGSize? = nil, balloon: CGSize? = nil, visible: CGRect? = nil
     ) -> OverlayLayout {
-        OverlayLayout.make(
-            visible: visible ?? screen, character: character, spacing: spacing,
-            notices: notices, balloon: balloon, input: input, history: history)
+        OverlayLayout.make(visible: visible ?? screen, character: character, spacing: spacing, notices: notices, balloon: balloon)
     }
 
-    @Test("上から知らせ・吹き出し・キャラ・入力欄の順に、キャラの中心の縦の線にそろえ、間隔を一定にする")
+    @Test("上から知らせ・吹き出し・キャラの順に、キャラの中心の縦の線にそろえ、間隔を一定にする")
     func column() {
         let character = CGRect(x: 400, y: 300, width: 100, height: 100)
-        let layout = make(character, notices: notices, balloon: balloon, input: input)
+        let layout = make(character, notices: notices, balloon: balloon)
         #expect(layout.balloon == CGRect(x: 330, y: 400 + spacing, width: 240, height: 80))
         #expect(layout.notices == CGRect(x: 350, y: 400 + spacing + 80 + spacing, width: 200, height: 60))
-        #expect(layout.input == CGRect(x: 310, y: 300 - spacing - 40, width: 280, height: 40))
         #expect(layout.isFlipped == false)
         #expect(layout.tail == .down)
         #expect(layout.tailX == 120)
         #expect(layout.overflow == 0)
-        for rect in [layout.notices, layout.balloon, layout.input] { #expect(rect?.midX == character.midX) }
+        for rect in [layout.notices, layout.balloon] { #expect(rect?.midX == character.midX) }
     }
 
     @Test("返事が無ければ、知らせの束はキャラのすぐ上に置く")
@@ -42,36 +36,14 @@ struct OverlayLayoutTests {
         #expect(layout.balloon == nil)
     }
 
-    @Test("上に足りなければ一列を上下に反転し、キャラの下に吹き出しと知らせ、上に入力欄を置く。しっぽは上を指す")
+    @Test("上に足りなければ一列を上下に反転し、キャラの下に吹き出しと知らせを置く。しっぽは上を指す")
     func flipAtTop() {
-        let character = CGRect(x: 400, y: 600, width: 100, height: 100)
-        let layout = make(character, notices: notices, balloon: balloon, input: input)
+        let character = CGRect(x: 400, y: 700, width: 100, height: 100)
+        let layout = make(character, notices: notices, balloon: balloon)
         #expect(layout.isFlipped)
         #expect(layout.tail == .up)
-        #expect(layout.balloon == CGRect(x: 330, y: 600 - spacing - 80, width: 240, height: 80))
-        #expect(layout.notices == CGRect(x: 350, y: 600 - spacing - 80 - spacing - 60, width: 200, height: 60))
-        #expect(layout.input == CGRect(x: 310, y: 700 + spacing, width: 280, height: 40))
-    }
-
-    @Test("入力欄が自分の側に入らなければ、一列の反対の端（知らせの束の外側）に回し、吹き出しはキャラの隣のままにする")
-    func inputBeyondAtBottom() {
-        let character = CGRect(x: 400, y: 10, width: 100, height: 100)
-        let layout = make(character, notices: notices, balloon: balloon, input: input)
-        #expect(layout.isFlipped == false)
-        #expect(layout.tail == .down)
-        #expect(layout.balloon == CGRect(x: 330, y: 110 + spacing, width: 240, height: 80))
-        #expect(layout.notices == CGRect(x: 350, y: 110 + spacing + 80 + spacing, width: 200, height: 60))
-        #expect(layout.input == CGRect(x: 310, y: 110 + spacing + 80 + spacing + 60 + spacing, width: 280, height: 40))
-    }
-
-    @Test("反転して入力欄が上に入らないときも、入力欄は知らせの束の外側に回る")
-    func inputBeyondAtTop() {
-        let character = CGRect(x: 400, y: 700, width: 100, height: 100)
-        let layout = make(character, notices: notices, balloon: balloon, input: input)
-        #expect(layout.isFlipped)
         #expect(layout.balloon == CGRect(x: 330, y: 700 - spacing - 80, width: 240, height: 80))
         #expect(layout.notices == CGRect(x: 350, y: 700 - spacing - 80 - spacing - 60, width: 200, height: 60))
-        #expect(layout.input == CGRect(x: 310, y: 700 - spacing - 80 - spacing - 60 - spacing - 40, width: 280, height: 40))
     }
 
     @Test("どの位置でも、吹き出しはキャラの隣に、知らせの束は吹き出し（無ければキャラ）の隣に置き、しっぽとキャラの間に何も挟まない")
@@ -81,7 +53,7 @@ struct OverlayLayoutTests {
         for origin in origins {
             let character = CGRect(origin: origin, size: art)
             for b in [nil, balloon] as [CGSize?] {
-                let layout = make(character, notices: notices, balloon: b, input: input)
+                let layout = make(character, notices: notices, balloon: b)
                 let near = layout.isFlipped ? character.minY - spacing : character.maxY + spacing
                 if let placed = layout.balloon {
                     #expect((layout.isFlipped ? placed.maxY : placed.minY) == near, "\(origin)")
@@ -96,15 +68,14 @@ struct OverlayLayoutTests {
 
     @Test("横にはみ出すパネルだけを内側にずらし、しっぽはキャラの中心を指し続ける")
     func shiftAtSides() {
-        let left = make(CGRect(x: 0, y: 300, width: 100, height: 100), notices: notices, balloon: balloon, input: input)
+        let left = make(CGRect(x: 0, y: 300, width: 100, height: 100), notices: notices, balloon: balloon)
         #expect(left.balloon?.minX == 0)
-        #expect(left.input?.minX == 0)
         #expect(left.notices?.minX == 0)
         #expect(left.tailX == 50)
 
-        let right = make(CGRect(x: 900, y: 300, width: 100, height: 100), notices: notices, balloon: balloon, input: input)
+        let right = make(CGRect(x: 900, y: 300, width: 100, height: 100), notices: notices, balloon: balloon)
         #expect(right.balloon?.maxX == 1000)
-        #expect(right.input?.maxX == 1000)
+        #expect(right.notices?.maxX == 1000)
         #expect(right.tailX == CGFloat(950 - 760))
 
         let edge = make(CGRect(x: 990, y: 300, width: 10, height: 100), balloon: balloon)
@@ -127,15 +98,13 @@ struct OverlayLayoutTests {
                 let character = CGRect(origin: origin(art), size: art)
                 for n in options + [notices] {
                     for b in options + [balloon] {
-                        for i in options + [input] {
-                            let layout = make(character, notices: n, balloon: b, input: i)
-                            let rects = [layout.notices, layout.balloon, layout.input].compactMap { $0 }
-                            #expect(layout.overflow == 0, "\(name) \(scale)")
-                            for (index, rect) in rects.enumerated() {
-                                #expect(screen.contains(rect), "\(name) \(scale) \(rect)")
-                                #expect(rect.intersects(character) == false, "\(name) \(scale) \(rect)")
-                                for other in rects[(index + 1)...] { #expect(rect.intersects(other) == false, "\(name) \(scale)") }
-                            }
+                        let layout = make(character, notices: n, balloon: b)
+                        let rects = [layout.notices, layout.balloon].compactMap { $0 }
+                        #expect(layout.overflow == 0, "\(name) \(scale)")
+                        for (index, rect) in rects.enumerated() {
+                            #expect(screen.contains(rect), "\(name) \(scale) \(rect)")
+                            #expect(rect.intersects(character) == false, "\(name) \(scale) \(rect)")
+                            for other in rects[(index + 1)...] { #expect(rect.intersects(other) == false, "\(name) \(scale)") }
                         }
                     }
                 }
@@ -163,18 +132,15 @@ struct OverlayLayoutTests {
             let character = CGRect(x: 400, y: CGFloat(y), width: 100, height: 100)
             for n in [nil, tallNotices] as [CGSize?] {
                 for b in [nil, tallBalloon] as [CGSize?] {
-                    for i in [nil, input] as [CGSize?] {
-                        let layout = OverlayLayout.fit(visible: short, character: character, spacing: spacing, input: i, history: nil) { _ in
-                            (notices: n, balloon: b)
-                        }
-                        let rects = [layout.notices, layout.balloon, layout.input].compactMap { $0 }
-                        for (index, rect) in rects.enumerated() {
-                            #expect(short.contains(rect), "y=\(y) \(rect)")
-                            for other in rects[(index + 1)...] { #expect(rect.intersects(other) == false, "y=\(y) \(rect) \(other)") }
-                        }
-                        #expect(layout.balloon != nil || b == nil, "y=\(y)")
-                        #expect(layout.input != nil || i == nil, "y=\(y)")
+                    let layout = OverlayLayout.fit(visible: short, character: character, spacing: spacing) { _ in
+                        (notices: n, balloon: b)
                     }
+                    let rects = [layout.notices, layout.balloon].compactMap { $0 }
+                    for (index, rect) in rects.enumerated() {
+                        #expect(short.contains(rect), "y=\(y) \(rect)")
+                        for other in rects[(index + 1)...] { #expect(rect.intersects(other) == false, "y=\(y) \(rect) \(other)") }
+                    }
+                    #expect(layout.balloon != nil || b == nil, "y=\(y)")
                 }
             }
         }
@@ -185,7 +151,7 @@ struct OverlayLayoutTests {
         let short = CGRect(x: 0, y: 0, width: 1000, height: 300)
         let character = CGRect(x: 400, y: 100, width: 100, height: 100)
         var asked: [StackBudget] = []
-        let layout = OverlayLayout.fit(visible: short, character: character, spacing: spacing, input: nil, history: nil) { budget in
+        let layout = OverlayLayout.fit(visible: short, character: character, spacing: spacing) { budget in
             asked.append(budget)
             let edges = CGFloat(budget.behind) * 5
             return (notices: CGSize(width: 200, height: 20 + edges), balloon: CGSize(width: 240, height: 12 * CGFloat(budget.lines) + 10 + edges))
@@ -202,11 +168,11 @@ struct OverlayLayoutTests {
     func growsTowardsTheRoom() {
         let tall = CGSize(width: 240, height: 600)
         // 下のほうにいるなら、余裕のある上へ。
-        let low = make(CGRect(x: 450, y: 100, width: 100, height: 100), balloon: tall, input: input)
+        let low = make(CGRect(x: 450, y: 100, width: 100, height: 100), balloon: tall)
         #expect(low.isFlipped == false)
         #expect(low.balloon!.minY >= 200)
         // 上のほうにいるなら、余裕のある下へ。
-        let high = make(CGRect(x: 450, y: 700, width: 100, height: 100), balloon: tall, input: input)
+        let high = make(CGRect(x: 450, y: 700, width: 100, height: 100), balloon: tall)
         #expect(high.isFlipped)
         #expect(high.balloon!.maxY <= 700)
     }
@@ -217,34 +183,32 @@ struct OverlayLayoutTests {
         let character = CGRect(x: 450, y: 100, width: 100, height: 100)
         let layout = OverlayLayout.fit(
             visible: CGRect(x: 0, y: 0, width: 1000, height: 1000), character: character, spacing: spacing,
-            input: nil, history: nil, steps: StackBudget.expandedSteps
+            steps: StackBudget.expandedSteps
         ) { budget in (notices: nil, balloon: CGSize(width: 240, height: 20 * CGFloat(budget.lines))) }
         #expect(layout.overflow == 0)
         // 梯子の段は飛び飛びだが、入る行数から大きく取りこぼさない。
         #expect(layout.budget.lines >= 32)
     }
 
-    @Test("開いた吹き出しは、キャラがどこにいても一列に収まり、キャラも入力欄も覆わない")
+    @Test("開いた吹き出しは、キャラがどこにいても一列に収まり、キャラを覆わない")
     func expandedColumnNeverCoversTheCharacter() {
         // 実機に近い画面（メニューバーと Dock を除いた範囲）と、200% のキャラクター。
         let visible = CGRect(x: 0, y: 90, width: 1710, height: 950)
         let art = CGSize(width: 192, height: 208)
-        let inputBox = CGSize(width: 392, height: 60)
         let gap: CGFloat = 11
         for y in stride(from: 20, through: 900, by: 20) {
             for x in [visible.minX, visible.midX, visible.maxX - art.width] {
                 let character = CGRect(origin: CGPoint(x: x, y: CGFloat(y)), size: art)
                 for hasNotices in [false, true] {
                     let layout = OverlayLayout.fit(
-                        visible: visible, character: character, spacing: gap, input: inputBox, history: nil,
-                        steps: StackBudget.expandedSteps
+                        visible: visible, character: character, spacing: gap, steps: StackBudget.expandedSteps
                     ) { budget in
                         // 開いた長い返事: 行数に比例して伸び、いちばん広いときは画面より高い。
                         (notices: hasNotices ? CGSize(width: 392, height: 90) : nil,
                          balloon: CGSize(width: 392, height: 26 * CGFloat(budget.lines) + 30))
                     }
                     let where_ = "y=\(y) x=\(x) notices=\(hasNotices)"
-                    let rects = [layout.notices, layout.balloon, layout.input].compactMap { $0 }
+                    let rects = [layout.notices, layout.balloon].compactMap { $0 }
                     for (index, rect) in rects.enumerated() {
                         #expect(visible.contains(rect), "\(where_): \(rect) が画面から出た")
                         #expect(rect.intersects(character) == false, "\(where_): \(rect) がキャラを覆った")
@@ -253,26 +217,9 @@ struct OverlayLayoutTests {
                         }
                     }
                     #expect(layout.balloon != nil, "\(where_): 吹き出しが消えた")
-                    #expect(layout.input != nil, "\(where_): 入力欄が消えた")
                 }
             }
         }
-    }
-
-    @Test("履歴は一列に入れず、一列の横の空いている側に、一列のパネルと重ならないように開く")
-    func historyBeside() {
-        let center = CGRect(x: 400, y: 300, width: 100, height: 100)
-        let layout = make(center, notices: notices, balloon: balloon, input: input, history: history)
-        let placed = try! #require(layout.history)
-        for rect in [layout.notices, layout.balloon, layout.input, center].compactMap({ $0 }) {
-            #expect(placed.intersects(rect) == false)
-        }
-        #expect(screen.contains(placed))
-
-        let right = make(CGRect(x: 880, y: 300, width: 100, height: 100), balloon: balloon, input: input, history: history)
-        let left = try! #require(right.history)
-        #expect(left.maxX <= right.input!.minX)
-        #expect(screen.contains(left))
     }
 
     @Test("画面の外に出たキャラは画面の中に戻す")
