@@ -106,7 +106,7 @@ async function nextEvent(f: Awaited<ReturnType<typeof setup>>) {
   return { reply, event: lines[0]! };
 }
 
-/** Answers an owner message with the given tool calls, then shows the results to the test and finishes the event. */
+/** Answers an owner message with the given tool calls, then shows the results to the test and stops, which ends the turn. */
 async function ownerTurn(f: Awaited<ReturnType<typeof setup>>, loop: ThinkingLoop, events: LoopClientEvent[], text: string,
   calls: [string, Record<string, unknown>][]) {
   const sent = f.send(loop, text);
@@ -115,7 +115,6 @@ async function ownerTurn(f: Awaited<ReturnType<typeof setup>>, loop: ThinkingLoo
   reply.finish();
   const after = await f.model.next();
   const results = toolResults(after.context);
-  after.call('finish_event', { event_id: sent.eventId });
   after.finish();
   await completed(events, sent.eventId);
   await loop.idle();
@@ -228,7 +227,6 @@ test('the ping comes only in the awake hours after a quiet interval, and carries
     assert.equal(ping.event.local_time, '2026-09-17 08:00');
     assert.equal('unacknowledged_notices' in ping.event, false);
     assert.match(ping.reply.context.systemPrompt ?? '', /ping/);
-    ping.reply.call('finish_event', { event_id: ping.event.event_id });
     ping.reply.finish();
     await loop.idle();
     // Nothing reaches the owner for a ping on its own.
@@ -243,9 +241,9 @@ test('the ping comes only in the awake hours after a quiet interval, and carries
     const sent = f.send(loop, '相談');
     const turn = await nextEvent(f);
     turn.reply.call('notify_owner', { text: 'あとで確認してほしいことがあります' });
-    turn.reply.call('reply_to_mac', { event_id: sent.eventId, text: 'はい' });
-    turn.reply.call('finish_event', { event_id: sent.eventId });
+    turn.reply.call('reply_to_mac', { text: 'はい' });
     turn.reply.finish();
+    (await f.model.next()).finish();
     await completed(events, sent.eventId);
     await loop.idle();
     f.at('2026-09-17 08:40');
@@ -259,15 +257,14 @@ test('the ping comes only in the awake hours after a quiet interval, and carries
     // While the ping is being handled, time passing raises nothing more.
     f.at('2026-09-17 10:00');
     assert.equal(scheduler.tick(), undefined);
-    second.reply.call('finish_event', { event_id: second.event.event_id });
     second.reply.finish();
     await loop.idle();
-    assert.equal(f.model.calls, 3);
+    assert.equal(f.model.calls, 4);
 
     // Late at night the quiet goes on without a ping.
     f.at('2026-09-17 23:30');
     assert.equal(scheduler.tick(), undefined);
-    assert.equal(f.model.calls, 3);
+    assert.equal(f.model.calls, 4);
   } finally { await f.cleanup(); }
 });
 
@@ -305,7 +302,6 @@ test('natsumi books a self-check with the tools, sees it arrive as an event with
     check.reply.finish();
     const after = await f.model.next();
     assert.doesNotMatch(toolResults(after.context)[0]!.text, /check-/);
-    after.call('finish_event', { event_id: check.event.event_id });
     after.finish();
     await loop.idle();
     assert.equal(scheduler.tick(), undefined);
@@ -314,7 +310,6 @@ test('natsumi books a self-check with the tools, sees it arrive as an event with
     assert.equal(scheduler.tick(), 'ping');
     const ping = await nextEvent(f);
     assert.equal(ping.event.type, 'ping');
-    ping.reply.call('finish_event', { event_id: ping.event.event_id });
     ping.reply.finish();
     await loop.idle();
   } finally { await f.cleanup(); }
@@ -344,7 +339,6 @@ test('bookings survive a restart, and those that passed while stopped or asleep 
     assert.equal(second.scheduler.tick(), undefined);
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(f.model.calls, 3);
-    late.reply.call('finish_event', { event_id: late.event.event_id });
     late.reply.finish();
     await second.loop.idle();
     assert.equal(second.scheduler.tick(), undefined);
@@ -358,7 +352,6 @@ test('bookings survive a restart, and those that passed while stopped or asleep 
     assert.equal(second.scheduler.tick(), 'self-check');
     const morning = await nextEvent(f);
     assert.deepEqual(morning.event.checks.map((check: Record<string, unknown>) => [check.reason, check.late_minutes]), [['寝る前に明日の予定を聞く', 510]]);
-    morning.reply.call('finish_event', { event_id: morning.event.event_id });
     morning.reply.finish();
     await second.loop.idle();
     assert.equal(f.model.calls, 4);
@@ -375,9 +368,9 @@ test('a self-check or a ping that comes due during the nightly switch waits for 
     assert.equal(review.event.type, 'nightly_review');
     f.at('2026-09-17 11:00');
     assert.equal(scheduler.tick(), undefined);
-    review.reply.call('write_handoff_note', { event_id: review.event.event_id, text: '引き継ぎ HANDOFF-SCHEDULER-31' });
-    review.reply.call('finish_event', { event_id: review.event.event_id });
+    review.reply.call('write_handoff_note', { text: '引き継ぎ HANDOFF-SCHEDULER-31' });
     review.reply.finish();
+    (await f.model.next()).finish();
     assert.equal((await rotating).result, 'switched');
     await loop.idle();
 
@@ -385,7 +378,6 @@ test('a self-check or a ping that comes due during the nightly switch waits for 
     const check = await nextEvent(f);
     assert.match(check.reply.context.systemPrompt ?? '', /HANDOFF-SCHEDULER-31/);
     assert.deepEqual(check.event.checks.map((c: Record<string, unknown>) => [c.reason, c.late_minutes]), [['水を飲んだか聞く', 50]]);
-    check.reply.call('finish_event', { event_id: check.event.event_id });
     check.reply.finish();
     await loop.idle();
   } finally { await f.cleanup(); }
@@ -402,9 +394,9 @@ test('thinking ends with the handling whoever set it; other expressions return t
     assert.equal(scheduler.tick(), undefined);
     assert.equal(loop.snapshot().avatar.expression, 'thinking');
     first.reply.call('set_mac_avatar_expression', { expression: 'thinking' });
-    first.reply.call('reply_to_mac', { event_id: sent.eventId, text: 'うーん' });
-    first.reply.call('finish_event', { event_id: sent.eventId });
+    first.reply.call('reply_to_mac', { text: 'うーん' });
     first.reply.finish();
+    (await f.model.next()).finish();
     await completed(events, sent.eventId);
     await loop.idle();
     // The model's own thinking is released at the end too.
@@ -414,8 +406,8 @@ test('thinking ends with the handling whoever set it; other expressions return t
     const happy = f.send(loop, 'いい知らせ');
     const second = await nextEvent(f);
     second.reply.call('set_mac_avatar_expression', { expression: 'happy' });
-    second.reply.call('finish_event', { event_id: happy.eventId });
     second.reply.finish();
+    (await f.model.next()).finish();
     await completed(events, happy.eventId);
     await loop.idle();
     assert.equal(loop.snapshot().avatar.expression, 'happy');
@@ -437,9 +429,9 @@ test('thinking ends with the handling whoever set it; other expressions return t
     f.advance(30);
     assert.equal(scheduler.tick(), undefined);
     assert.equal(loop.snapshot().avatar.expression, 'sleepy');
-    review.reply.call('write_handoff_note', { event_id: review.event.event_id, text: '引き継ぎ' });
-    review.reply.call('finish_event', { event_id: review.event.event_id });
+    review.reply.call('write_handoff_note', { text: '引き継ぎ' });
     review.reply.finish();
+    (await f.model.next()).finish();
     assert.equal((await rotating).result, 'switched');
     assert.equal(loop.snapshot().avatar.expression, 'neutral');
   } finally { await f.cleanup(); }

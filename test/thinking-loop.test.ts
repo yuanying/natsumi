@@ -88,7 +88,6 @@ const textOf = (message: Context['messages'][number]) => {
   return (content as { type: string; text?: string }[]).filter(part => part.type === 'text').map(part => part.text).join('');
 };
 const lastUserText = (context: Context) => textOf(context.messages.filter(m => m.role === 'user').at(-1)!);
-const eventIds = (text: string) => [...text.matchAll(/"event_id":"([^"]+)"/g)].map(match => match[1]!);
 /** The tool results a model call saw after its previous assistant message, in order. */
 const toolResults = (context: Context) => {
   const lastAssistant = context.messages.map(m => m.role).lastIndexOf('assistant');
@@ -117,19 +116,19 @@ test('an owner message is shown at once with the thinking expression and gets on
     const reply = await f.model.next();
     const prompt = lastUserText(reply.context);
     assert.match(prompt, /^<events>\n/);
-    assert.deepEqual(eventIds(prompt), [sent.eventId]);
     assert.match(prompt, /"type":"mac_message"/);
     assert.match(prompt, /おはよう/);
     assert.match(reply.context.systemPrompt ?? '', new RegExp(PERSONALITY_MARKER));
     reply.think('private thinking about the reply');
     reply.delta('（内心）明るく返そう');
-    reply.call('reply_to_mac', { event_id: sent.eventId, text: 'おはようございます' });
-    reply.call('finish_event', { event_id: sent.eventId });
+    reply.call('reply_to_mac', { text: 'おはようございます' });
     reply.finish();
+    // Nothing is left to do, so she stops without a tool and the turn ends (ADR 0024).
+    (await f.model.next()).finish();
 
     assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
     await loop.idle();
-    assert.equal(f.model.calls, 1);
+    assert.equal(f.model.calls, 2);
     const replies = messages(events, 'natsumi');
     assert.equal(replies.length, 1);
     assert.equal(replies[0]!.payload.kind, 'reply');
@@ -144,43 +143,42 @@ test('an owner message is shown at once with the thinking expression and gets on
     // The line she was writing was shown while she wrote it (ADR 0017), and is in nothing that is kept.
     assert.deepEqual(thinkingLines(events), ['private thinking about the reply', '']);
     const shown = JSON.stringify([snapshot, events.filter(e => e.type !== 'conversation.thinking')]);
-    for (const hidden of ['private thinking', '内心', 'reply_to_mac', 'finish_event', f.rows()[0]!.pi_session_id as string]) {
+    for (const hidden of ['private thinking', '内心', 'reply_to_mac', f.rows()[0]!.pi_session_id as string]) {
       assert.equal(shown.includes(hidden), false, hidden);
     }
   } finally { await f.cleanup(); }
 });
 
-test('reply_to_mac is refused a second time for the same event and for an event that is not being handled', async () => {
+test('reply_to_mac is refused a second time, and a message answered in an earlier turn cannot be answered again', async () => {
   const f = await setup();
   try {
     const { loop, events } = await f.open();
     const sent = f.send(loop, 'こんにちは');
     const first = await f.model.next();
-    first.call('reply_to_mac', { event_id: sent.eventId, text: '一回目' });
-    first.call('reply_to_mac', { event_id: sent.eventId, text: '二回目' });
-    first.call('reply_to_mac', { event_id: 'event-fabricated', text: '架空の宛先' });
+    first.call('reply_to_mac', { text: '一回目' });
+    first.call('reply_to_mac', { text: '二回目' });
     first.finish();
     const second = await f.model.next();
     const results = toolResults(second.context);
-    assert.deepEqual(results.map(r => r.isError), [false, true, true]);
+    assert.deepEqual(results.map(r => r.isError), [false, true]);
     assert.match(results[0]!.text, /送りました/);
-    assert.match(results[1]!.text, /すでに返事/);
-    assert.match(results[2]!.text, /処理中の本人のメッセージではありません/);
-    second.call('finish_event', { event_id: sent.eventId });
+    assert.match(results[1]!.text, /もう返事を送りました/);
     second.finish();
     await completed(events, sent.eventId);
 
-    // An event that is already finished cannot be answered again from a later turn either.
+    // A later turn answers its own message, never the one already answered.
     const later = f.send(loop, 'もう一件');
     const third = await f.model.next();
-    third.call('reply_to_mac', { event_id: sent.eventId, text: '遅れた返事' });
+    third.call('reply_to_mac', { text: '二件目への返事' });
+    third.call('reply_to_mac', { text: '遅れた返事' });
     third.finish();
     const fourth = await f.model.next();
-    assert.deepEqual(toolResults(fourth.context).map(r => r.isError), [true]);
+    assert.deepEqual(toolResults(fourth.context).map(r => r.isError), [false, true]);
     fourth.finish();
     await completed(events, later.eventId);
     await loop.idle();
-    assert.deepEqual(messages(events, 'natsumi').map(e => e.payload.text), ['一回目']);
+    assert.deepEqual(messages(events, 'natsumi').map(e => [e.payload.text, e.payload.replyTo]),
+      [['一回目', sent.eventId], ['二件目への返事', later.eventId]]);
   } finally { await f.cleanup(); }
 });
 
@@ -201,52 +199,6 @@ test('text written without a tool stays inside: nothing reaches the owner and th
   } finally { await f.cleanup(); }
 });
 
-test('finish_event closes the turn only once every handled event is finished', async () => {
-  const f = await setup();
-  try {
-    const { loop, events } = await f.open();
-    const first = f.send(loop, '一件目');
-    const call1 = await f.model.next();
-    // The second message arrives while the model is thinking about the first: it is steered in, not queued behind.
-    const second = f.send(loop, '二件目');
-    assert.deepEqual(loop.snapshot().pendingEvents.map(e => e.eventId), [first.eventId, second.eventId]);
-    call1.call('reply_to_mac', { event_id: first.eventId, text: '一件目への返事' });
-    call1.finish();
-
-    const call2 = await f.model.next();
-    assert.deepEqual(eventIds(lastUserText(call2.context)), [second.eventId]);
-    call2.call('reply_to_mac', { event_id: second.eventId, text: '二件目への返事' });
-    call2.call('finish_event', { event_id: first.eventId });
-    call2.finish();
-
-    // The second event is still open, so the turn goes on.
-    const call3 = await f.model.next();
-    assert.match(toolResults(call3.context)[1]!.text, /完了/);
-    call3.call('finish_event', { event_id: second.eventId });
-    call3.finish();
-    await completed(events, second.eventId);
-    await loop.idle();
-    assert.equal(f.model.calls, 3);
-    assert.deepEqual(messages(events, 'natsumi').map(e => e.payload.text), ['一件目への返事', '二件目への返事']);
-    assert.equal((await completed(events, first.eventId)).payload.status, 'replied');
-  } finally { await f.cleanup(); }
-});
-
-test('a reply and finish_event in the same model call end the turn without another call', async () => {
-  const f = await setup();
-  try {
-    const { loop, events } = await f.open();
-    f.model.auto = context => {
-      const [eventId] = eventIds(lastUserText(context));
-      return { calls: [call('reply_to_mac', { event_id: eventId, text: 'はい' }), call('finish_event', { event_id: eventId })] };
-    };
-    const sent = f.send(loop, 'テスト');
-    await completed(events, sent.eventId);
-    await loop.idle();
-    assert.equal(f.model.calls, 1);
-  } finally { await f.cleanup(); }
-});
-
 test('a turn that keeps calling tools stops at the model call limit and the event fails without touching the owner record', async () => {
   const f = await setup();
   try {
@@ -261,10 +213,7 @@ test('a turn that keeps calling tools stops at the model call limit and the even
     assert.ok(events.some(e => e.type === 'avatar.expression' && e.payload.expression === 'happy'));
 
     // The loop keeps working afterwards.
-    f.model.auto = context => {
-      const [eventId] = eventIds(lastUserText(context));
-      return { calls: [call('reply_to_mac', { event_id: eventId, text: '戻りました' }), call('finish_event', { event_id: eventId })] };
-    };
+    f.model.auto = onPrompt(() => ({ calls: [call('reply_to_mac', { text: '戻りました' })] }));
     const next = f.send(loop, '次');
     assert.equal((await completed(events, next.eventId)).payload.status, 'replied');
   } finally { await f.cleanup(); }
@@ -276,11 +225,11 @@ test('a reply carrying template control strings or non-Japanese script is refuse
     const { loop, events } = await f.open();
     const sent = f.send(loop, '確認');
     const call1 = await f.model.next();
-    call1.call('reply_to_mac', { event_id: sent.eventId, text: '了解です</think> <tool_call> <parameter=finish_event>' });
+    call1.call('reply_to_mac', { text: '了解です</think> <tool_call> <parameter=reply_to_mac>' });
     call1.finish();
     const call2 = await f.model.next();
     assert.match(toolResults(call2.context)[0]!.text, /制御文字列/);
-    call2.call('reply_to_mac', { event_id: sent.eventId, text: '네 알겠습니다' });
+    call2.call('reply_to_mac', { text: '네 알겠습니다' });
     call2.call('notify_owner', { text: '这个很长' });
     call2.finish();
     const call3 = await f.model.next();
@@ -289,37 +238,35 @@ test('a reply carrying template control strings or non-Japanese script is refuse
     assert.match(refused[0]!.text, /日本語以外/);
     assert.match(refused[1]!.text, /日本語以外/);
     // A refused reply does not use up the one reply.
-    call3.call('reply_to_mac', { event_id: sent.eventId, text: '了解です' });
-    call3.call('finish_event', { event_id: sent.eventId });
+    call3.call('reply_to_mac', { text: '了解です' });
     call3.finish();
+    (await f.model.next()).finish();
     await completed(events, sent.eventId);
     assert.deepEqual(messages(events, 'natsumi').map(e => e.payload.text), ['了解です']);
   } finally { await f.cleanup(); }
 });
 
-test('notify_owner delivers notices with checked references and a per-event limit', async () => {
+test('notify_owner delivers notices up to a per-turn limit, about no event', async () => {
   const f = await setup();
   try {
     const { loop, events } = await f.open();
     const sent = f.send(loop, '相談があるかも');
     const call1 = await f.model.next();
-    call1.call('notify_owner', { text: '架空の参照', about_event_ids: ['event-fabricated'] });
-    call1.call('notify_owner', { text: '相談 1', about_event_ids: [sent.eventId] });
+    call1.call('notify_owner', { text: '相談 1' });
     call1.call('notify_owner', { text: '相談 2' });
     call1.call('notify_owner', { text: '相談 3' });
     call1.call('notify_owner', { text: '相談 4' });
     call1.finish();
     const call2 = await f.model.next();
     const results = toolResults(call2.context);
-    assert.deepEqual(results.map(r => r.isError), [true, false, false, false, true]);
-    assert.match(results[0]!.text, /event-fabricated/);
-    assert.match(results[4]!.text, /上限/);
-    call2.call('finish_event', { event_id: sent.eventId });
+    assert.deepEqual(results.map(r => r.isError), [false, false, false, true]);
+    assert.match(results[3]!.text, /上限/);
     call2.finish();
     assert.equal((await completed(events, sent.eventId)).payload.status, 'no-reply');
     const notices = messages(events, 'natsumi');
     assert.deepEqual(notices.map(e => [e.payload.kind, e.payload.text]), [['notice', '相談 1'], ['notice', '相談 2'], ['notice', '相談 3']]);
-    assert.deepEqual(notices[0]!.payload.about, [sent.eventId]);
+    // A notice names no event: natsumi is never asked for an ID (ADR 0024).
+    assert.equal('about' in notices[0]!.payload, false);
     assert.deepEqual(loop.snapshot().messages.map(m => m.kind), ['message', 'notice', 'notice', 'notice']);
   } finally { await f.cleanup(); }
 });
@@ -328,10 +275,7 @@ test('a resent requestId is not handled twice; a different body or device is ref
   const f = await setup();
   try {
     const { loop, events } = await f.open();
-    f.model.auto = context => {
-      const [eventId] = eventIds(lastUserText(context));
-      return { calls: [call('reply_to_mac', { event_id: eventId, text: 'はい' }), call('finish_event', { event_id: eventId })] };
-    };
+    f.model.auto = onPrompt(() => ({ calls: [call('reply_to_mac', { text: 'はい' })] }));
     const first = f.send(loop, 'hello', 'request-same');
     const again = f.send(loop, 'hello', 'request-same');
     assert.deepEqual([again.messageId, again.eventId], [first.messageId, first.eventId]);
@@ -341,7 +285,7 @@ test('a resent requestId is not handled twice; a different body or device is ref
     await loop.idle();
     assert.equal(f.send(loop, 'hello', 'request-same').messageId, first.messageId);
     await loop.idle();
-    assert.equal(f.model.calls, 1);
+    assert.equal(f.model.calls, 2);
     assert.equal(messages(events, 'owner').length, 1);
   } finally { await f.cleanup(); }
 });
@@ -355,11 +299,10 @@ test('the conversation shown to the owner survives a restart, the same Pi sessio
     const [file] = await f.sessionFiles();
     assert.ok(file);
     assert.deepEqual(f.rows().map(row => row.pi_session_file), [file]);
-    f.model.auto = context => {
-      const [eventId] = eventIds(lastUserText(context));
+    f.model.auto = onPrompt(context => {
       const earlier = JSON.stringify(context.messages.slice(0, -1)).includes(TOKEN);
-      return { calls: [call('reply_to_mac', { event_id: eventId, text: earlier ? TOKEN : 'OK' }), call('finish_event', { event_id: eventId })] };
-    };
+      return { calls: [call('reply_to_mac', { text: earlier ? TOKEN : 'OK' })] };
+    });
     const sent = f.send(first.loop, `合言葉は ${TOKEN}`);
     await completed(first.events, sent.eventId);
     const snapshot = first.loop.snapshot();
@@ -379,10 +322,7 @@ test('a missing, corrupt or mismatched session file makes the loop unavailable i
   const f = await setup();
   try {
     const first = await f.open();
-    f.model.auto = context => {
-      const [eventId] = eventIds(lastUserText(context));
-      return { calls: [call('finish_event', { event_id: eventId })] };
-    };
+    f.model.auto = () => ({});
     const sent = f.send(first.loop, 'hello');
     await completed(first.events, sent.eventId);
     await first.loop.close();
@@ -424,13 +364,9 @@ test('a model runtime that cannot start leaves the loop unavailable without crea
   } finally { await f.cleanup(); }
 });
 
-/** A model that answers every event with a notice, a reply, and the end of the event. */
+/** A model that answers every event with a notice and a reply, and then stops. */
 function noticeAndReply(f: Awaited<ReturnType<typeof setup>>, notices = ['お知らせ']) {
-  f.model.auto = context => {
-    const [eventId] = eventIds(lastUserText(context));
-    return { calls: [...notices.map(text => call('notify_owner', { text })),
-      call('reply_to_mac', { event_id: eventId, text: 'はい' }), call('finish_event', { event_id: eventId })] };
-  };
+  f.model.auto = onPrompt(() => ({ calls: [...notices.map(text => call('notify_owner', { text })), call('reply_to_mac', { text: 'はい' })] }));
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const ofType = (events: LoopClientEvent[], type: string) => events.filter(e => e.type === type).map(e => e.payload);
@@ -517,7 +453,6 @@ test('notices are acknowledged one by one, idempotently and apart from the read 
     const turn = await f.model.next();
     assert.match(lastUserText(turn.context), /"unacknowledged_notices":1/);
     assert.match(turn.context.systemPrompt ?? '', /unacknowledged_notices/);
-    turn.call('finish_event', { event_id: next.eventId });
     turn.finish();
     await completed(events, next.eventId);
 
@@ -525,7 +460,6 @@ test('notices are acknowledged one by one, idempotently and apart from the read 
     const last = f.send(loop, '最後');
     const lastTurn = await f.model.next();
     assert.doesNotMatch(lastUserText(lastTurn.context), /unacknowledged_notices/);
-    lastTurn.call('finish_event', { event_id: last.eventId });
     lastTurn.finish();
     await completed(events, last.eventId);
   } finally { await f.cleanup(); }
@@ -609,9 +543,9 @@ test('the line natsumi is thinking reaches the owner while she answers, thinned 
     reply.think('。それから');
     reply.think('\n次に返事の形を決める');
     reply.delta('（内心）決めた');
-    reply.call('reply_to_mac', { event_id: sent.eventId, text: 'はい、考えました' });
-    reply.call('finish_event', { event_id: sent.eventId });
+    reply.call('reply_to_mac', { text: 'はい、考えました' });
     reply.finish();
+    (await f.model.next()).finish();
 
     assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
     await loop.idle();
@@ -645,7 +579,6 @@ test('a line longer than the limit keeps its newest end, and the owner never see
     reply.call('schedule_self_check', { reason: 'SYNTHETIC-TOOL-ARGUMENT-8841' });
     reply.finish();
     const second = await f.model.next();
-    second.call('finish_event', { event_id: sent.eventId });
     second.finish();
     await completed(events, sent.eventId);
     await loop.idle();
@@ -672,9 +605,9 @@ test('the last line stays across model calls in one turn and is cleared when the
     clock += THINKING_MIN_INTERVAL_MS;
     second.think('分かった、返事にしよう');
     await until(() => thinkingLines(events).length >= 2);
-    second.call('reply_to_mac', { event_id: sent.eventId, text: '確かめました' });
-    second.call('finish_event', { event_id: sent.eventId });
+    second.call('reply_to_mac', { text: '確かめました' });
     second.finish();
+    (await f.model.next()).finish();
 
     await completed(events, sent.eventId);
     await loop.idle();
@@ -689,9 +622,9 @@ test('nothing is streamed with thinking off, in the nightly review, or for a tur
     const sent = f.send(off.loop, 'こんばんは');
     const reply = await f.model.next();
     reply.think('この思考は流れない');
-    reply.call('reply_to_mac', { event_id: sent.eventId, text: 'こんばんは' });
-    reply.call('finish_event', { event_id: sent.eventId });
+    reply.call('reply_to_mac', { text: 'こんばんは' });
     reply.finish();
+    (await f.model.next()).finish();
     await completed(off.events, sent.eventId);
     await off.loop.idle();
     assert.deepEqual(thinkingLines(off.events), []);
@@ -708,14 +641,179 @@ test('nothing is streamed with thinking off, in the nightly review, or for a tur
     assert.deepEqual(thinkingLines(on.events), []);
 
     // The nightly review does not appear in the conversation at all (ADR 0009).
-    f.model.auto = context => {
-      const eventId = eventIds(lastUserText(context))[0]!;
-      return { thinking: '今日を振り返る', calls: [
-        call('write_handoff_note', { event_id: eventId, text: '明日の引き継ぎ' }),
-        call('finish_event', { event_id: eventId }),
-      ] };
-    };
+    f.model.auto = onPrompt(() => ({ thinking: '今日を振り返る', calls: [call('write_handoff_note', { text: '明日の引き継ぎ' })] }));
     assert.equal((await on.loop.rotate()).result, 'switched');
     assert.deepEqual(thinkingLines(on.events), []);
+  } finally { await f.cleanup(); }
+});
+
+// MARK: - Replies without event IDs, and turns that end by themselves (ADR 0024)
+
+/** The events natsumi is shown carry no event ID: she never has to copy one. */
+const eventLines = (text: string) => [...text.matchAll(/^\{.*\}$/gm)].map(match => JSON.parse(match[0]) as Record<string, unknown>);
+/** Answers a fresh prompt with `step` and stops without a tool once the tools have answered. */
+const onPrompt = (step: (context: Context) => ReturnType<NonNullable<ScriptedModel['auto']>>) =>
+  (context: Context) => context.messages.at(-1)?.role === 'user' ? step(context) : {};
+const eventState = (f: Awaited<ReturnType<typeof setup>>, eventId: string) =>
+  (f.db.prepare('SELECT state FROM loop_events WHERE event_id = ?').get(eventId) as { state: string }).state;
+
+test('reply_to_mac takes only the text, answers the message being handled, and is refused when none is waiting', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const sent = f.send(loop, 'こんにちは');
+    const first = await f.model.next();
+    const lines = eventLines(lastUserText(first.context));
+    assert.equal(lines.length, 1);
+    assert.equal('event_id' in lines[0]!, false);
+    assert.equal(lines[0]!.type, 'mac_message');
+    assert.equal(JSON.stringify(first.context).includes(sent.eventId), false);
+    assert.doesNotMatch(first.context.systemPrompt ?? "", /finish_event|event_id/);
+    first.call('reply_to_mac', { text: '一回目' });
+    first.call('reply_to_mac', { text: '二回目' });
+    first.finish();
+    const second = await f.model.next();
+    const results = toolResults(second.context);
+    assert.deepEqual(results.map(r => r.isError), [false, true]);
+    assert.match(results[0]!.text, /送りました/);
+    assert.match(results[1]!.text, /送信していません/);
+    // The refusal says why and what to do instead, without an ID to go looking for.
+    assert.match(results[1]!.text, /notify_owner/);
+    assert.doesNotMatch(results[1]!.text, /event-/);
+    second.finish();
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
+    await loop.idle();
+    assert.equal(f.model.calls, 2);
+    const replies = messages(events, 'natsumi');
+    assert.deepEqual(replies.map(e => [e.payload.text, e.payload.replyTo]), [['一回目', sent.eventId]]);
+
+    // A ping has no message to answer.
+    f.model.takeOver();
+    assert.equal(loop.ping(), true);
+    const ping = await f.model.next();
+    assert.equal('event_id' in eventLines(lastUserText(ping.context))[0]!, false);
+    ping.call('reply_to_mac', { text: '誰にも宛てていない返事' });
+    ping.finish();
+    const after = await f.model.next();
+    assert.deepEqual(toolResults(after.context).map(r => r.isError), [true]);
+    assert.match(toolResults(after.context)[0]!.text, /本人のメッセージ/);
+    after.finish();
+    await loop.idle();
+    assert.equal(messages(events, 'natsumi').length, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('one reply answers every message steered in before it, and a message steered in after it can be answered again', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open({ maxModelCalls: 8 });
+    const first = f.send(loop, '一件目');
+    const call1 = await f.model.next();
+    const second = f.send(loop, '二件目');
+    call1.call('list_self_checks', {});
+    call1.finish();
+
+    const call2 = await f.model.next();
+    assert.equal(eventLines(lastUserText(call2.context))[0]!.text, '二件目');
+    call2.call('reply_to_mac', { text: '二件まとめての返事' });
+    call2.finish();
+
+    const call3 = await f.model.next();
+    // Both are answered the moment the reply is sent, so a restart now would not answer either again.
+    assert.deepEqual([eventState(f, first.eventId), eventState(f, second.eventId)], ['replied', 'replied']);
+    assert.deepEqual(loop.snapshot().pendingEvents, []);
+    const third = f.send(loop, '三件目');
+    call3.call('reply_to_mac', { text: '同じ宛先への二度目' });
+    call3.finish();
+
+    const call4 = await f.model.next();
+    assert.equal(eventLines(lastUserText(call4.context))[0]!.text, '三件目');
+    // Refused before the third arrived: nothing was waiting then.
+    assert.deepEqual(toolResults(call4.context).map(r => r.isError), [true]);
+    call4.call('reply_to_mac', { text: '三件目への返事' });
+    call4.finish();
+    (await f.model.next()).finish();
+
+    await loop.idle();
+    for (const sent of [first, second, third]) assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
+    // The reply points at the newest message it answered.
+    assert.deepEqual(messages(events, 'natsumi').map(e => [e.payload.text, e.payload.replyTo]),
+      [['二件まとめての返事', second.eventId], ['三件目への返事', third.eventId]]);
+  } finally { await f.cleanup(); }
+});
+
+test('messages a reply answered stay answered across a restart in the middle of the turn', async () => {
+  const f = await setup();
+  try {
+    const first = await f.open();
+    const a = f.send(first.loop, '一件目');
+    const call1 = await f.model.next();
+    const b = f.send(first.loop, '二件目');
+    call1.finish();
+    const call2 = await f.model.next();
+    call2.call('reply_to_mac', { text: 'まとめて' });
+    call2.finish();
+    await f.model.next();
+    await first.loop.close();
+    assert.deepEqual([eventState(f, a.eventId), eventState(f, b.eventId)], ['replied', 'replied']);
+
+    const second = await f.open();
+    f.model.auto = () => ({});
+    await second.loop.idle();
+    assert.deepEqual([eventState(f, a.eventId), eventState(f, b.eventId)], ['replied', 'replied']);
+    assert.equal(messages(second.events, 'natsumi').length, 0);
+  } finally { await f.cleanup(); }
+});
+
+test('the turn ends when the model stops without a tool, and an event left unanswered ends without a reply', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    f.model.auto = onPrompt(() => ({ calls: [call('set_mac_avatar_expression', { expression: 'happy' })] }));
+    const sent = f.send(loop, '表情だけ');
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'no-reply');
+    await loop.idle();
+    assert.equal(f.model.calls, 2);
+
+    f.model.auto = onPrompt(() => ({ calls: [call('reply_to_mac', { text: 'はい' })] }));
+    const next = f.send(loop, '返事して');
+    assert.equal((await completed(events, next.eventId)).payload.status, 'replied');
+    await loop.idle();
+    assert.equal(f.model.calls, 4);
+  } finally { await f.cleanup(); }
+});
+
+test('a model that stops while a message waits to be steered in does not end the turn: the message is handled in it', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const first = f.send(loop, '一件目');
+    const call1 = await f.model.next();
+    const second = f.send(loop, '二件目');
+    // No tool at all: Pi would stop here, but the waiting message goes in first.
+    call1.finish();
+    const call2 = await f.model.next();
+    assert.equal(eventLines(lastUserText(call2.context))[0]!.text, '二件目');
+    call2.call('reply_to_mac', { text: '両方への返事' });
+    call2.finish();
+    (await f.model.next()).finish();
+    await loop.idle();
+    assert.equal(f.model.calls, 3);
+    for (const sent of [first, second]) assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
+  } finally { await f.cleanup(); }
+});
+
+test('a model call cut off at the output limit still fails the event', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    const sent = f.send(loop, '長く考えて');
+    const cut = await f.model.next();
+    cut.think('event-… event-… event-…');
+    cut.finish('length');
+    const done = await completed(events, sent.eventId);
+    assert.deepEqual([done.payload.status, done.payload.reason], ['failed', 'model-error']);
+    await loop.idle();
+    assert.equal(f.model.calls, 1);
   } finally { await f.cleanup(); }
 });

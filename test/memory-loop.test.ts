@@ -125,10 +125,10 @@ function behave(f: Awaited<ReturnType<typeof setup>>, handlers: {
     const [event] = eventLines(lastUserText(context));
     if (!event || context.messages.at(-1)?.role !== 'user') return { calls: [] };
     if (event.type === 'nightly_review') {
-      return handlers.review?.(event, context) ?? { calls: [call('finish_event', { event_id: event.event_id })] };
+      return handlers.review?.(event, context) ?? { calls: [] };
     }
     return handlers.owner?.(event, context)
-      ?? { calls: [call('reply_to_mac', { event_id: event.event_id, text: 'はい' }), call('finish_event', { event_id: event.event_id })] };
+      ?? { calls: [call('reply_to_mac', { text: 'はい' })] };
   };
 }
 
@@ -150,9 +150,9 @@ test('run_shell writes memory and reads it back, and memories never ride in the 
     assert.match(written!.text, /終了コード 0/);
     // Memory moved, and the result says so: nothing else would tell her it was kept (ADR 0019).
     assert.match(written!.text, /記憶の変更: 合言葉\.md（追加）/);
-    call2.call('reply_to_mac', { event_id: first.eventId, text: '覚えました' });
-    call2.call('finish_event', { event_id: first.eventId });
+    call2.call('reply_to_mac', { text: '覚えました' });
     call2.finish();
+    (await f.model.next()).finish();
     await completed(events, first.eventId);
     assert.match(await readFile(join(f.memory, '合言葉.md'), 'utf8'), new RegExp(PASSPHRASE));
     // The turn committed it, so the next command has nothing to report.
@@ -171,9 +171,9 @@ test('run_shell writes memory and reads it back, and memories never ride in the 
     assert.equal(found!.isError, false);
     assert.match(found!.text, new RegExp(PASSPHRASE));
     assert.doesNotMatch(found!.text, /記憶の変更/, 'reading memory is not changing it');
-    call4.call('reply_to_mac', { event_id: asked.eventId, text: PASSPHRASE });
-    call4.call('finish_event', { event_id: asked.eventId });
+    call4.call('reply_to_mac', { text: PASSPHRASE });
     call4.finish();
+    (await f.model.next()).finish();
     await completed(again.events, asked.eventId);
     for (const context of f.model.contexts) assert.equal((context.systemPrompt ?? '').includes(PASSPHRASE), false);
     // What the owner sees is only the conversation; the workspace stays inside.
@@ -199,7 +199,6 @@ test('the shell runs in the owner time zone, and a command too long never leaves
     assert.equal(refused!.isError, true);
     assert.match(refused!.text, /8000/);
     assert.equal(runner.commands.length, 1, 'the long command never reached the runner');
-    call2.call('finish_event', { event_id: sent.eventId });
     call2.finish();
     await completed(events, sent.eventId);
   } finally { await f.cleanup(); }
@@ -210,13 +209,12 @@ test('the first start makes the memory repository and moves personality.md into 
   try {
     await f.writeMemory('\u5408\u8a00\u8449.md', `# \u5408\u8a00\u8449\n\n- 2026-09-15: ${PASSPHRASE}\n`);
     const { loop } = await f.open();
-    const sent = f.send(loop, '\u3053\u3093\u306b\u3061\u306f');
+    f.send(loop, '\u3053\u3093\u306b\u3061\u306f');
     const call1 = await f.model.next();
 
     // The personality is in the prompt, read from the repository; memory itself never is.
     assert.match(call1.context.systemPrompt ?? '', /\u843d\u3061\u7740\u3044\u305f\u8a71\u3057\u65b9/);
     assert.equal((call1.context.systemPrompt ?? '').includes(PASSPHRASE), false);
-    call1.call('finish_event', { event_id: sent.eventId });
     call1.finish();
     await loop.idle();
 
@@ -243,9 +241,9 @@ test('a turn that changed memory ends in one commit; a turn that changed nothing
     call1.call('set_mac_avatar_expression', { expression: 'happy' });
     call1.finish();
     const call2 = await f.model.next();
-    call2.call('reply_to_mac', { event_id: first.eventId, text: '\u899a\u3048\u307e\u3057\u305f' });
-    call2.call('finish_event', { event_id: first.eventId });
+    call2.call('reply_to_mac', { text: '\u899a\u3048\u307e\u3057\u305f' });
     call2.finish();
+    (await f.model.next()).finish();
     await completed(events, first.eventId);
 
     // One commit for the turn, whatever it took to get there, with a message the server made.
@@ -255,7 +253,6 @@ test('a turn that changed memory ends in one commit; a turn that changed nothing
 
     const second = f.send(loop, '\u3042\u308a\u304c\u3068\u3046');
     const call3 = await f.model.next();
-    call3.call('finish_event', { event_id: second.eventId });
     call3.finish();
     await completed(events, second.eventId);
     assert.equal(f.commits(), base + 1);
@@ -270,7 +267,6 @@ test('a file the check catches goes back, and the reason reaches the next turn o
     const call1 = await f.model.next();
     await f.writeMemory('\u4e88\u5b9a.md', '# \u4e88\u5b9a\n\n- 2026-09-19: \u6b6f\u533b\u8005\u306f\u91d1\u66dc\n');
     await f.writeMemory('\u3081\u3082.md', '# \u3081\u3082\n\n\u8fd9\u4e2a\u662f\u7b80\u4f53\u5b57\n');
-    call1.call('finish_event', { event_id: first.eventId });
     call1.finish();
     await completed(events, first.eventId);
 
@@ -283,7 +279,6 @@ test('a file the check catches goes back, and the reason reaches the next turn o
     const told = lastUserText(call2.context);
     assert.match(told, /\u3081\u3082\.md/);
     assert.match(told, /\u65e5\u672c\u8a9e\u4ee5\u5916/);
-    call2.call('finish_event', { event_id: second.eventId });
     call2.finish();
     await completed(events, second.eventId);
 
@@ -291,7 +286,6 @@ test('a file the check catches goes back, and the reason reaches the next turn o
     const third = f.send(loop, '\u308f\u304b\u3063\u305f');
     const call3 = await f.model.next();
     assert.doesNotMatch(lastUserText(call3.context), /\u3081\u3082\.md/);
-    call3.call('finish_event', { event_id: third.eventId });
     call3.finish();
     await completed(events, third.eventId);
   } finally { await f.cleanup(); }
@@ -305,7 +299,7 @@ test('a turn stopped at the model-call limit still commits what memory holds', a
     const sent = f.send(loop, '\u9577\u3044\u4f5c\u696d');
     const call1 = await f.model.next();
     await f.writeMemory('\u9014\u4e2d.md', '# \u9014\u4e2d\n\n- 2026-09-19: \u66f8\u304d\u304b\u3051\n');
-    // No finish_event: the turn is cut at the model-call limit.
+    // The turn is cut at the model-call limit, before she could stop on her own.
     call1.call('set_mac_avatar_expression', { expression: 'thinking' });
     call1.finish();
     assert.equal((await completed(events, sent.eventId)).payload.status, 'failed');
@@ -347,7 +341,7 @@ test('the handoff SQLite held reaches handoff.md and the new session reads it fr
     // The instructions carry it, read from the file rather than from SQLite, which no longer holds it anywhere.
     behave(f, {});
     let context: Context | undefined;
-    behave(f, { owner: (event, seen) => { context = seen; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    behave(f, { owner: (_event, seen) => { context = seen; return { calls: [] }; } });
     const morning = f.send(loop, '\u304a\u306f\u3088\u3046');
     await completed(events, morning.eventId);
     assert.match(context!.systemPrompt ?? '', new RegExp(HANDOFF));
@@ -361,9 +355,8 @@ test('the nightly switch commits the handoff into memory and records that commit
   try {
     const { loop, events } = await f.open();
     behave(f, {
-      review: event => ({ calls: [
-        call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} \u660e\u65e5\u306f\u8cc7\u6599\u306e\u7d9a\u304d` }),
-        call('finish_event', { event_id: event.event_id }),
+      review: () => ({ calls: [
+        call('write_handoff_note', { text: `${HANDOFF} \u660e\u65e5\u306f\u8cc7\u6599\u306e\u7d9a\u304d` }),
       ] }),
     });
     const day = f.send(loop, '\u4eca\u65e5\u306e\u8a71');
@@ -392,12 +385,11 @@ test('the nightly switch reviews the day, starts a new session with the handoff,
     const { loop, events } = await f.open();
     let reviewedWith: Context | undefined;
     behave(f, {
-      review: (event, context) => {
+      review: (_event, context) => {
         reviewedWith = context;
         writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER} を覚えた\n`);
         return { calls: [
-          call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 明日は資料の続きを確認する` }),
-          call('finish_event', { event_id: event.event_id }),
+          call('write_handoff_note', { text: `${HANDOFF} 明日は資料の続きを確認する` }),
         ] };
       },
     });
@@ -432,7 +424,7 @@ test('the nightly switch reviews the day, starts a new session with the handoff,
 
     // The next day starts in the new session: the handoff is in the instructions, the old context is not.
     let next: Context | undefined;
-    behave(f, { owner: (event, context) => { next = context; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    behave(f, { owner: (_event, context) => { next = context; return { calls: [] }; } });
     const morning = f.send(loop, 'おはよう');
     await completed(events, morning.eventId);
     assert.match(next!.systemPrompt ?? '', new RegExp(HANDOFF));
@@ -461,21 +453,20 @@ test('an owner message that arrives during the nightly switch waits and is handl
 
     const rotating = loop.rotate();
     const review = await f.model.next();
-    const [reviewEvent] = eventLines(lastUserText(review.context));
     const late = f.send(loop, '夜中にごめん、これ見て');
     assert.equal(late.state, 'queued');
     assert.deepEqual(loop.snapshot().pendingEvents.map(e => e.eventId), [late.eventId]);
-    review.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 引き継ぎ` });
-    review.call('finish_event', { event_id: reviewEvent!.event_id });
+    review.call('write_handoff_note', { text: `${HANDOFF} 引き継ぎ` });
     review.finish();
+    (await f.model.next()).finish();
 
     const answer = await f.model.next();
     assert.match(lastUserText(answer.context), /夜中にごめん/);
     assert.match(answer.context.systemPrompt ?? '', new RegExp(HANDOFF));
     assert.equal(JSON.stringify(answer.context.messages).includes(EARLIER), false);
-    answer.call('reply_to_mac', { event_id: late.eventId, text: '見ました' });
-    answer.call('finish_event', { event_id: late.eventId });
+    answer.call('reply_to_mac', { text: '見ました' });
     answer.finish();
+    (await f.model.next()).finish();
     assert.equal((await rotating).result, 'switched');
     assert.equal((await completed(events, late.eventId)).payload.status, 'replied');
     assert.deepEqual(replies(events), ['はい', '見ました']);
@@ -496,13 +487,11 @@ test('a review without a handoff note keeps the current session, and the tools r
     f.model.takeOver();
     const rotating = loop.rotate();
     const review = await f.model.next();
-    const [reviewEvent] = eventLines(lastUserText(review.context));
     review.call('notify_owner', { text: '夜の報告' });
-    review.call('reply_to_mac', { event_id: reviewEvent!.event_id, text: '返事' });
+    review.call('reply_to_mac', { text: '返事' });
     review.finish();
     const review2 = await f.model.next();
     assert.deepEqual(toolResults(review2.context).map(r => r.isError), [true, true]);
-    review2.call('finish_event', { event_id: reviewEvent!.event_id });
     review2.finish();
     const outcome = await rotating;
     assert.deepEqual(outcome, { result: 'failed', reason: 'no-handoff' });
@@ -515,9 +504,8 @@ test('a review without a handoff note keeps the current session, and the tools r
     f.model.auto = context => {
       if (context.messages.at(-1)?.role !== 'user') return { calls: [] };
       seen = context;
-      const [event] = eventLines(lastUserText(context));
-      return { calls: [call('write_handoff_note', { event_id: event!.event_id, text: '勝手な引き継ぎ' }),
-        call('reply_to_mac', { event_id: event!.event_id, text: '続けます' }), call('finish_event', { event_id: event!.event_id })] };
+      return { calls: [call('write_handoff_note', { text: '勝手な引き継ぎ' }),
+        call('reply_to_mac', { text: '続けます' })] };
     };
     const next = f.send(loop, 'まだ起きてる？');
     await completed(events, next.eventId);
@@ -540,20 +528,19 @@ test('a handoff note in non-Japanese script is refused and never reaches the nex
     f.model.takeOver();
     const rotating = loop.rotate();
     const review = await f.model.next();
-    const [reviewEvent] = eventLines(lastUserText(review.context));
-    review.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 简洁にまとめる` });
+    review.call('write_handoff_note', { text: `${HANDOFF} 简洁にまとめる` });
     review.finish();
     const review2 = await f.model.next();
     const [refused] = toolResults(review2.context);
     assert.equal(refused!.isError, true);
     assert.match(refused!.text, /日本語以外/);
-    review2.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 簡潔にまとめる` });
-    review2.call('finish_event', { event_id: reviewEvent!.event_id });
+    review2.call('write_handoff_note', { text: `${HANDOFF} 簡潔にまとめる` });
     review2.finish();
+    (await f.model.next()).finish();
     assert.equal((await rotating).result, 'switched');
 
     let next: Context | undefined;
-    behave(f, { owner: (event, context) => { next = context; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    behave(f, { owner: (_event, context) => { next = context; return { calls: [] }; } });
     const morning = f.send(loop, 'おはよう');
     await completed(events, morning.eventId);
     assert.match(next!.systemPrompt ?? '', /簡潔にまとめる/);
@@ -592,7 +579,7 @@ test('a stop during the switch never silently starts a new conversation: it resu
     assert.equal(second.loop.unavailable, undefined);
     assert.equal(f.rows()[0]!.pi_session_file, oldFile);
     let context: Context | undefined;
-    behave(f, { owner: (event, seen) => { context = seen; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    behave(f, { owner: (_event, seen) => { context = seen; return { calls: [] }; } });
     const check = f.send(second.loop, '続き');
     await completed(second.events, check.eventId);
     assert.ok(JSON.stringify(context!.messages).includes(EARLIER));
@@ -601,8 +588,7 @@ test('a stop during the switch never silently starts a new conversation: it resu
     f.model.takeOver();
     const again = second.loop.rotate();
     const review = await f.model.next();
-    const [reviewEvent] = eventLines(lastUserText(review.context));
-    review.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 途中で止まった夜` });
+    review.call('write_handoff_note', { text: `${HANDOFF} 途中で止まった夜` });
     review.finish();
     await f.model.next();
     await second.loop.close();
@@ -614,7 +600,7 @@ test('a stop during the switch never silently starts a new conversation: it resu
     assert.equal(files.length, 2);
     assert.ok(files.includes(oldFile!));
     assert.notEqual(f.rows()[0]!.pi_session_file, oldFile);
-    behave(f, { owner: (event, seen) => { context = seen; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    behave(f, { owner: (_event, seen) => { context = seen; return { calls: [] }; } });
     const morning = f.send(third.loop, 'おはよう');
     await completed(third.events, morning.eventId);
     assert.match(context!.systemPrompt ?? '', new RegExp(HANDOFF));
@@ -638,7 +624,6 @@ test('run_shell is offered only with a runner socket, and an unreachable runner 
     const [unregistered] = toolResults(call2.context);
     assert.equal(unregistered!.isError, true);
     assert.doesNotMatch(unregistered!.text, /接続できません/);
-    call2.call('finish_event', { event_id: first.eventId });
     call2.finish();
     await completed(plain.events, first.eventId);
     await plain.loop.close();
@@ -654,9 +639,9 @@ test('run_shell is offered only with a runner socket, and an unreachable runner 
     const [unreachable] = toolResults(call4.context);
     assert.equal(unreachable!.isError, true);
     assert.match(unreachable!.text, /接続できません/);
-    call4.call('reply_to_mac', { event_id: asked.eventId, text: 'いまは探せませんでした' });
-    call4.call('finish_event', { event_id: asked.eventId });
+    call4.call('reply_to_mac', { text: 'いまは探せませんでした' });
     call4.finish();
+    (await f.model.next()).finish();
     assert.equal((await completed(shelled.events, asked.eventId)).payload.status, 'replied');
   } finally { await f.cleanup(); }
 });
@@ -724,7 +709,7 @@ test('past the context limit the loop compacts between turns and the conversatio
     assert.ok(entries.includes('compaction'));
 
     let context: Context | undefined;
-    behave(f, { owner: (event, seen) => { context = seen; return { calls: [call('reply_to_mac', { event_id: event.event_id, text: '続きです' }), call('finish_event', { event_id: event.event_id })] }; } });
+    behave(f, { owner: (_event, seen) => { context = seen; return { calls: [call('reply_to_mac', { text: '続きです' })] }; } });
     const after = f.send(loop, 'まだ続く？');
     assert.equal((await completed(events, after.eventId)).payload.status, 'replied');
     assert.match(textOf(context!.messages[0]!), new RegExp(`要約: ${PASSPHRASE}`));
@@ -746,15 +731,16 @@ test('the nightly review gets forty model calls by default, and a turn cut at it
     const { loop, events } = await f.open({ log: line => { logs.push(line); } });
     // Unlike `behave`, this answers every call of a turn, not only the first: the review keeps working until it is done or cut.
     let reviewCalls = 0;
-    let finishAt: number | undefined = 40;
+    let finishAt: number | undefined = 39;
     const keepWorking = (context: Context): ScriptedStep => {
       const [event] = eventLines(lastUserText(context));
       if (event?.type !== 'nightly_review') return { calls: [call('set_mac_avatar_expression', { expression: 'thinking' })] };
       reviewCalls += 1;
-      // Work on every call but the last, and the handoff on that one: the old limit of sixteen would have cut this short.
+      // Work on every call but the last two, the handoff on the one before the last, and stop without a tool on the
+      // last (ADR 0024): the old limit of sixteen would have cut this short.
+      if (finishAt !== undefined && reviewCalls > finishAt) return {};
       if (reviewCalls !== finishAt) return { calls: [call('set_mac_avatar_expression', { expression: 'sleepy' })] };
-      return { calls: [call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 長い夜` }),
-        call('finish_event', { event_id: event.event_id })] };
+      return { calls: [call('write_handoff_note', { text: `${HANDOFF} 長い夜` })] };
     };
     behave(f, {});
     const day = f.send(loop, '今日の話');
@@ -797,12 +783,11 @@ test('the review turn has thirty minutes where an ordinary turn has ten, and a t
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const rotating = loop.rotate();
     const review = await f.model.next();
-    const [reviewEvent] = eventLines(lastUserText(review.context));
     // Ten minutes in, an ordinary turn would be over. The review goes on, and finishes.
     t.mock.timers.tick(10 * 60_000);
-    review.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 遅い夜` });
-    review.call('finish_event', { event_id: reviewEvent!.event_id });
+    review.call('write_handoff_note', { text: `${HANDOFF} 遅い夜` });
     review.finish();
+    (await f.model.next()).finish();
     assert.equal((await rotating).result, 'switched');
     assert.equal(logs.some(line => line.includes('time limit')), false, logs.join('\n'));
 
@@ -849,7 +834,6 @@ test('always.md rides in the instructions as it stands, and an empty one adds no
       const { loop, events } = await f.open();
       const sent = f.send(loop, 'おはよう');
       const call1 = await f.model.next();
-      call1.call('finish_event', { event_id: sent.eventId });
       call1.finish();
       await completed(events, sent.eventId);
       return call1.context.systemPrompt ?? '';
@@ -882,13 +866,12 @@ test('an always.md written past its limit is not committed, and the reason reach
     const { loop, events } = await f.open({ loop: { alwaysMemoryMaxChars: 200 } });
     const kept = await readFile(join(f.memory, ALWAYS_FILE), 'utf8');
     behave(f, {
-      review: event => {
+      review: () => {
         // The night rewrites the always-memory past its limit, and tidies a memory file that is fine.
         writeFileSync(join(f.memory, ALWAYS_FILE), `# 常時記憶\n\n${'あ'.repeat(300)}\n`);
         writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER}\n`);
         return { calls: [
-          call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 明日の朝に常時記憶を短く書き直す` }),
-          call('finish_event', { event_id: event.event_id }),
+          call('write_handoff_note', { text: `${HANDOFF} 明日の朝に常時記憶を短く書き直す` }),
         ] };
       },
     });
@@ -904,7 +887,7 @@ test('an always.md written past its limit is not committed, and the reason reach
 
     // A review has no next turn, so the reason rides in the new session's instructions.
     let next: Context | undefined;
-    behave(f, { owner: (event, context) => { next = context; return { calls: [call('finish_event', { event_id: event.event_id })] }; } });
+    behave(f, { owner: (_event, context) => { next = context; return { calls: [] }; } });
     const morning = f.send(loop, 'おはよう');
     await completed(events, morning.eventId);
     assert.match(next!.systemPrompt ?? '', /always\.md/);
@@ -925,19 +908,18 @@ test('write_change_note becomes the nightly commit message, and a note that fail
     f.model.takeOver();
     const rotating = loop.rotate();
     const review = await f.model.next();
-    const [reviewEvent] = eventLines(lastUserText(review.context));
     writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER}\n`);
     // The same checks as anything that reaches the owner: non-Japanese script is refused and may be written again.
-    review.call('write_change_note', { event_id: reviewEvent!.event_id, text: '今日の记录をまとめた' });
+    review.call('write_change_note', { text: '今日の记录をまとめた' });
     review.finish();
     const review2 = await f.model.next();
     const [refused] = toolResults(review2.context);
     assert.equal(refused!.isError, true);
     assert.match(refused!.text, /日本語以外/);
-    review2.call('write_change_note', { event_id: reviewEvent!.event_id, text: '一日の記録を書き足した\n\n昼の話を 1 行にまとめた。' });
-    review2.call('write_handoff_note', { event_id: reviewEvent!.event_id, text: `${HANDOFF} 引き継ぎ` });
-    review2.call('finish_event', { event_id: reviewEvent!.event_id });
+    review2.call('write_change_note', { text: '一日の記録を書き足した\n\n昼の話を 1 行にまとめた。' });
+    review2.call('write_handoff_note', { text: `${HANDOFF} 引き継ぎ` });
     review2.finish();
+    (await f.model.next()).finish();
     assert.equal((await rotating).result, 'switched');
 
     assert.equal(f.git('log', '-1', '--format=%s'), '一日の記録を書き足した');
@@ -950,11 +932,10 @@ test('a night with no change note still switches, and the day is told why the no
   try {
     const { loop, events } = await f.open();
     behave(f, {
-      review: event => {
+      review: () => {
         writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER}\n`);
         return { calls: [
-          call('write_handoff_note', { event_id: event.event_id, text: `${HANDOFF} 説明は書かなかった夜` }),
-          call('finish_event', { event_id: event.event_id }),
+          call('write_handoff_note', { text: `${HANDOFF} 説明は書かなかった夜` }),
         ] };
       },
     });
@@ -970,19 +951,49 @@ test('a night with no change note still switches, and the day is told why the no
     f.model.takeOver();
     const morning = f.send(loop, 'おはよう');
     const turn1 = await f.model.next();
-    const [event] = eventLines(lastUserText(turn1.context));
     writeFileSync(join(f.memory, '予定.md'), '# 予定\n\n- 2026-09-20: 歯医者は金曜\n');
-    turn1.call('write_change_note', { event_id: event!.event_id, text: '昼の説明' });
+    turn1.call('write_change_note', { text: '昼の説明' });
     turn1.finish();
     const turn2 = await f.model.next();
     const [refusal] = toolResults(turn2.context);
     assert.equal(refusal!.isError, true);
     assert.match(refusal!.text, /nightly_review/);
-    turn2.call('reply_to_mac', { event_id: event!.event_id, text: '続けます' });
-    turn2.call('finish_event', { event_id: event!.event_id });
+    turn2.call('reply_to_mac', { text: '続けます' });
     turn2.finish();
+    (await f.model.next()).finish();
     await completed(events, morning.eventId);
     assert.equal(replies(events).at(-1), '続けます');
     assert.match(f.git('log', '-1', '--format=%s'), /^mac_message: .*予定\.md/);
+  } finally { await f.cleanup(); }
+});
+
+// ADR 0024: the review ends like any other turn, when natsumi stops without a tool.
+test('the nightly review ends without finish_event and still writes the handoff and the change note', async () => {
+  const f = await setup();
+  try {
+    const { loop, events } = await f.open();
+    behave(f, {});
+    const day = f.send(loop, `昼の話 ${EARLIER}`);
+    await completed(events, day.eventId);
+    await loop.idle();
+
+    f.model.takeOver();
+    const rotating = loop.rotate();
+    const review = await f.model.next();
+    const [reviewEvent] = eventLines(lastUserText(review.context));
+    assert.equal(reviewEvent!.type, 'nightly_review');
+    assert.equal('event_id' in reviewEvent!, false);
+    assert.doesNotMatch(String(reviewEvent!.instructions), /finish_event/);
+    writeFileSync(join(f.memory, '一日の記録.md'), `# 一日の記録\n\n- 2026-09-19: ${EARLIER}\n`);
+    review.call('write_change_note', { text: '一日の記録を書き足した' });
+    review.call('write_handoff_note', { text: `${HANDOFF} 夜の引き継ぎ` });
+    review.finish();
+    const last = await f.model.next();
+    assert.deepEqual(toolResults(last.context).map(r => r.isError), [false, false]);
+    last.finish();
+    assert.equal((await rotating).result, 'switched');
+    assert.equal(f.model.calls >= 2, true);
+    assert.equal(f.git('log', '-1', '--format=%s'), '一日の記録を書き足した');
+    assert.match(await readFile(join(f.memory, 'handoff.md'), 'utf8'), new RegExp(`${HANDOFF} 夜の引き継ぎ`));
   } finally { await f.cleanup(); }
 });

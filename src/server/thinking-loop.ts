@@ -123,8 +123,12 @@ export interface LoopOptions {
 
 type StopContext = Parameters<NonNullable<AgentSession['agent']['shouldStopAfterTurn']>>[0];
 
-/** An event handed to Pi in the current turn. Only owner messages have a message. */
-interface Handling { eventId: string; messageId?: string; replied: boolean; finished: boolean }
+/**
+ * An event handed to Pi in the current turn. Only owner messages have a message. `shown` is whether natsumi has it
+ * in front of her yet: a steered event waits for the next model-call boundary, and a reply sent before then is not
+ * an answer to it (ADR 0024).
+ */
+interface Handling { eventId: string; messageId?: string; replied: boolean; shown: boolean }
 interface Turn {
   kind: 'events' | 'review';
   calls: number; maxCalls: number; limited: boolean; timedOut: boolean; notices: number;
@@ -156,8 +160,11 @@ export class ThinkingLoop {
   private readonly listeners = new Set<(event: LoopClientEvent) => void>();
   private readonly queue: string[] = [];
   private readonly handling = new Map<string, Handling>();
-  /** Prompt text of steered events → event ID, to take back steering Pi did not deliver. */
-  private readonly steered = new Map<string, string>();
+  /**
+   * Prompt text of steered events → their event IDs, oldest first, to take back steering Pi did not deliver. The
+   * lines carry no event ID (ADR 0024), so two messages with the same text in the same millisecond share a key.
+   */
+  private readonly steered = new Map<string, string[]>();
   private readonly idleWaiters: (() => void)[] = [];
   private readonly rotationWaiters = new Map<string, ((outcome: RotationOutcome) => void)[]>();
   private modelRuntime: ModelRuntime | undefined;
@@ -261,9 +268,9 @@ export class ThinkingLoop {
     const reviewing = this.turn?.kind === 'review' || this.isRotationQueuedFirst();
     if (this.turn?.kind === 'events' && session.isStreaming) {
       // Steered in at the next model-call boundary; the thought in progress is not interrupted (Q1).
-      this.beginHandling(eventId, row.message_id);
+      this.beginHandling(eventId, row.message_id, false);
       const prompt = formatEvents([this.eventLine(eventId)]);
-      this.steered.set(prompt, eventId);
+      this.steered.set(prompt, [...this.steered.get(prompt) ?? [], eventId]);
       void session.steer(prompt);
       state = 'processing';
     } else {
@@ -463,7 +470,10 @@ export class ThinkingLoop {
     this.options.configureSession?.(session);
     this.unwatch?.();
     // The thinking in progress is read off the session, never out of the record it writes.
-    this.unwatch = session.subscribe(event => this.watchThinking(event));
+    this.unwatch = session.subscribe(event => {
+      this.watchSteering(event);
+      this.watchThinking(event);
+    });
     // Every steered message waiting at a boundary goes in together.
     session.setSteeringMode('all');
     session.agent.shouldStopAfterTurn = context => this.shouldStop(context);
@@ -587,7 +597,7 @@ export class ThinkingLoop {
     const timeoutMs = kind === 'review' ? this.options.loop.reviewTimeoutMinutes * 60_000 : this.options.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const turn: Turn = { kind, calls: 0, maxCalls, limited: false, timedOut: false, notices: 0, rotationId };
     this.turn = turn;
-    for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId));
+    for (const eventId of eventIds) this.beginHandling(eventId, this.store.eventMessageId(eventId), true);
     const before = session.messages.length;
     const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, timeoutMs);
     const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice()].filter(Boolean).join('\n\n');
@@ -604,7 +614,7 @@ export class ThinkingLoop {
 
     // Steering Pi did not deliver goes back to the front of the queue.
     for (const text of session.clearQueue().steering.reverse()) {
-      const eventId = this.steered.get(text);
+      const eventId = this.steered.get(text)?.pop();
       if (!eventId) continue;
       this.handling.delete(eventId);
       this.store.setEventState(eventId, 'queued');
@@ -620,7 +630,7 @@ export class ThinkingLoop {
     const failure = turn.limited ? 'model-call-limit' : turn.timedOut ? 'timeout' : this.closing ? 'stopped'
       : !last || (last.stopReason !== 'stop' && last.stopReason !== 'toolUse') ? 'model-error' : undefined;
     for (const handling of this.handling.values()) {
-      const status: EventState = handling.replied ? 'replied' : handling.finished || !failure ? 'no-reply' : 'failed';
+      const status: EventState = handling.replied ? 'replied' : !failure ? 'no-reply' : 'failed';
       this.store.setEventState(handling.eventId, status, status === 'failed' ? failure : undefined);
       if (!handling.messageId) continue;
       if (status === 'failed') this.log(`thinking loop: an event failed (${failure})`);
@@ -762,14 +772,15 @@ export class ThinkingLoop {
     }
   }
 
-  /** Pi asks after every completed model call whether the turn ends here. */
-  private shouldStop({ message, toolResults }: StopContext): boolean {
+  /**
+   * Pi asks after every completed model call whether the turn ends here. Only the limit is decided here: a turn ends
+   * on its own when natsumi stops without calling a tool, and even then Pi first hands her any message steered in
+   * meanwhile, so what arrived is never left behind by a turn that looked finished (ADR 0024).
+   */
+  private shouldStop({ message }: StopContext): boolean {
     const turn = this.turn;
     if (!turn) return false;
     turn.calls += 1;
-    const allFinished = this.handling.size > 0 && [...this.handling.values()].every(handling => handling.finished);
-    if (allFinished && toolResults.some(result => result.toolName === 'finish_event' && !result.isError)
-      && this.session!.getSteeringMessages().length === 0) return true;
     if (message.stopReason === 'toolUse' && turn.calls >= turn.maxCalls) {
       turn.limited = true;
       return true;
@@ -777,43 +788,45 @@ export class ThinkingLoop {
     return false;
   }
 
-  private beginHandling(eventId: string, messageId: string | undefined) {
-    this.handling.set(eventId, { eventId, messageId, replied: this.store.hasReply(eventId), finished: false });
+  private beginHandling(eventId: string, messageId: string | undefined, shown: boolean) {
+    this.handling.set(eventId, { eventId, messageId, replied: this.store.hasReply(eventId), shown });
     this.store.setEventState(eventId, 'processing');
   }
 
-  /** The line one event becomes inside `<events>`. New event kinds add their own shape here. */
+  /**
+   * The line one event becomes inside `<events>`. New event kinds add their own shape here. No line carries its
+   * event ID: no tool asks for one, and a column of IDs alike in shape was what she once copied wrong (ADR 0024).
+   */
   private eventLine(eventId: string): Record<string, unknown> {
     const row = this.store.eventRow(eventId);
     if (row.kind === 'nightly-review') {
-      return { event_id: eventId, type: 'nightly_review', received_at: row.created_at, instructions: REVIEW_INSTRUCTIONS };
+      return { type: 'nightly_review', received_at: row.created_at, instructions: REVIEW_INSTRUCTIONS };
     }
     const timeZone = this.options.loop.timeZone;
     const raisedAt = Date.parse(row.created_at);
     if (row.kind === 'self-check') {
-      return { event_id: eventId, type: 'self_check', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone),
+      return { type: 'self_check', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone),
         checks: this.selfChecks.carriedBy(eventId, raisedAt) };
     }
     // How many of her notices the owner has not checked, when any: read-only, so she need not send them again.
     const unacknowledged = this.readState.unacknowledgedNotificationIds().length;
     const notices = unacknowledged > 0 ? { unacknowledged_notices: unacknowledged } : {};
     if (row.kind === 'ping') {
-      return { event_id: eventId, type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices };
+      return { type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices };
     }
-    return { event_id: eventId, type: 'mac_message', received_at: row.message_at, text: row.text, ...notices };
+    return { type: 'mac_message', received_at: row.message_at, text: row.text, ...notices };
   }
 
   private host(): LoopToolHost {
     return {
-      reply: (eventId, text) => this.reply(eventId, text),
-      notify: (text, about) => this.notify(text, about),
-      finish: eventId => this.finish(eventId),
+      reply: text => this.reply(text),
+      notify: text => this.notify(text),
       setExpression: expression => {
         this.setAvatar(expression, 'model');
         return { ok: true, text: `アバターの表情を ${expression} にしました。` };
       },
-      writeHandoff: (eventId, text) => this.writeHandoff(eventId, text),
-      writeChangeNote: (eventId, text) => this.writeChangeNote(eventId, text),
+      writeHandoff: text => this.writeHandoff(text),
+      writeChangeNote: text => this.writeChangeNote(text),
       scheduleSelfCheck: (reason, when) => this.selfChecks.schedule(reason, when),
       listSelfChecks: () => this.selfChecks.list(),
       cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
@@ -821,31 +834,38 @@ export class ThinkingLoop {
     };
   }
 
-  private reply(eventId: string, text: string): ToolOutcome {
-    const handling = this.handling.get(eventId);
-    if (!handling?.messageId) {
-      return { ok: false, text: `送信していません。${eventId} は処理中の本人のメッセージではありません。返事は、いま届いている本人のメッセージの event_id にだけ送れます。` };
-    }
-    if (handling.replied) {
-      return { ok: false, text: `送信していません。イベント ${eventId} にはすでに返事を送っています。1 つのメッセージへの返事は 1 回だけです。` };
+  /**
+   * A reply answers every owner message of the turn that has none yet, however many were steered in (ADR 0024). It
+   * is recorded against the newest of them, which is where the owner's side of the conversation stands, and the older
+   * ones are marked replied in the same transaction, so a restart before the turn ends answers none of them again:
+   * the record says replied, and only messages still being processed are closed on a start.
+   */
+  private reply(text: string): ToolOutcome {
+    const open = [...this.handling.values()].filter(handling => handling.messageId !== undefined && handling.shown && !handling.replied);
+    const target = open.at(-1);
+    if (!target) {
+      const answered = [...this.handling.values()].some(handling => handling.messageId !== undefined && handling.shown);
+      return { ok: false, text: answered
+        ? '送信していません。届いている本人のメッセージには、もう返事を送りました。付け足したいことがあれば notify_owner で送ってください。'
+        : '送信していません。いま返事を待っている本人のメッセージはありません。本人に伝えたいことがあれば notify_owner で送ってください。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
-    const row = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId });
-    handling.replied = true;
+    const row = this.store.transaction(() => {
+      const inserted = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId: target.eventId });
+      for (const handling of open) this.store.setEventState(handling.eventId, 'replied');
+      return inserted;
+    });
+    for (const handling of open) handling.replied = true;
     this.emit('conversation.message', shown(row));
-    return { ok: true, text: `本人の Mac に返事を送りました（event_id: ${eventId}）。この返事は確定し、このメッセージにはもう返事を送れません。対応を終えるなら finish_event を呼んでください。` };
+    return { ok: true, text: '本人の Mac に返事を送りました。この返事は確定し、ここまでに届いた本人のメッセージには返事を済ませました。'
+      + 'ほかにやることがなければ、ツールを呼ばずに終えてください。' };
   }
 
-  private notify(text: string, about: string[]): ToolOutcome {
+  private notify(text: string): ToolOutcome {
     const turn = this.turn;
     if (turn?.kind === 'review') {
       return { ok: false, text: '送信していません。夜の振り返りの間は、本人に知らせを送りません。明日に伝えたいことは write_handoff_note に書いてください。' };
-    }
-    for (const eventId of about) {
-      if (!this.store.eventExists(eventId)) {
-        return { ok: false, text: `送信していません。about_event_ids の ${eventId} は存在しないイベントです。` };
-      }
     }
     const limits = this.options.notifyLimits ?? DEFAULT_NOTIFY_LIMITS;
     if (turn && turn.notices >= limits.perTurn) {
@@ -856,31 +876,20 @@ export class ThinkingLoop {
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
-    const row = this.store.insertMessage({ role: 'natsumi', kind: 'notice', text, about: [...new Set(about)] });
+    const row = this.store.insertMessage({ role: 'natsumi', kind: 'notice', text });
     if (turn) turn.notices += 1;
     this.emit('conversation.message', shown(row));
     return { ok: true, text: '本人に知らせを送りました。返事を待つ必要はありません。同じ内容を繰り返し送らないでください。' };
-  }
-
-  private finish(eventId: string): ToolOutcome {
-    const handling = this.handling.get(eventId);
-    if (!handling) return { ok: false, text: `${eventId} は処理中のイベントではありません。` };
-    handling.finished = true;
-    const open = [...this.handling.values()].filter(other => !other.finished).map(other => other.eventId);
-    if (open.length > 0) {
-      return { ok: true, text: `イベント ${eventId} の対応は完了しました。まだ対応中のイベント: ${open.join(', ')}。` };
-    }
-    return { ok: true, text: `イベント ${eventId} の対応は完了しました。このターンはここで終わります。追加の出力は不要です。`, closesTurn: true };
   }
 
   /**
    * The handoff, written into `handoff.md` in the memory repository, which is the only place it is kept (ADR 0020).
    * The turn's own commit takes it in like any other change, and the switch then records that commit.
    */
-  private async writeHandoff(eventId: string, text: string): Promise<ToolOutcome> {
+  private async writeHandoff(text: string): Promise<ToolOutcome> {
     const turn = this.turn;
-    if (turn?.kind !== 'review' || !turn.rotationId || !this.handling.has(eventId)) {
-      return { ok: false, text: '書いていません。write_handoff_note は、いま処理中の夜の振り返り（nightly_review）の event_id にだけ使えます。' };
+    if (turn?.kind !== 'review' || !turn.rotationId) {
+      return { ok: false, text: '書いていません。write_handoff_note は、夜の振り返り（nightly_review）の中でだけ使えます。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '書いていません') };
@@ -900,16 +909,26 @@ export class ThinkingLoop {
    * than quietly dropped: the day's commit message is the server's, so a note written then would have nowhere to
    * go, and a reason lets her write it at the right time instead.
    */
-  private writeChangeNote(eventId: string, text: string): ToolOutcome {
+  private writeChangeNote(text: string): ToolOutcome {
     const turn = this.turn;
-    if (turn?.kind !== 'review' || !this.handling.has(eventId)) {
-      return { ok: false, text: '書いていません。write_change_note は、いま処理中の夜の振り返り（nightly_review）の event_id にだけ使えます。'
+    if (turn?.kind !== 'review') {
+      return { ok: false, text: '書いていません。write_change_note は、夜の振り返り（nightly_review）の中でだけ使えます。'
         + '日中の記憶のコミットメッセージはサーバーが付けるので、この説明の行き場がありません。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check).replace('送信していません', '書いていません') };
     turn.changeNote = text;
     return { ok: true, text: '今夜の記憶のコミットメッセージにします。書き直すなら、もう一度呼んでください。' };
+  }
+
+  /** A steered event is shown to natsumi when Pi puts its prompt into the context, at a model-call boundary. */
+  private watchSteering(event: AgentSessionEvent) {
+    if (event.type !== 'message_start' || event.message.role !== 'user') return;
+    const content = event.message.content;
+    const text = typeof content === 'string' ? content
+      : content.map(part => part.type === 'text' ? part.text : '').join('');
+    const waiting = this.steered.get(text)?.map(eventId => this.handling.get(eventId)).find(handling => handling && !handling.shown);
+    if (waiting) waiting.shown = true;
   }
 
   /**

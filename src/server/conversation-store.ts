@@ -170,10 +170,6 @@ export class ConversationStore {
     return eventIds.map(eventId => this.eventKind(eventId));
   }
 
-  eventExists(eventId: string): boolean {
-    return this.db.prepare('SELECT 1 FROM loop_events WHERE event_id = ?').get(eventId) !== undefined;
-  }
-
   /** The owner message an event carries, if it is one. */
   eventMessageId(eventId: string): string | undefined {
     const row = this.db.prepare('SELECT message_id FROM loop_events WHERE event_id = ?').get(eventId) as
