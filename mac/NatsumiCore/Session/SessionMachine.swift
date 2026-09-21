@@ -80,10 +80,9 @@ public struct SessionMachine {
         conversation.dismiss(requestId: requestId)
     }
 
-    /// Reads the oldest unread reply and brings the next one to the front.
-    public mutating func confirmFrontReply() -> [SessionEffect] {
-        guard let front = conversation.unreadReplies.first else { return [] }
-        return read(through: front.messageId)
+    /// Reads replies up to one the owner has seen. Nothing is sent unless it moves the position forward.
+    public mutating func readReplies(through messageId: String) -> [SessionEffect] {
+        read(through: messageId)
     }
 
     /// Reads every unread reply at once.

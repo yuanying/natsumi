@@ -1,8 +1,8 @@
 import NatsumiCore
 import SwiftUI
 
-/// natsumi's unread replies in a comic speech balloon, the oldest in front with the others stacked behind it, or —
-/// while she is receiving or thinking — the comic thought bubble with the line she is writing in it (ADR 0017).
+/// natsumi's last reply in a comic speech balloon, one only and while it is unread (ADR 0022), or — while she is receiving or thinking —
+/// the comic thought bubble with the line she is writing in it (ADR 0017).
 struct BalloonView: View {
     let props: BalloonProps?
     let text: EventSink
@@ -18,7 +18,6 @@ struct BalloonView: View {
     var body: some View {
         if let props {
             let scale = props.textScale
-            let step = Comic.edgeStep(scale)
             let ink = Comic.outline(scale)
             let tailHeight = Self.tailHeight(scale, outline: props.outline)
             let down = props.tail == .down
@@ -33,24 +32,18 @@ struct BalloonView: View {
             .padding(.horizontal, 14 * scale)
             .padding(.vertical, 10 * scale)
             .padding(down ? .bottom : .top, tailHeight)
-            .frame(maxWidth: max(props.width - step * CGFloat(props.edges) - ink * 2, 80), alignment: .leading)
+            .frame(maxWidth: max(props.width - ink * 2, 80), alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             // The box is drawn to the height the layout gave the panel, not to the height of what it says. That
             // one number is what animates, and it is the number the panel itself arrives at, so the drawing and
             // the panel finish together with nothing to jump between them. The words are laid out whole and cut to
             // the balloon's own outline, so a line that has not been reached yet is simply not there yet.
-            .frame(height: props.panelHeight.map { $0 - step * CGFloat(props.edges) - ink * 2 }, alignment: .top)
+            .frame(height: props.panelHeight.map { $0 - ink * 2 }, alignment: .top)
             .clipShape(shape)
             .background {
-                // The replies behind show as outlines a little away from the character.
-                StackedEdges(
-                    count: props.edges, step: step, upward: down, fill: Comic.paper, lineWidth: ink,
-                    shape: BoxOfBalloon(tail: props.tail, tailHeight: tailHeight, radius: Comic.radius(scale)))
                 shape.fill(Comic.paper)
                 shape.stroke(Comic.ink, lineWidth: ink)
             }
-            .padding(.trailing, step * CGFloat(props.edges))
-            .padding(down ? .top : .bottom, step * CGFloat(props.edges))
             .padding(ink)
             .environment(\.colorScheme, .light)
         }
@@ -77,17 +70,14 @@ struct BalloonView: View {
                 }
                 .buttonStyle(.plain)
                 .help(reply.help)
-                if reply.showsHistoryLink || reply.more > 0 {
-                    // The same footer as the notices: the count first, under the text.
-                    HStack(spacing: 8 * scale) {
-                        if reply.more > 0 {
-                            MoreCount(count: reply.more, scale: scale)
-                        }
-                        if reply.showsHistoryLink {
-                            Button("続きは履歴で") { historyLink(.historyLinkClicked) }
-                                .buttonStyle(.link)
-                                .font(Comic.font(11 * scale))
-                        }
+                // The same footer as the notices: the count first, under the text. A reply is shown only while it
+                // is unread, so there is always a count (ADR 0022).
+                HStack(spacing: 8 * scale) {
+                    UnreadCount(count: reply.unread, scale: scale)
+                    if reply.showsHistoryLink {
+                        Button("続きは履歴で") { historyLink(.historyLinkClicked) }
+                            .buttonStyle(.link)
+                            .font(Comic.font(11 * scale))
                     }
                 }
             }
@@ -260,7 +250,7 @@ struct BalloonShape: Shape {
     }
 }
 
-/// The balloon without its tail, for the replies stacked behind.
+/// The balloon without its tail: the box the outlines are drawn around.
 struct BoxOfBalloon: Shape {
     var tail: BalloonTail
     var tailHeight: CGFloat

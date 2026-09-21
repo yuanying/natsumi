@@ -124,7 +124,14 @@ private struct HistoryList: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(props.rows) { MessageRow(props: $0) }
+                    ForEach(props.rows) { row in
+                        MessageRow(props: row)
+                            // What the owner has in sight is what they have read, while the window is theirs
+                            // (ADR 0022). Half a row showing counts as seeing it.
+                            .onScrollVisibilityChange(threshold: 0.5) { isVisible in
+                                send(.historyRowVisibilityChanged(messageId: row.messageId, isVisible: isVisible))
+                            }
+                    }
                     ForEach(props.outgoing) { item in
                         OutgoingRow(props: item) { send(.outgoingDismissed(requestId: item.requestId)) }
                     }

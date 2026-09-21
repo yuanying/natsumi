@@ -26,15 +26,16 @@ struct ReadCommandTests {
         ], readThrough: nil, unreadReplyCount: 2, unacknowledged: notices))
     }
 
-    @Test("前の返事の確認は、その messageId を throughMessageId にして conversation.read を送り、次の未読を前に出す")
-    func confirmFront() {
+    @Test("見た返事までの確認は、その messageId を throughMessageId にして conversation.read を送る。手前の位置なら送らない")
+    func readThrough() {
         var m = machine()
         ready(&m)
-        #expect(sent(m.confirmFrontReply()) == [ClientEnvelope(requestId: "r2", deviceId: "device-1", command: .conversationRead(throughMessageId: "r1"))])
+        #expect(sent(m.readReplies(through: "r1")) == [ClientEnvelope(requestId: "r2", deviceId: "device-1", command: .conversationRead(throughMessageId: "r1"))])
         #expect(m.conversation.unreadReplies.map(\.messageId) == ["r3"])
-        #expect(sent(m.confirmFrontReply()) == [ClientEnvelope(requestId: "r3", deviceId: "device-1", command: .conversationRead(throughMessageId: "r3"))])
+        #expect(m.readReplies(through: "r1").isEmpty)
+        #expect(sent(m.readReplies(through: "r3")).map(\.command) == [.conversationRead(throughMessageId: "r3")])
         #expect(m.conversation.unreadReplies.isEmpty)
-        #expect(m.confirmFrontReply().isEmpty)
+        #expect(m.readReplies(through: "r1").isEmpty)
     }
 
     @Test("知らせの × とメニューの「知らせをすべて確認する」は、未確認の知らせを 1 件ずつ送り、束を空にする")
@@ -48,7 +49,7 @@ struct ReadCommandTests {
         #expect(m.acknowledgeAllNotices().isEmpty)
     }
 
-    @Test("返事の × とメニューの「返事をすべて既読にする」は、未読の最後の返事の messageId で一度だけ送り、本文のクリックは前の 1 件ずつ")
+    @Test("返事の × とメニューの「返事をすべて既読にする」は、未読の最後の返事の messageId で一度だけ送る")
     func confirmAll() {
         var m = machine()
         ready(&m)
@@ -83,7 +84,7 @@ struct ReadCommandTests {
         var m = machine()
         ready(&m)
         _ = m.closed(.network)
-        #expect(m.confirmFrontReply().isEmpty)
+        #expect(m.readReplies(through: "r1").isEmpty)
         #expect(m.acknowledge(["n2"]).isEmpty)
         #expect(m.conversation.unreadReplies.map(\.messageId) == ["r3"])
         #expect(m.conversation.unacknowledgedNotificationIds.isEmpty)
@@ -102,7 +103,7 @@ struct ReadCommandTests {
     func rejected() {
         var m = machine()
         ready(&m)
-        let read = sent(m.confirmFrontReply())[0]
+        let read = sent(m.readReplies(through: "r1"))[0]
         _ = m.received(Fixture.envelope("command.rejected", seq: 2, requestId: read.requestId, payload: ["code": "invalid-request"]))
         #expect(m.conversation.unreadReplies.map(\.messageId) == ["r1", "r3"])
 

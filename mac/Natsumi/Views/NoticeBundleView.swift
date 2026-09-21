@@ -88,6 +88,16 @@ struct MoreCount: View {
     }
 }
 
+/// How many replies are unread, in the balloon's footer where the notices say how many are behind.
+struct UnreadCount: View {
+    let count: Int
+    let scale: Double
+
+    var body: some View {
+        Text("未読 \(count) 件").font(Comic.font(11 * scale, bold: true)).foregroundStyle(Comic.faint)
+    }
+}
+
 /// The × at the top right of a card.
 struct CloseButton: View {
     let help: String

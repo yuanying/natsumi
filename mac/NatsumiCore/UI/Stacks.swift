@@ -52,25 +52,6 @@ public enum BalloonIndicator: Equatable, Sendable {
     case thinking
 }
 
-/// Unread replies stacked in the balloon: the oldest in front, a few edges behind it, and how many there are.
-public struct ReplyStack: Equatable, Sendable {
-    /// Edges drawn behind the front reply at most; the rest is only counted.
-    public static let maxBehind = 2
-
-    public let front: ShownMessage
-    /// All unread replies, including ones older than the conversation the client has.
-    public let count: Int
-
-    public init(front: ShownMessage, count: Int) {
-        self.front = front
-        self.count = count
-    }
-
-    public var behind: Int { min(max(count - 1, 0), Self.maxBehind) }
-    /// Replies after the front one.
-    public var more: Int { max(count - 1, 0) }
-}
-
 /// One card in the notice bundle.
 public enum NoticeCard: Equatable, Sendable {
     case notice(ShownMessage)

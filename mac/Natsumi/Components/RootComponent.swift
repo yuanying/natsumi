@@ -116,6 +116,10 @@ final class RootComponent: Component {
             if window === self.conversation.panel { self.conversation.dispatch(.conversationCloseRequested) }
             if window === self.settings.panel { self.settings.dispatch(.settingsCloseRequested) }
         }
+        windows.didChangeKey = { [weak self] window, isKey in
+            guard let self, window === self.conversation.panel else { return }
+            self.conversation.dispatch(.conversationKeyChanged(isKey))
+        }
         windows.didMoveOrResize = { [weak self] window in
             guard let self, window === self.conversation.panel, !self.conversationAnimating else { return }
             self.reportConversationFrame()
@@ -702,6 +706,7 @@ struct LayoutInputs: Equatable {
 final class PanelDelegate: NSObject, NSWindowDelegate {
     var willClose: (NSWindow) -> Void = { _ in }
     var didMoveOrResize: (NSWindow) -> Void = { _ in }
+    var didChangeKey: (NSWindow, Bool) -> Void = { _, _ in }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         willClose(sender)
@@ -714,5 +719,13 @@ final class PanelDelegate: NSObject, NSWindowDelegate {
 
     func windowDidResize(_ notification: Notification) {
         if let window = notification.object as? NSWindow { didMoveOrResize(window) }
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        if let window = notification.object as? NSWindow { didChangeKey(window, true) }
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        if let window = notification.object as? NSWindow { didChangeKey(window, false) }
     }
 }

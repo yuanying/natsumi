@@ -176,41 +176,136 @@ struct UIMediatorTests {
         #expect(props(mediator).balloon?.outline == .thought)
     }
 
-    @Test("本文のクリックは全文を出すだけで、× が 1 件ずつ既読にして次を前に出す")
+    @Test("本文のクリックは全文を出すだけで、× が最後の返事まで既読にし、既読になった吹き出しは消える")
     func readReplies() {
         var mediator = synced(
-            messages: [Fixture.message("r1"), Fixture.message("r2")], readThrough: nil, unread: 2)
+            messages: [Fixture.message("r1"), Fixture.message("r2", text: "架空の返事")], readThrough: nil, unread: 2)
         #expect(props(mediator).balloon?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.maxLines, isExpanded: false, showsHistoryLink: false, more: 1,
+            text: "架空の返事", lineLimit: BalloonText.maxLines, isExpanded: false, showsHistoryLink: false, unread: 2,
             help: "クリックで全文を出す")))
-        #expect(props(mediator).balloon?.closeHelp == "この返事を既読にして次へ")
+        #expect(props(mediator).balloon?.closeHelp == "既読にして閉じる")
 
         // Expanding tells the server nothing: only the × reads.
         let expanded = mediator.handle(.balloonTextClicked)
         #expect(sent(expanded).isEmpty)
         #expect(props(mediator).balloon?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.expandedMaxLines, isExpanded: true, showsHistoryLink: false,
-            more: 1, help: "クリックで畳む")))
+            text: "架空の返事", lineLimit: BalloonText.expandedMaxLines, isExpanded: true, showsHistoryLink: false,
+            unread: 2, help: "クリックで畳む")))
 
-        let one = mediator.handle(.balloonCloseClicked)
-        #expect(sent(one).count == 1)
+        let closed = mediator.handle(.balloonCloseClicked)
+        #expect(sent(closed).map(\.command) == [.conversationRead(throughMessageId: "r2")])
+        #expect(props(mediator).balloon == nil)
+        #expect(mediator.state.conversation.unreadReplyCount == 0)
+
+        // A newer reply is unread, so it comes forward.
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.message", seq: 2, payload: Fixture.message("r3", text: "次の返事"))))
         #expect(props(mediator).balloon?.body == .reply(ReplyProps(
-            text: "こんにちは", lineLimit: BalloonText.maxLines, isExpanded: false, showsHistoryLink: false, more: 0,
+            text: "次の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, unread: 1,
             help: "クリックで全文を出す")))
-        #expect(props(mediator).balloon?.closeHelp == "この返事を既読にして閉じる")
+    }
 
-        _ = mediator.handle(.balloonCloseClicked)
+    @Test("メニューの「返事をすべて既読にする」でも、吹き出しは消える")
+    func readAllClosesTheBalloon() {
+        var mediator = synced(messages: [Fixture.message("r1")], readThrough: nil, unread: 1)
+        #expect(sent(mediator.handle(.readAllRepliesRequested)).count == 1)
         #expect(props(mediator).balloon == nil)
     }
 
-    @Test("前に出ている返事が変わると、拡大は畳む")
-    func expandedFoldsWithTheFrontReply() {
-        var mediator = synced(
-            messages: [Fixture.message("r1"), Fixture.message("r2")], readThrough: nil, unread: 2)
+    @Test("ほかの端末で既読になれば、吹き出しは消える")
+    func readElsewhere() {
+        var mediator = synced(messages: [Fixture.message("r1")], readThrough: nil, unread: 1)
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.read", seq: 2, payload: ["readThroughMessageId": "r1", "unreadReplyCount": 0])))
+        #expect(props(mediator).balloon == nil)
+    }
+
+    @Test("最後の返事が変わると、拡大は畳む")
+    func expandedFoldsWithTheLastReply() {
+        var mediator = synced(messages: [Fixture.message("r1")], readThrough: nil, unread: 1)
         _ = mediator.handle(.balloonTextClicked)
         #expect(props(mediator).balloon?.body.isExpanded == true)
-        _ = mediator.handle(.balloonCloseClicked)
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.message", seq: 2, payload: Fixture.message("r2"))))
         #expect(props(mediator).balloon?.body.isExpanded == false)
+    }
+
+    // MARK: - Reading in the conversation window
+
+    /// A mediator with the conversation window open, its history unfolded, and the given rows seen in it.
+    private func reading(
+        messages: [[String: Any]], readThrough: String? = nil, unread: Int, key: Bool = true
+    ) -> UIMediator {
+        var mediator = synced(messages: messages, readThrough: readThrough, unread: unread)
+        _ = mediator.handle(.characterFrameChanged(character, visible: screen))
+        _ = mediator.handle(.historyOpenRequested)
+        if key { _ = mediator.handle(.conversationKeyChanged(true)) }
+        return mediator
+    }
+
+    @Test("履歴が開いていて key のウインドウに見えた返事は、見えている最後の返事まで既読にする")
+    func readWhatIsSeen() {
+        var mediator = reading(
+            messages: [Fixture.message("r1"), Fixture.message("r2"), Fixture.message("r3")], unread: 3)
+        #expect(sent(mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: true))).map(\.command)
+            == [.conversationRead(throughMessageId: "r1")])
+        #expect(sent(mediator.handle(.historyRowVisibilityChanged(messageId: "r2", isVisible: true))).map(\.command)
+            == [.conversationRead(throughMessageId: "r2")])
+        // A row going out of sight reads nothing, and neither does one already read.
+        #expect(sent(mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: false))).isEmpty)
+        #expect(mediator.state.conversation.unreadReplyCount == 1)
+
+        // A reply arriving while it can be seen is read as soon as its row shows.
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.message", seq: 2, payload: Fixture.message("r4"))))
+        #expect(sent(mediator.handle(.historyRowVisibilityChanged(messageId: "r4", isVisible: true))).map(\.command)
+            == [.conversationRead(throughMessageId: "r4")])
+        // Everything is read, and while the history is being read the balloon keeps out of the way anyway.
+        #expect(props(mediator).balloon == nil)
+    }
+
+    @Test("履歴を読んでいる間は、届いた返事を吹き出しに出さない。key でなくなれば出す")
+    func noBalloonWhileReading() {
+        var mediator = reading(messages: [Fixture.message("r1")], readThrough: "r1", unread: 0)
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.message", seq: 2, payload: Fixture.message("r2"))))
+        // The row has not been reported in sight yet, and still the balloon does not flash up.
+        #expect(props(mediator).balloon == nil)
+        _ = mediator.handle(.conversationKeyChanged(false))
+        #expect(props(mediator).balloon != nil)
+        // Folded to the input field alone, nothing is being read, so the balloon stays.
+        _ = mediator.handle(.conversationKeyChanged(true))
+        _ = mediator.handle(.historyToggleRequested)
+        #expect(props(mediator).balloon != nil)
+    }
+
+    @Test("ウインドウが key でない間は、見えていても既読にせず、key になったときに既読にする")
+    func readOnlyWhileKey() {
+        var mediator = reading(messages: [Fixture.message("r1"), Fixture.message("r2")], unread: 2, key: false)
+        #expect(sent(mediator.handle(.historyRowVisibilityChanged(messageId: "r2", isVisible: true))).isEmpty)
+        #expect(sent(mediator.handle(.conversationKeyChanged(true))).map(\.command)
+            == [.conversationRead(throughMessageId: "r2")])
+        _ = mediator.handle(.conversationKeyChanged(false))
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.message", seq: 2, payload: Fixture.message("r3"))))
+        #expect(sent(mediator.handle(.historyRowVisibilityChanged(messageId: "r3", isVisible: true))).isEmpty)
+        #expect(mediator.state.conversation.unreadReplyCount == 1)
+    }
+
+    @Test("履歴を畳んだり、ウインドウを消したりすると、見えていた行は忘れる")
+    func foldingForgetsTheRows() {
+        var mediator = reading(messages: [Fixture.message("r1")], unread: 1, key: false)
+        _ = mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: true))
+        _ = mediator.handle(.historyToggleRequested)
+        #expect(sent(mediator.handle(.conversationKeyChanged(true))).isEmpty)
+
+        _ = mediator.handle(.historyToggleRequested)
+        _ = mediator.handle(.conversationKeyChanged(false))
+        _ = mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: true))
+        _ = mediator.handle(.conversationCloseRequested)
+        _ = mediator.handle(.talkRequested)
+        #expect(sent(mediator.handle(.conversationKeyChanged(true))).isEmpty)
+        #expect(mediator.state.conversation.unreadReplyCount == 1)
     }
 
     @Test("拡大しているのは一度に 1 件で、別の本文を開くと前のは畳む")

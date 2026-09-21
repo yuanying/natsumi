@@ -94,6 +94,10 @@ public enum UIEvent: Equatable, Sendable {
     /// Where the window is and which screen it is on, after the owner moved or resized it, or after the screen
     /// gave it less than was asked for.
     case conversationFrameChanged(CGRect, visible: CGRect)
+    /// The window became the key window, or stopped being it.
+    case conversationKeyChanged(Bool)
+    /// A row of the unfolded history came into sight or went out of it.
+    case historyRowVisibilityChanged(messageId: String, isVisible: Bool)
 
     // MARK: The menus and the settings
 
