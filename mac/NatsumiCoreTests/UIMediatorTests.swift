@@ -586,4 +586,88 @@ struct UIMediatorTests {
         var mediator = launched()
         #expect(mediator.handle(.quitRequested) == [.terminate])
     }
+
+    // MARK: - The global shortcut
+
+    @Test("起動したら覚えているショートカットを登録する。「なし」なら登録しない")
+    func registersTheShortcutAtLaunch() {
+        var mediator = UIMediator()
+        let effects = mediator.handle(.launched(LaunchInfo(
+            characterScale: .default, serverOrigin: nil, avatarDirectory: "/a", defaultAvatarDirectory: "/a")))
+        #expect(effects.contains(.registerHotKey(.default)))
+        #expect(props(mediator).settings.hotKey == "⌃⌥N")
+
+        var none = UIMediator()
+        let quiet = none.handle(.launched(LaunchInfo(
+            characterScale: .default, hotKey: nil, serverOrigin: nil, avatarDirectory: "/a",
+            defaultAvatarDirectory: "/a")))
+        #expect(!quiet.contains { if case .registerHotKey = $0 { true } else { false } })
+        #expect(props(none).settings.hotKey == "なし")
+    }
+
+    @Test("ショートカットで会話のウインドウを出して入力欄に焦点を移す。出ていれば消さずに前に出して焦点を移す")
+    func shortcutShowsTheConversation() {
+        var mediator = placed()
+        let opened = mediator.handle(.hotKeyPressed)
+        #expect(props(mediator).conversation != nil)
+        #expect(opened.first == .focusInput)
+        #expect(mediator.handle(.hotKeyPressed) == [.focusInput])
+        #expect(props(mediator).conversation != nil)
+    }
+
+    @Test("記録を始めると登録を外し、押したキーを保存して登録し直す")
+    func recordsAShortcut() {
+        var mediator = launched()
+        _ = mediator.handle(.settingsOpenRequested)
+        #expect(mediator.handle(.hotKeyRecordingRequested) == [.registerHotKey(nil)])
+        #expect(props(mediator).settings.isRecordingHotKey)
+        let key = HotKey(keyCode: 49, modifiers: [.command, .option])
+        #expect(mediator.handle(.hotKeyRecorded(key)) == [.saveHotKey(key), .registerHotKey(key)])
+        #expect(!props(mediator).settings.isRecordingHotKey)
+        #expect(props(mediator).settings.hotKey == "⌥⌘Space")
+        // Nothing is recorded while not recording.
+        #expect(mediator.handle(.hotKeyRecorded(.default)).isEmpty)
+    }
+
+    @Test("⌘・⌃・⌥ の無いキーは受け付けず、記録を続ける")
+    func rejectsAnUnusableShortcut() {
+        var mediator = launched()
+        _ = mediator.handle(.hotKeyRecordingRequested)
+        #expect(mediator.handle(.hotKeyRecorded(HotKey(keyCode: HotKey.KeyCode.n, modifiers: [.shift]))).isEmpty)
+        #expect(props(mediator).settings.isRecordingHotKey)
+        #expect(props(mediator).settings.hotKeyMessage == "⌘・⌃・⌥ のどれかと組み合わせてください")
+    }
+
+    @Test("記録をやめる（Esc・設定を閉じる）と元のショートカットを登録し直す")
+    func cancelsRecording() {
+        var mediator = launched()
+        _ = mediator.handle(.hotKeyRecordingRequested)
+        #expect(mediator.handle(.hotKeyRecordingCancelled) == [.registerHotKey(.default)])
+        #expect(!props(mediator).settings.isRecordingHotKey)
+        #expect(mediator.handle(.hotKeyRecordingCancelled).isEmpty)
+
+        _ = mediator.handle(.hotKeyRecordingRequested)
+        #expect(mediator.handle(.settingsCloseRequested) == [.registerHotKey(.default), .hideSettings])
+    }
+
+    @Test("「なし」で外し、「既定に戻す」で ⌃⌥N に戻す")
+    func clearsAndResets() {
+        var mediator = launched()
+        #expect(!props(mediator).settings.canResetHotKey)
+        #expect(mediator.handle(.hotKeyCleared) == [.saveHotKey(nil), .registerHotKey(nil)])
+        #expect(props(mediator).settings.hotKey == "なし")
+        #expect(!props(mediator).settings.canClearHotKey)
+        #expect(mediator.handle(.hotKeyResetRequested) == [.saveHotKey(.default), .registerHotKey(.default)])
+        #expect(props(mediator).settings.hotKey == "⌃⌥N")
+    }
+
+    @Test("ほかのアプリが使っていて登録できなければ、設定にそう出す。次に登録できれば消す")
+    func reportsAFailedRegistration() {
+        var mediator = launched()
+        #expect(mediator.handle(.hotKeyRegistrationFailed(.default)).isEmpty)
+        #expect(props(mediator).settings.hotKeyMessage == "⌃⌥N はほかのアプリが使っているため登録できませんでした")
+        _ = mediator.handle(.hotKeyRecordingRequested)
+        _ = mediator.handle(.hotKeyRecorded(HotKey(keyCode: 49, modifiers: [.control])))
+        #expect(props(mediator).settings.hotKeyMessage == nil)
+    }
 }

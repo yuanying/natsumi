@@ -46,8 +46,10 @@ final class ConversationComponent: Component {
             height: props.history == nil ? ConversationWindow.minFoldedHeight : ConversationWindow.minUnfoldedHeight)
     }
 
-    /// Puts the caret in the text field.
+    /// Brings the window to the front of its layer and puts the caret in the text field. The app stays where it is:
+    /// the panel takes the keys without making the app the active one.
     func focus() {
+        panel.orderFrontRegardless()
         panel.makeKey()
         if let text = panel.contentView?.descendant(withIdentifier: InputTextView.identifier) {
             panel.makeFirstResponder(text)

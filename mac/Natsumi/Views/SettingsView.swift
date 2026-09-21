@@ -46,6 +46,25 @@ struct SettingsView: View {
                         }
                     }
                 }
+                Section("ショートカット") {
+                    LabeledContent("会話のウインドウを出す") {
+                        HStack {
+                            Button(props.isRecordingHotKey ? "キーを押してください…" : props.hotKey) {
+                                send(props.isRecordingHotKey ? .hotKeyRecordingCancelled : .hotKeyRecordingRequested)
+                            }
+                            .monospacedDigit()
+                            Button("なし") { send(.hotKeyCleared) }
+                                .disabled(!props.canClearHotKey)
+                            Button("既定に戻す") { send(.hotKeyResetRequested) }
+                                .disabled(!props.canResetHotKey)
+                        }
+                    }
+                    if let message = props.hotKeyMessage {
+                        Text(message).font(.caption).foregroundStyle(.red)
+                    }
+                    Text("どのアプリを使っていても効きます。ほかのアプリの同じショートカットより優先されます。ボタンを押してから、新しい組み合わせを押してください（Esc でやめる）。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("アバター") {
                     TextField("アセットのディレクトリ", text: $avatarPath)
                     Text(props.avatarDescription).font(.caption).foregroundStyle(.secondary)

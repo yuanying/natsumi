@@ -309,10 +309,18 @@ public struct SettingsProps: Equatable, Sendable {
     public var scale: CharacterScale
     public var avatarDirectory: String
     public var avatarDescription: String
+    /// The global shortcut as the menus write it, or "なし".
+    public var hotKey: String
+    public var isRecordingHotKey: Bool
+    public var hotKeyMessage: String?
+    public var canClearHotKey: Bool
+    public var canResetHotKey: Bool
 
     public init(
         serverOrigin: String, message: String?, statusText: String, lastError: String?, canLogin: Bool,
-        canLogout: Bool, scale: CharacterScale, avatarDirectory: String, avatarDescription: String
+        canLogout: Bool, scale: CharacterScale, avatarDirectory: String, avatarDescription: String,
+        hotKey: String = HotKey.default.displayName, isRecordingHotKey: Bool = false, hotKeyMessage: String? = nil,
+        canClearHotKey: Bool = true, canResetHotKey: Bool = false
     ) {
         self.serverOrigin = serverOrigin
         self.message = message
@@ -323,6 +331,11 @@ public struct SettingsProps: Equatable, Sendable {
         self.scale = scale
         self.avatarDirectory = avatarDirectory
         self.avatarDescription = avatarDescription
+        self.hotKey = hotKey
+        self.isRecordingHotKey = isRecordingHotKey
+        self.hotKeyMessage = hotKeyMessage
+        self.canClearHotKey = canClearHotKey
+        self.canResetHotKey = canResetHotKey
     }
 }
 
@@ -575,7 +588,10 @@ public enum UIProps {
             serverOrigin: state.serverOrigin ?? "", message: state.settingsMessage, statusText: state.status.text,
             lastError: state.lastError, canLogin: state.status == .needsLogin, canLogout: state.hasSession,
             scale: state.characterScale, avatarDirectory: state.avatarDirectory,
-            avatarDescription: state.avatarDescription)
+            avatarDescription: state.avatarDescription,
+            hotKey: state.hotKey?.displayName ?? "なし", isRecordingHotKey: state.isRecordingHotKey,
+            hotKeyMessage: state.hotKeyMessage, canClearHotKey: state.hotKey != nil,
+            canResetHotKey: state.hotKey != .default)
     }
 
     static func menu(_ state: UIState) -> MenuProps {
