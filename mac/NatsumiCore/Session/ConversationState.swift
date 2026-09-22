@@ -76,6 +76,16 @@ public struct ConversationState: Equatable, Sendable {
         messages.last { $0.kind == .reply }
     }
 
+    /// Whether `message` came while natsumi is handling what the owner said: after the oldest owner message still
+    /// waiting for her (ADR 0025). Nothing did when she is not handling anything, or when that message is older than
+    /// `messages` and there is nothing to compare with.
+    public func isFromCurrentHandling(_ message: ShownMessage) -> Bool {
+        guard let start = messages.firstIndex(where: { $0.eventId.map { pendingEvents[$0] != nil } ?? false }),
+            let index = messages.lastIndex(where: { $0.messageId == message.messageId })
+        else { return false }
+        return index > start
+    }
+
     /// Unread replies in `messages`, oldest first.
     public var unreadReplies: [ShownMessage] {
         messages[(readIndex + 1)...].filter { $0.kind == .reply }

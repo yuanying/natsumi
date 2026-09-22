@@ -61,8 +61,10 @@ struct NoticeFlowTests {
         #expect(props(m).character.badge?.count == 1)
 
         receive("conversation.message", Fixture.message("m2", text: "架空の返事", replyTo: "e1"))
-        // Her reply waits behind the bubble until she has finished with the event.
-        #expect(props(m).balloon?.body == .thinking(ThinkingProps(label: "考え中", line: "知らせを送ろう")))
+        // Her reply comes out at once, with what she is still thinking under it (ADR 0025).
+        #expect(props(m).balloon?.body == .reply(ReplyProps(
+            text: "架空の返事", lineLimit: BalloonText.maxLines, showsHistoryLink: false, unread: 1,
+            help: "クリックで全文を出す", thinking: ThinkingProps(label: "考え中", line: "知らせを送ろう"))))
         receive("conversation.event.completed", ["eventId": "e1", "messageId": "m1", "status": "replied"])
         #expect(m.state.conversation.thinkingLine == nil)
         #expect(props(m).balloon?.body == .reply(ReplyProps(

@@ -70,6 +70,16 @@ struct BalloonView: View {
                 }
                 .buttonStyle(.plain)
                 .help(reply.help)
+                // She is still at it after saying this: what she is thinking goes under what she said, in grey and
+                // one line high, so the reply stays in front (ADR 0025).
+                if let thinking = reply.thinking {
+                    HStack(spacing: 4 * scale) {
+                        Image(systemName: "cloud")
+                            .font(.system(size: 10 * scale))
+                            .foregroundStyle(Comic.faint)
+                        ThinkingLine(props: thinking, scale: scale)
+                    }
+                }
                 // The same footer as the notices: the count first, under the text. A reply is shown only while it
                 // is unread, so there is always a count (ADR 0022).
                 HStack(spacing: 8 * scale) {
