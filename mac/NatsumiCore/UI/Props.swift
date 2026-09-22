@@ -227,6 +227,21 @@ public struct FailureProps: Equatable, Sendable, Identifiable {
     public var id: String { requestId }
 }
 
+/// The face beside one of her lines in the history: the feeling she put into it (ADR 0026).
+public struct FaceProps: Equatable, Sendable {
+    /// nil when the feeling is not known. That is not neutral: it is drawn as her neutral face, faded.
+    public var expression: Expression?
+    /// Her newest line has the larger face.
+    public var isLarge: Bool
+    public var help: String
+
+    public init(expression: Expression?, isLarge: Bool, help: String) {
+        self.expression = expression
+        self.isLarge = isLarge
+        self.help = help
+    }
+}
+
 public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var messageId: String
     public var text: String
@@ -236,14 +251,20 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var isNotice: Bool
     /// An unread reply or a notice not checked yet. A reply is read once its row is seen in the key window.
     public var isUnread: Bool
+    /// nil on the owner's messages.
+    public var face: FaceProps?
 
-    public init(messageId: String, text: String, time: String?, isOwner: Bool, isNotice: Bool, isUnread: Bool) {
+    public init(
+        messageId: String, text: String, time: String?, isOwner: Bool, isNotice: Bool, isUnread: Bool,
+        face: FaceProps? = nil
+    ) {
         self.messageId = messageId
         self.text = text
         self.time = time
         self.isOwner = isOwner
         self.isNotice = isNotice
         self.isUnread = isUnread
+        self.face = face
     }
 
     public var id: String { messageId }
@@ -269,11 +290,14 @@ public struct HistoryProps: Equatable, Sendable {
     public var rows: [HistoryRowProps]
     public var outgoing: [OutgoingRowProps]
     public var isThinking: Bool
+    /// Where the faces are drawn from.
+    public var avatar: AvatarArt
 
-    public init(rows: [HistoryRowProps], outgoing: [OutgoingRowProps], isThinking: Bool) {
+    public init(rows: [HistoryRowProps], outgoing: [OutgoingRowProps], isThinking: Bool, avatar: AvatarArt = .placeholder) {
         self.rows = rows
         self.outgoing = outgoing
         self.isThinking = isThinking
+        self.avatar = avatar
     }
 }
 
@@ -578,7 +602,7 @@ public enum UIProps {
         return ConversationProps(
             frame: window.frame ?? CGRect(origin: .zero, size: window.size), foldedHeight: window.foldedHeight,
             status: statusRow(state.status),
-            history: window.showsHistory ? history(conversation, time: time) : nil,
+            history: window.showsHistory ? history(conversation, time: time, avatar: state.avatar) : nil,
             failures: window.showsHistory ? [] : failures(conversation),
             toggleHelp: window.showsHistory ? "履歴をとじる（⌘L）" : "履歴をひらく（⌘L）")
     }
@@ -594,15 +618,20 @@ public enum UIProps {
         }
     }
 
-    public static func history(_ conversation: ConversationState, time: MessageTime) -> HistoryProps {
+    public static func history(
+        _ conversation: ConversationState, time: MessageTime, avatar: AvatarArt = .placeholder
+    ) -> HistoryProps {
         let times = time.labels(conversation.messages.map(\.date))
         let unread = conversation.unreadFlags
+        let newest = conversation.messages.lastIndex { $0.role == .natsumi }
         return HistoryProps(
             rows: conversation.messages.indices.map { index in
                 let message = conversation.messages[index]
+                let face = message.role == .owner ? nil : FaceProps(
+                    expression: message.expression, isLarge: index == newest, help: feelingHelp(message.expression))
                 return HistoryRowProps(
                     messageId: message.messageId, text: message.text, time: times[index],
-                    isOwner: message.role == .owner, isNotice: message.isNotice, isUnread: unread[index])
+                    isOwner: message.role == .owner, isNotice: message.isNotice, isUnread: unread[index], face: face)
             },
             outgoing: conversation.outbox.map { item in
                 let failure: String? = switch item.status {
@@ -611,7 +640,23 @@ public enum UIProps {
                 }
                 return OutgoingRowProps(requestId: item.requestId, text: item.text, failure: failure)
             },
-            isThinking: conversation.isThinking)
+            isThinking: conversation.isThinking, avatar: avatar)
+    }
+
+    /// What the face says when the pointer rests on it.
+    static func feelingHelp(_ expression: Expression?) -> String {
+        guard let expression else { return "気持ちの記録なし" }
+        let name = switch expression {
+        case .neutral: "ふつう"
+        case .happy: "うれしい"
+        case .laughing: "楽しい"
+        case .surprised: "びっくり"
+        case .thinking: "考え中"
+        case .worried: "心配"
+        case .sad: "かなしい"
+        case .sleepy: "ねむい"
+        }
+        return "気持ち: \(name)"
     }
 
     static func settings(_ state: UIState) -> SettingsProps {
