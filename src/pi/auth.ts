@@ -47,7 +47,9 @@ export function compatibleProvider(endpoint: CompatibleEndpoint): Parameters<Mod
     name: 'OpenAI-compatible endpoint', baseUrl: endpoint.baseUrl, api: 'openai-completions',
     models: [{
       id: endpoint.model, name: endpoint.model, reasoning: true, input: ['text'],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 4096,
+      // Pi caps a compaction summary at the smaller of this and its own summary budget (80% of a 16384-token reserve),
+      // and thinking spends the same tokens. At 4096 a summary stopped at the cap and no compaction ever succeeded.
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 16_384,
       // Qwen-style chat templates: Pi's thinking level becomes chat_template_kwargs.enable_thinking (off → false).
       compat: { supportsDeveloperRole: false, supportsReasoningEffort: false, supportsStore: false, maxTokensField: 'max_tokens',
         thinkingFormat: 'qwen-chat-template' },
