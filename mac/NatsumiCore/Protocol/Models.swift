@@ -34,10 +34,13 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
     public let replyTo: String?
     /// The events a notice is about.
     public let about: [String]?
+    /// The feeling natsumi put into one of her lines (ADR 0026). nil on the owner's messages, on her lines from
+    /// before the server kept it, and when the value is not one this app knows: all of them read as not known.
+    public let expression: Expression?
 
     public init(
         messageId: String, role: Role, kind: Kind, text: String, createdAt: String,
-        eventId: String? = nil, replyTo: String? = nil, about: [String]? = nil
+        eventId: String? = nil, replyTo: String? = nil, about: [String]? = nil, expression: Expression? = nil
     ) {
         self.messageId = messageId
         self.role = role
@@ -48,10 +51,11 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
         self.eventId = eventId
         self.replyTo = replyTo
         self.about = about
+        self.expression = expression
     }
 
     private enum CodingKeys: String, CodingKey {
-        case messageId, role, kind, text, createdAt, eventId, replyTo, about
+        case messageId, role, kind, text, createdAt, eventId, replyTo, about, expression
     }
 
     public init(from decoder: Decoder) throws {
@@ -62,7 +66,10 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
             createdAt: try values.decode(String.self, forKey: .createdAt),
             eventId: try values.decodeIfPresent(String.self, forKey: .eventId),
             replyTo: try values.decodeIfPresent(String.self, forKey: .replyTo),
-            about: try values.decodeIfPresent([String].self, forKey: .about))
+            about: try values.decodeIfPresent([String].self, forKey: .about),
+            // Read as a string first: a feeling added on the server later must not lose the line.
+            expression: (try? values.decodeIfPresent(String.self, forKey: .expression)).flatMap { $0 }
+                .flatMap(Expression.init(rawValue:)))
     }
 
     public var id: String { messageId }
