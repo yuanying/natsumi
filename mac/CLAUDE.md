@@ -8,6 +8,7 @@
 画面に出るもの（配置・見た目・キーボード・未読と知らせの扱い）の仕様は [ADR 0010](../docs/adr/0010-mac-app-structure.md)
 （会話のウインドウは [ADR 0021](../docs/adr/0021-the-input-and-the-history-in-one-window.md)、
 返事の吹き出しと既読になるできごとは [ADR 0022](../docs/adr/0022-only-her-last-line-in-the-balloon.md)、
+考え続けている間の返事の吹き出しは [ADR 0025](../docs/adr/0025-her-reply-stays-while-she-keeps-thinking.md)、
 どこからでも会話のウインドウを出すショートカットは [ADR 0023](../docs/adr/0023-a-global-shortcut-for-the-conversation-window.md)）、
 この構造そのものの理由は [ADR 0015](../docs/adr/0015-mac-ui-passive-view-tree.md) にある。
 

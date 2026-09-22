@@ -99,9 +99,13 @@ public struct ReplyProps: Equatable, Sendable {
     /// "未読 N 件": every unread reply, this one included.
     public var unread: Int
     public var help: String
+    /// She is still handling what the owner said after sending this: what she is thinking, in one line under the
+    /// text (ADR 0025). nil when she has finished, or when the owner closed the thought bubble for this handling.
+    public var thinking: ThinkingProps?
 
     public init(
-        text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, unread: Int, help: String
+        text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, unread: Int, help: String,
+        thinking: ThinkingProps? = nil
     ) {
         self.text = text
         self.lineLimit = lineLimit
@@ -109,6 +113,7 @@ public struct ReplyProps: Equatable, Sendable {
         self.showsHistoryLink = showsHistoryLink
         self.unread = unread
         self.help = help
+        self.thinking = thinking
     }
 }
 
@@ -371,13 +376,20 @@ public struct RootProps: Equatable, Sendable {
     public var isSettingsOpen: Bool
 
     /// The same parameters with the line of thinking taken out: what the column is laid out from. The thought
-    /// bubble holds one line at its own width whatever that line says, so a new line settles nothing and the
-    /// layout is not worked out again for it (ADR 0017).
+    /// bubble, and the thinking row under a reply, hold one line at their own width whatever that line says, so a
+    /// new line settles nothing and the layout is not worked out again for it (ADR 0017, ADR 0025).
     public var withoutThinkingLine: RootProps {
-        guard case .thinking(var thinking) = balloon?.body, thinking.line != nil else { return self }
-        thinking.line = nil
         var copy = self
-        copy.balloon?.body = .thinking(thinking)
+        switch balloon?.body {
+        case .thinking(var thinking) where thinking.line != nil:
+            thinking.line = nil
+            copy.balloon?.body = .thinking(thinking)
+        case .reply(var reply) where reply.thinking?.line != nil:
+            reply.thinking?.line = nil
+            copy.balloon?.body = .reply(reply)
+        default:
+            return self
+        }
         return copy
     }
 }
@@ -452,10 +464,19 @@ public enum UIProps {
             badge: badge)
     }
 
-    /// What the balloon says: her last reply while it is unread, one only (ADR 0022). While natsumi is receiving or
-    /// handling something, the bubble is hers: the reply waits behind it and comes back when she has finished
-    /// (ADR 0017). While the owner is reading the history, the reply is left to the window, so that one arriving
-    /// there does not flash up here before it is read.
+    /// The reply the balloon says out loud, if it says one. While natsumi is receiving or handling something, only a
+    /// reply she sent during that handling is said; one left from before waits until she has finished, so that the
+    /// owner can tell which one answers them (ADR 0017, ADR 0025). While the owner is reading the history, the reply
+    /// is left to the window, so that one arriving there does not flash up here before it is read.
+    public static func shownReply(_ conversation: ConversationState, readingHistory: Bool) -> ShownMessage? {
+        guard !readingHistory, let last = unreadReply(conversation) else { return nil }
+        guard indicator(conversation) == nil || conversation.isFromCurrentHandling(last) else { return nil }
+        return last
+    }
+
+    /// What the balloon says: her last reply while it is unread, one only (ADR 0022), with what she is thinking under
+    /// it while she is still handling something (ADR 0025). Otherwise, while she is receiving or handling something,
+    /// the thought bubble (ADR 0017).
     public static func balloon(
         _ conversation: ConversationState, dismissed: Bool, readingHistory: Bool = false,
         expanded: ExpandedCard? = nil, placement: ColumnPlacement, scale: CharacterScale
@@ -468,20 +489,23 @@ public enum UIProps {
                 width: width, textScale: scale.textScale, panelHeight: placement.balloonHeight,
                 closeHelp: closeHelp)
         }
-        if let indicator = indicator(conversation) {
-            guard !dismissed else { return nil }
-            let thinking = ThinkingProps(
-                label: indicator == .receiving ? "受付中" : "考え中", line: conversation.thinkingLine)
+        // The × on the thought bubble closes what she is thinking, not what she says (ADR 0025).
+        let thinking = indicator(conversation).flatMap { indicator in
+            dismissed
+                ? nil
+                : ThinkingProps(label: indicator == .receiving ? "受付中" : "考え中", line: conversation.thinkingLine)
+        }
+        guard let last = shownReply(conversation, readingHistory: readingHistory) else {
+            guard let thinking else { return nil }
             return props(
                 body: .thinking(thinking), outline: .thought, width: placement.width, closeHelp: "閉じる")
         }
-        guard !readingHistory, let last = unreadReply(conversation) else { return nil }
         let isExpanded = expanded == .reply(last.messageId)
         let shown = card(last.text, isExpanded: isExpanded, budget: placement.budget)
         let reply = ReplyProps(
             text: shown.text, lineLimit: shown.lineLimit, isExpanded: isExpanded,
             showsHistoryLink: shown.showsHistoryLink, unread: conversation.unreadReplyCount,
-            help: isExpanded ? "クリックで畳む" : "クリックで全文を出す")
+            help: isExpanded ? "クリックで畳む" : "クリックで全文を出す", thinking: thinking)
         return props(
             body: .reply(reply), outline: .speech, width: isExpanded ? placement.expandedWidth : placement.width,
             closeHelp: "既読にして閉じる")

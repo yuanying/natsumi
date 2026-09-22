@@ -340,17 +340,45 @@ struct UIMediatorTests {
         _ = mediator.handle(.balloonCloseClicked)
         #expect(props(mediator).balloon == nil)
 
-        // One handling is one thing she is saying: the lines that follow, and the reply she sends, stay hidden.
+        // One handling is one thing she is thinking: the lines that follow stay hidden.
         _ = mediator.handle(.socketReceived(Fixture.thinking("考えている", seq: 2)))
         #expect(props(mediator).balloon == nil)
+        // What she says is not what was closed: the reply comes, without her thinking under it (ADR 0025).
         _ = mediator.handle(.socketReceived(Fixture.envelope(
             "conversation.message", seq: 3, payload: Fixture.message("r3", text: "架空の返事", replyTo: "e2"))))
-        #expect(props(mediator).balloon == nil)
+        guard case .reply(let reply) = props(mediator).balloon?.body else { Issue.record("返事が出ていない"); return }
+        #expect(reply.thinking == nil)
 
-        // It is over when she has nothing left to handle, and the unread reply comes forward.
+        // Reading it while she is still at it leaves nothing: the thought bubble stays closed.
+        _ = mediator.handle(.balloonCloseClicked)
+        #expect(props(mediator).balloon == nil)
+    }
+
+    @Test("考えている間に届いた返事は、考えている 1 行を下に付けて出し、× で既読にして考え中に戻る")
+    func replyWhileThinking() {
+        var mediator = synced(
+            messages: [Fixture.message("m1", role: "owner", kind: "message", eventId: "e1")],
+            readThrough: "m1")
         _ = mediator.handle(.socketReceived(Fixture.envelope(
-            "conversation.event.completed", seq: 4, payload: ["eventId": "e2", "messageId": "m2", "status": "replied"])))
-        if case .reply = props(mediator).balloon?.body {} else { Issue.record("返事が出ていない") }
+            "conversation.message", seq: 2,
+            payload: Fixture.message("m2", role: "owner", kind: "message", eventId: "e2"))))
+        _ = mediator.handle(.socketReceived(Fixture.envelope(
+            "conversation.message", seq: 3, payload: Fixture.message("r3", text: "架空の返事", replyTo: "e2"))))
+        _ = mediator.handle(.socketReceived(Fixture.thinking("記憶に書いておく", seq: 3)))
+
+        let shown = props(mediator)
+        #expect(shown.balloon?.outline == .speech)
+        guard case .reply(let reply) = shown.balloon?.body else { Issue.record("返事が出ていない"); return }
+        #expect(reply.text == "架空の返事")
+        #expect(reply.thinking == ThinkingProps(label: "考え中", line: "記憶に書いておく"))
+        // The column is laid out without the line: a new one settles nothing.
+        guard case .reply(let laidOut) = shown.withoutThinkingLine.balloon?.body else { Issue.record("返事が無い"); return }
+        #expect(laidOut.thinking == ThinkingProps(label: "考え中", line: nil))
+
+        // The × reads the reply, and she is still thinking.
+        let effects = mediator.handle(.balloonCloseClicked)
+        #expect(sent(effects).map(\.command) == [.conversationRead(throughMessageId: "r3")])
+        #expect(props(mediator).balloon?.body == .thinking(ThinkingProps(label: "考え中", line: "記憶に書いておく")))
     }
 
     @Test("閉じた「受付中」は、続けて始まった「考え中」でも出し直さない")

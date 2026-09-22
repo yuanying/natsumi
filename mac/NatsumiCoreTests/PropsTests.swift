@@ -191,7 +191,7 @@ struct PropsTests {
         #expect(StackBudget.expandedSteps.map(\.lines) == StackBudget.expandedSteps.map(\.lines).sorted(by: >))
     }
 
-    @Test("処理待ちがある間は、未読の返事があっても考え中の吹き出しに切り替える")
+    @Test("処理待ちがある間は、処理の前からの未読の返事を隠して考え中の吹き出しに切り替える")
     func indicators() {
         var state = conversation([reply("r0")], readThrough: "r0")
         state.enqueue(text: "やあ", requestId: "q1")
@@ -206,13 +206,56 @@ struct PropsTests {
         state.apply(.message(notice("n1")))
         #expect(balloon(state)?.body == thinking("考え中"))
 
-        // The reply she just sent waits its turn: while she is still working, the bubble is hers (ADR 0017).
+        // A reply left from before she began waits: it is not the answer the owner is waiting for (ADR 0025).
+        var old = conversation([reply("r0")], unread: 1)
+        old.enqueue(text: "やあ", requestId: "q1")
+        #expect(balloon(old)?.body == thinking("受付中"))
+        old.apply(.accepted(CommandAccepted(messageId: "m1", eventId: "e1", state: .processing)), requestId: "q1")
+        old.apply(.message(owner("m1", event: "e1")))
+        #expect(balloon(old)?.body == thinking("考え中"))
+        old.apply(.eventCompleted(EventCompletion(eventId: "e1", messageId: "m1", status: .noReply, reason: nil)))
+        #expect(balloon(old)?.outline == .speech)
+        if case .reply = balloon(old)?.body {} else { Issue.record("返事に戻っていない") }
+    }
+
+    @Test("処理の中で届いた返事は出し、その下に考えている 1 行を足す")
+    func replyWhileThinking() {
+        var state = conversation(
+            [reply("r0"), owner("m1", event: "e1")], readThrough: "r0",
+            pending: [PendingEvent(eventId: "e1", messageId: "m1", state: .processing)])
+        state.apply(.thinking(line: "まず要点を整理する"))
+        #expect(balloon(state)?.body == thinking("考え中", line: "まず要点を整理する"))
+
         state.apply(.message(reply("r2", to: "e1")))
-        #expect(balloon(state)?.body == thinking("考え中"))
+        #expect(UIProps.shownReply(state, readingHistory: false)?.messageId == "r2")
+        let props = balloon(state)
+        #expect(props?.outline == .speech)
+        #expect(props?.closeHelp == "既読にして閉じる")
+        guard case .reply(let shown) = props?.body else { Issue.record("返事が出ていない"); return }
+        #expect(shown.text == "こんにちは")
+        #expect(shown.thinking == ThinkingProps(label: "考え中", line: "まず要点を整理する"))
+
+        // Closing the thought bubble for this handling takes the row away, not the reply.
+        guard case .reply(let closed) = balloon(state, dismissed: true)?.body else { Issue.record("返事が出ていない"); return }
+        #expect(closed.thinking == nil)
+
+        // When she has finished, the row goes and the reply stays.
         state.apply(.eventCompleted(EventCompletion(eventId: "e1", messageId: "m1", status: .replied, reason: nil)))
-        #expect(UIProps.unreadReply(state)?.messageId == "r2")
-        #expect(balloon(state)?.outline == .speech)
-        if case .reply = balloon(state)?.body {} else { Issue.record("返事に戻っていない") }
+        guard case .reply(let done) = balloon(state)?.body else { Issue.record("返事が出ていない"); return }
+        #expect(done.thinking == nil)
+    }
+
+    @Test("処理の中で届いたかどうかは、処理待ちの最も古い本人のメッセージより後ろかで決める")
+    func fromCurrentHandling() {
+        let state = conversation(
+            [reply("r0"), owner("m1", event: "e1"), reply("r2", to: "e1"), owner("m3", event: "e3"), reply("r4", to: "e3")],
+            pending: [PendingEvent(eventId: "e3", messageId: "m3", state: .processing)])
+        #expect(!state.isFromCurrentHandling(reply("r0")))
+        #expect(!state.isFromCurrentHandling(reply("r2", to: "e1")))
+        #expect(state.isFromCurrentHandling(reply("r4", to: "e3")))
+        // Nothing is being handled: nothing came during it.
+        let idle = conversation([owner("m1", event: "e1"), reply("r2", to: "e1")])
+        #expect(!idle.isFromCurrentHandling(reply("r2", to: "e1")))
     }
 
     @Test("思考の行が届けば行を出し、無ければ点滅のままにする")
@@ -234,7 +277,7 @@ struct PropsTests {
         #expect(balloon(state)?.body == thinking("考え中"))
     }
 
-    @Test("閉じた印は出さないが、考え中を閉じても返事は出し続ける")
+    @Test("閉じた考え中は出さないが、未読の返事は出し続ける")
     func dismissed() {
         var working = conversation(
             [owner("m1", event: "e1")], readThrough: "m1",

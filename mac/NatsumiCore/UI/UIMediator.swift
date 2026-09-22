@@ -247,15 +247,14 @@ public struct UIMediator {
             return []
 
         case .balloonCloseClicked:
-            // On the thought bubble there is nothing to read, so the × only hides it, for the whole of the handling
-            // it belongs to (ADR 0017). On her last reply it reads everything up to it, and a read reply is not
-            // shown (ADR 0022).
-            guard UIProps.indicator(state.conversation) == nil else {
-                state.isIndicatorDismissed = true
-                return []
+            // On her last reply the × reads everything up to it, and a read reply is not shown (ADR 0022), even
+            // while she is still thinking under it (ADR 0025). On the thought bubble there is nothing to read, so the
+            // × only hides it, for the whole of the handling it belongs to (ADR 0017).
+            if let last = UIProps.shownReply(state.conversation, readingHistory: state.isReadingHistory) {
+                return apply(state.session.readReplies(through: last.messageId))
             }
-            guard let last = UIProps.unreadReply(state.conversation) else { return [] }
-            return apply(state.session.readReplies(through: last.messageId))
+            if UIProps.indicator(state.conversation) != nil { state.isIndicatorDismissed = true }
+            return []
 
         case .readAllRepliesRequested:
             return apply(state.session.confirmAllReplies())

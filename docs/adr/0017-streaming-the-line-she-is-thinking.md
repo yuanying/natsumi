@@ -1,7 +1,7 @@
 # 0017. 考えている 1 行を流し、考え中を吹き出しにする
 
 - Date: 2026-09-18
-- Status: Accepted
+- Status: Accepted（§8 の「処理中は未読の返事を隠す」と §9 の「その間に返事が届いても出し直さない」は、その処理の中で届いた返事について [ADR 0025](0025-her-reply-stays-while-she-keeps-thinking.md) で改訂）
 
 ## Context
 
