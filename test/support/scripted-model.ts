@@ -9,7 +9,7 @@ export const PRIVATE_DETAIL = 'synthetic private provider detail';
 export interface ScriptedCall { name: string; arguments: Record<string, unknown> }
 
 /** What one model call produces at once: hidden thinking, visible text (inner monologue) and tool calls, in that order. */
-export interface ScriptedStep { thinking?: string; text?: string; calls?: ScriptedCall[] }
+export interface ScriptedStep { thinking?: string; text?: string; calls?: ScriptedCall[]; finish?: 'stop' | 'length' | 'error' }
 
 export interface ScriptedReply {
   context: Context;
@@ -117,7 +117,7 @@ export class ScriptedModel {
       if (step.thinking) reply.think(step.thinking);
       if (step.text) reply.delta(step.text);
       for (const call of step.calls ?? []) reply.call(call.name, call.arguments);
-      reply.finish('stop');
+      reply.finish(step.finish ?? 'stop');
     }
     const waiter = this.waiting.shift();
     if (waiter) waiter(reply); else this.pending.push(reply);

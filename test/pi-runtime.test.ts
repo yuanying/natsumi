@@ -108,3 +108,24 @@ test('a missing key or login stops before any request, with no fallback to anoth
     assert.deepEqual(endpoint.authorizations, []);
   } finally { await f.cleanup(); await endpoint.close(); }
 });
+
+test('a compaction summary from a compatible endpoint may use all of Pi\'s summary budget, not only a turn\'s share', async () => {
+  const endpoint = await startEndpoint();
+  const f = await setup();
+  try {
+    const pi = f.config({ model: { provider: COMPATIBLE_PROVIDER, id: 'fixture-model' },
+      compatible: { baseUrl: endpoint.baseUrl, apiKey: { env: 'FIXTURE_PI_API_KEY' } } });
+    const { runtime, target } = await createModelRuntime(pi, { FIXTURE_PI_API_KEY: KEY });
+    const session = await openPiSession({ ...f.paths, modelRuntime: runtime, target, systemPrompt: 'fixture', thinkingLevel: 'medium',
+      keepRecentTokens: 1_000 });
+    try {
+      for (let i = 0; i < 4; i++) await session.prompt(`fictional ${i} ${'x'.repeat(4_000)}`, { expandPromptTemplates: false });
+      await session.compact();
+    } finally { session.dispose(); }
+    const summary = endpoint.bodies.find(body => JSON.stringify(body.messages?.[0]).includes('summar'));
+    assert.ok(summary, 'a summary was asked for');
+    // Pi gives a summary 80% of its 16384-token reserve. Thinking spends the same budget, and on a slow local model a
+    // summary cut at 4096 tokens stopped at the cap every time, so no compaction ever succeeded.
+    assert.equal(summary.max_tokens, Math.floor(0.8 * 16_384));
+  } finally { await f.cleanup(); await endpoint.close(); }
+});

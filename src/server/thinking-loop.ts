@@ -758,10 +758,10 @@ export class ThinkingLoop {
       await session.compact(COMPACTION_INSTRUCTIONS);
       this.compactionRetryAbove = undefined;
       this.log('thinking loop: the session was compacted');
-    } catch {
+    } catch (error) {
       // The session is unchanged; try again once the context has grown further.
       this.compactionRetryAbove = tokens + Math.floor(limit / 10);
-      this.log('thinking loop: compaction failed');
+      this.log(`thinking loop: compaction failed (${failureReason(error)})`);
     }
   }
 
@@ -1013,6 +1013,17 @@ export function sectionBody(raw: string): string {
 /** Events handed to Pi: one JSON line per event inside `<events>`, as in the loop evaluation. */
 export function formatEvents(lines: Record<string, unknown>[]): string {
   return `<events>\n${lines.map(line => JSON.stringify(line)).join('\n')}\n</events>`;
+}
+
+/**
+ * Why a compaction failed, as one line for the log: the error's kind and Pi's message, which names the step and the
+ * provider's reason, never the conversation. A provider's message is outside our control, so it is kept short.
+ */
+function failureReason(error: unknown): string {
+  const kind = error instanceof Error ? error.name : typeof error;
+  const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim();
+  const characters = [...message];
+  return `${kind}: ${characters.length <= 200 ? message : `${characters.slice(0, 199).join('')}…`}`;
 }
 
 function shown(row: MessageRow): ShownMessage {
