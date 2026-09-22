@@ -114,7 +114,7 @@ function replyWith(f: Fixture, text: (context: Context) => string) {
   f.model.auto = context => {
     if (!freshPrompt(context)) return {};
     return { thinking: 'hidden-thought-4417', text: '（内心）',
-      calls: [{ name: 'reply_to_mac', arguments: { text: text(context) } }] };
+      calls: [{ name: 'reply_to_mac', arguments: { text: text(context), expression: 'neutral' } }] };
   };
 }
 
@@ -146,7 +146,7 @@ test('two devices see the owner message, the thinking expression and the one rep
 
   call.think('hidden-thought-4417');
   call.delta('（内心）返事を書く');
-  call.call('reply_to_mac', { text: 'こんにちは' });
+  call.call('reply_to_mac', { text: 'こんにちは', expression: 'neutral' });
   call.finish();
   (await f.model.next()).finish();
   for (const client of [a, b]) {
@@ -353,8 +353,8 @@ test('reading and acknowledging reach every device, are replayed after a reconne
   const b = await Client.open(f, token);
   await a.sync();
   await b.sync();
-  f.model.auto = context => freshPrompt(context) ? { calls: [{ name: 'notify_owner', arguments: { text: 'お知らせ' } },
-    { name: 'reply_to_mac', arguments: { text: 'はい' } }] } : {};
+  f.model.auto = context => freshPrompt(context) ? { calls: [{ name: 'notify_owner', arguments: { text: 'お知らせ', expression: 'neutral' } },
+    { name: 'reply_to_mac', arguments: { text: 'はい', expression: 'neutral' } }] } : {};
   await a.sendAndComplete('hello');
   const said = a.messages.filter(m => m.type === 'conversation.message').map(m => m.payload);
   const noticeId = said.find(m => m.kind === 'notice')!.messageId as string;

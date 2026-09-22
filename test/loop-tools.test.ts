@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createLoopTools, LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME, type LoopToolHost } from '../src/server/loop-tools.ts';
-import { RUN_SHELL_DESCRIPTION } from '../src/server/prompts.ts';
+import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME, type LoopToolHost } from '../src/server/loop-tools.ts';
+import { NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION } from '../src/server/prompts.ts';
 import { MAX_COMMAND_CHARS } from '../src/server/workspace-shell.ts';
 
 const ok = (text: string) => ({ ok: true, text });
@@ -82,8 +82,47 @@ test('no tool takes an event ID and finish_event is gone', () => {
     assert.doesNotMatch(tool.description, /event_id|finish_event/, tool.name);
   }
   const shape = (name: string) => Object.keys((tools.find(tool => tool.name === name)!.parameters as { properties: object }).properties);
-  assert.deepEqual(shape('reply_to_mac'), ['text']);
-  assert.deepEqual(shape('notify_owner'), ['text']);
+  assert.deepEqual(shape('reply_to_mac'), ['text', 'expression']);
+  assert.deepEqual(shape('notify_owner'), ['text', 'expression']);
   assert.deepEqual(shape('write_handoff_note'), ['text']);
   assert.deepEqual(shape('write_change_note'), ['text']);
+});
+
+type Schema = { required?: string[]; properties: Record<string, { anyOf?: { const: string }[] }> };
+
+// ADR 0026: every line she sends carries the feeling she chose for it, from the expressions' own list, and must.
+test('reply_to_mac and notify_owner require an expression from the avatar expressions', () => {
+  const tools = createLoopTools(host());
+  const expressionTool = tools.find(tool => tool.name === 'set_mac_avatar_expression')!;
+  const choices = (schema: Schema) => schema.properties.expression!.anyOf!.map(choice => choice.const);
+  for (const name of ['reply_to_mac', 'notify_owner']) {
+    const schema = tools.find(tool => tool.name === name)!.parameters as unknown as Schema;
+    assert.deepEqual([...schema.required!].sort(), ['expression', 'text'], name);
+    assert.deepEqual(choices(schema), [...EXPRESSIONS], name);
+    assert.deepEqual(choices(schema), choices(expressionTool.parameters as unknown as Schema), name);
+  }
+});
+
+test('reply_to_mac and notify_owner hand the text and its expression to the host', async () => {
+  const sent: [string, string, string][] = [];
+  const tools = createLoopTools(host({
+    reply: (text, expression) => { sent.push(['reply', text, expression]); return ok('replied'); },
+    notify: (text, expression) => { sent.push(['notify', text, expression]); return ok('notified'); },
+  }));
+  const run = (name: string, args: object) => tools.find(tool => tool.name === name)!
+    .execute('call-1', args as never, undefined, undefined, {} as never);
+  await run('reply_to_mac', { text: 'はい', expression: 'happy' });
+  await run('notify_owner', { text: 'あのね', expression: 'worried' });
+  assert.deepEqual(sent, [['reply', 'はい', 'happy'], ['notify', 'あのね', 'worried']]);
+});
+
+/** The descriptions sit on the prefix cache like run_shell's (ADR 0019): fixed strings, whatever the host holds. */
+test('the reply_to_mac and notify_owner descriptions are fixed strings that tell the feeling apart from the avatar', () => {
+  const described = (h: LoopToolHost, name: string) => createLoopTools(h).find(tool => tool.name === name)!.description;
+  for (const [name, fixed] of [['reply_to_mac', REPLY_TO_MAC_DESCRIPTION], ['notify_owner', NOTIFY_OWNER_DESCRIPTION]] as const) {
+    assert.equal(described(host(), name), fixed, name);
+    assert.equal(described(host({ runShell: () => ok('ran') }), name), fixed, name);
+    assert.match(fixed, /expression/, name);
+    assert.match(fixed, /set_mac_avatar_expression/, name);
+  }
 });

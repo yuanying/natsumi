@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import type { Expression } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
 
 /** The kinds of event the loop takes. The column is free text in SQLite; these are the only values written. */
@@ -11,6 +12,8 @@ export type EventState = 'queued' | 'processing' | 'replied' | 'no-reply' | 'fai
 export interface MessageRow {
   message_id: string; position: number; role: 'owner' | 'natsumi'; kind: 'message' | 'reply' | 'notice'; text: string;
   event_id: string | null; about_event_ids: string | null; request_id: string | null; device_id: string | null; created_at: string;
+  /** The feeling natsumi chose for one of her lines (ADR 0026). NULL on the owner's messages and on lines written before it. */
+  expression: Expression | null;
 }
 export interface ConversationRow { conversation_id: string; pi_session_id: string; pi_session_file: string; created_at: string }
 export interface RotationRow {
@@ -92,17 +95,17 @@ export class ConversationStore {
     return { row, eventId };
   }
 
-  /** What natsumi sent the owner: a reply to an event, or a notice about some. */
+  /** What natsumi sent the owner: a reply to an event, or a notice about some, with the feeling she chose for it. */
   insertMessage(message: { role: MessageRow['role']; kind: MessageRow['kind']; text: string; eventId?: string;
-    about?: string[]; requestId?: string; deviceId?: string }): MessageRow {
+    about?: string[]; requestId?: string; deviceId?: string; expression?: Expression }): MessageRow {
     const { db } = this;
     const messageId = `message-${randomUUID()}`;
     db.prepare(`INSERT INTO conversation_messages
-      (message_id, position, role, kind, text, event_id, about_event_ids, request_id, device_id, created_at)
-      VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM conversation_messages), ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      (message_id, position, role, kind, text, event_id, about_event_ids, request_id, device_id, expression, created_at)
+      VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM conversation_messages), ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       messageId, message.role, message.kind, message.text, message.eventId ?? null,
       message.about && message.about.length > 0 ? JSON.stringify(message.about) : null,
-      message.requestId ?? null, message.deviceId ?? null, this.iso());
+      message.requestId ?? null, message.deviceId ?? null, message.expression ?? null, this.iso());
     return db.prepare('SELECT * FROM conversation_messages WHERE message_id = ?').get(messageId) as unknown as MessageRow;
   }
 

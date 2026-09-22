@@ -74,6 +74,8 @@ export interface ShownMessage {
   replyTo?: string;
   /** The events a notice is about. */
   about?: string[];
+  /** The feeling natsumi chose for one of her lines. Absent on the owner's messages and on lines older than ADR 0026. */
+  expression?: Expression;
 }
 
 /** A type rather than an interface: it is a client event's payload, and is spread into one whole. */
@@ -810,8 +812,8 @@ export class ThinkingLoop {
 
   private host(): LoopToolHost {
     return {
-      reply: text => this.reply(text),
-      notify: text => this.notify(text),
+      reply: (text, expression) => this.reply(text, expression),
+      notify: (text, expression) => this.notify(text, expression),
       setExpression: expression => {
         this.setAvatar(expression, 'model');
         return { ok: true, text: `アバターの表情を ${expression} にしました。` };
@@ -831,7 +833,7 @@ export class ThinkingLoop {
    * ones are marked replied in the same transaction, so a restart before the turn ends answers none of them again:
    * the record says replied, and only messages still being processed are closed on a start.
    */
-  private reply(text: string): ToolOutcome {
+  private reply(text: string, expression: Expression): ToolOutcome {
     const open = [...this.handling.values()].filter(handling => handling.messageId !== undefined && handling.shown && !handling.replied);
     const target = open.at(-1);
     if (!target) {
@@ -843,7 +845,7 @@ export class ThinkingLoop {
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
     const row = this.store.transaction(() => {
-      const inserted = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId: target.eventId });
+      const inserted = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId: target.eventId, expression });
       for (const handling of open) this.store.setEventState(handling.eventId, 'replied');
       return inserted;
     });
@@ -853,7 +855,7 @@ export class ThinkingLoop {
       + 'ほかにやることがなければ、ツールを呼ばずに終えてください。' };
   }
 
-  private notify(text: string): ToolOutcome {
+  private notify(text: string, expression: Expression): ToolOutcome {
     const turn = this.turn;
     if (turn?.kind === 'review') {
       return { ok: false, text: '送信していません。夜の振り返りの間は、本人に知らせを送りません。明日に伝えたいことは write_handoff_note に書いてください。' };
@@ -867,7 +869,7 @@ export class ThinkingLoop {
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
-    const row = this.store.insertMessage({ role: 'natsumi', kind: 'notice', text });
+    const row = this.store.insertMessage({ role: 'natsumi', kind: 'notice', text, expression });
     if (turn) turn.notices += 1;
     this.emit('conversation.message', shown(row));
     return { ok: true, text: '本人に知らせを送りました。返事を待つ必要はありません。同じ内容を繰り返し送らないでください。' };
@@ -1014,7 +1016,8 @@ export function formatEvents(lines: Record<string, unknown>[]): string {
 }
 
 function shown(row: MessageRow): ShownMessage {
-  const base = { messageId: row.message_id, role: row.role, kind: row.kind, text: row.text, createdAt: row.created_at };
+  const base = { messageId: row.message_id, role: row.role, kind: row.kind, text: row.text, createdAt: row.created_at,
+    ...(row.expression === null ? {} : { expression: row.expression }) };
   if (row.kind === 'message') return { ...base, eventId: row.event_id! };
   if (row.kind === 'reply') return { ...base, replyTo: row.event_id! };
   const about = row.about_event_ids ? JSON.parse(row.about_event_ids) as string[] : [];

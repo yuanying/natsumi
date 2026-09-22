@@ -19,8 +19,9 @@ type Outcome = ToolOutcome | Promise<ToolOutcome>;
  * event: what a tool acts on is what the turn is handling, which the server knows and natsumi need not copy (ADR 0024).
  */
 export interface LoopToolHost {
-  reply(text: string): Outcome;
-  notify(text: string): Outcome;
+  /** A line carries the feeling natsumi chose for it; it is kept with the line and never moves the avatar (ADR 0026). */
+  reply(text: string, expression: Expression): Outcome;
+  notify(text: string, expression: Expression): Outcome;
   setExpression(expression: Expression): Outcome;
   writeHandoff(text: string): Outcome;
   writeChangeNote(text: string): Outcome;
@@ -41,6 +42,13 @@ export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'set_mac_avatar_
 /** Added to the allowlist with a runner: the whole of natsumi's workspace, memory included (ADR 0019). */
 export const RUN_SHELL_TOOL_NAME = 'run_shell';
 
+/**
+ * The expressions as a parameter. The avatar and every line share this one list, so an expression added to the Mac is
+ * one a line can carry too (ADR 0026). Pi checks a call against it and refuses a missing or unknown value before the
+ * host is reached, so nothing is sent.
+ */
+const expressionParameter = () => Type.Union(EXPRESSIONS.map(expression => Type.Literal(expression)));
+
 async function result(outcome: Outcome) {
   const settled = await outcome;
   // A thrown error becomes an error tool result carrying this sentence.
@@ -60,19 +68,19 @@ export function createLoopTools(host: LoopToolHost) {
     defineTool({
       name: 'reply_to_mac', label: 'Reply to the owner',
       description: REPLY_TO_MAC_DESCRIPTION,
-      parameters: Type.Object({ text: Type.String() }),
-      execute: async (_id, params) => result(host.reply(params.text)),
+      parameters: Type.Object({ text: Type.String(), expression: expressionParameter() }),
+      execute: async (_id, params) => result(host.reply(params.text, params.expression as Expression)),
     }),
     defineTool({
       name: 'notify_owner', label: 'Notify the owner',
       description: NOTIFY_OWNER_DESCRIPTION,
-      parameters: Type.Object({ text: Type.String() }),
-      execute: async (_id, params) => result(host.notify(params.text)),
+      parameters: Type.Object({ text: Type.String(), expression: expressionParameter() }),
+      execute: async (_id, params) => result(host.notify(params.text, params.expression as Expression)),
     }),
     defineTool({
       name: 'set_mac_avatar_expression', label: 'Set the avatar expression',
       description: SET_MAC_AVATAR_EXPRESSION_DESCRIPTION(EXPRESSIONS),
-      parameters: Type.Object({ expression: Type.Union(EXPRESSIONS.map(expression => Type.Literal(expression))) }),
+      parameters: Type.Object({ expression: expressionParameter() }),
       execute: async (_id, params) => result(host.setExpression(params.expression as Expression)),
     }),
     defineTool({

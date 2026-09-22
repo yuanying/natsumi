@@ -131,7 +131,7 @@ test('schema 8 keeps the switches made under schema 7 and leaves their handoff c
         `to-${rotationId}`, `to-${rotationId}.jsonl`, at, at);
   }
 
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [8]);
+  assert.deepEqual(migrate(db, upTo(8)).applied, [8]);
 
   const columns = (db.prepare('PRAGMA table_info(session_rotations)').all() as { name: string }[]).map(column => column.name);
   assert.equal(columns.includes('handoff'), false);
@@ -153,4 +153,33 @@ test('schema 8 keeps the switches made under schema 7 and leaves their handoff c
 test('a fresh database carries no handoff over from SQLite', () => withDb(db => {
   migrate(db, MIGRATIONS);
   assert.equal(db.prepare('SELECT count(*) AS n FROM handoff_carryover').get()?.n, 0);
+}));
+
+/**
+ * Schema 9 gives each of natsumi's lines the feeling she chose for it (ADR 0026). The lines already written had
+ * none, and none is invented for them: they stay NULL, which reads as "not known", not as neutral.
+ */
+test('schema 9 adds the line expression and leaves every earlier row without one', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 8));
+  const insert = db.prepare(`INSERT INTO conversation_messages
+    (message_id, position, role, kind, text, event_id, request_id, device_id, created_at) VALUES (?, ?, ?, ?, 'x', ?, ?, ?, 'x')`);
+  insert.run('message-1', 1, 'owner', 'message', 'event-1', 'request-1', 'device-1');
+  insert.run('message-2', 2, 'natsumi', 'reply', 'event-1', null, null);
+  insert.run('message-3', 3, 'natsumi', 'notice', null, null, null);
+
+  assert.deepEqual(migrate(db, MIGRATIONS).applied, [9]);
+
+  assert.deepEqual(plainRows(db.prepare('SELECT message_id, expression FROM conversation_messages ORDER BY position').all()), [
+    { message_id: 'message-1', expression: null },
+    { message_id: 'message-2', expression: null },
+    { message_id: 'message-3', expression: null },
+  ]);
+  const withExpression = db.prepare(`INSERT INTO conversation_messages
+    (message_id, position, role, kind, text, event_id, request_id, device_id, expression, created_at)
+    VALUES (?, ?, ?, ?, 'x', ?, ?, ?, ?, 'x')`);
+  withExpression.run('message-4', 4, 'natsumi', 'notice', null, null, null, 'happy');
+  // Only her lines carry one: an owner message never does.
+  assert.throws(() => withExpression.run('message-5', 5, 'owner', 'message', 'event-5', 'request-5', 'device-1', 'happy'),
+    /constraint/i);
+  withExpression.run('message-6', 6, 'owner', 'message', 'event-6', 'request-6', 'device-1', null);
 }));

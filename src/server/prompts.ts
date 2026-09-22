@@ -51,6 +51,7 @@ export const BASE_INSTRUCTION = (workspace: string) => `あなたは natsumi。�
   - 本人への相談・知らせ: notify_owner
   - アバターの表情: set_mac_avatar_expression（しばらくすると neutral に戻ります）
   - 後で自分から確かめる予約: schedule_self_check（一覧は list_self_checks、取り消しは cancel_self_check）
+- 返事と知らせには、セリフごとに込める気持ちを expression で選びます。セリフと一緒に本人の履歴に残るもので、アバターの表情とは別です。
 - 対応の途中で新しい出来事が届いたら、まだ済んでいない返事や知らせは、それも踏まえて行います。
 - やることが済んだら、ツールを呼ばずに終えます。何もしないと決めたときも、そのまま終えます。
 - 何もしなかったことや内心は、本人に報告しません。
@@ -89,11 +90,19 @@ export const RUN_SHELL_DESCRIPTION = 'あなたの作業環境でコマンドを
   + 'コマンドの長さは 8000 文字まで。超えると実行されずに返るので、長いものは /work にファイルとして書いて bash で動かす。\n'
   + '時間と出力の大きさにも上限がある。当たったときは結果の文で知らせる。';
 
+/**
+ * The feeling of a line, in the same fixed words for both tools (ADR 0026). The choices are the parameter's own, so
+ * the sentence names none of them and does not move when the expressions do.
+ */
+const LINE_EXPRESSION_SENTENCE = 'expression には、このセリフに込める気持ちを表情の候補から 1 つ選ぶ（必須）。'
+  + 'セリフと一緒に残り、本人の履歴に表示される。アバターの表情は変わらない。アバターの表情を変えるのは set_mac_avatar_expression。';
+
 export const REPLY_TO_MAC_DESCRIPTION = '本人のメッセージ（mac_message）に返事を送り、本人の Mac に表示する。'
   + 'まだ返事をしていない本人のメッセージが何件あっても、返事は 1 回にまとめ、そのすべてに答える。'
-  + '返事の後に新しいメッセージが届けば、もう 1 回送れる。本文は日本語で書く。';
+  + '返事の後に新しいメッセージが届けば、もう 1 回送れる。本文は日本語で書く。' + LINE_EXPRESSION_SENTENCE;
 
-export const NOTIFY_OWNER_DESCRIPTION = '返事とは別に、本人に相談や知らせを送る。何もしなかったことや内心は送らない。送れる回数には上限がある。';
+export const NOTIFY_OWNER_DESCRIPTION = '返事とは別に、本人に相談や知らせを送る。何もしなかったことや内心は送らない。送れる回数には上限がある。'
+  + LINE_EXPRESSION_SENTENCE;
 
 /** The expressions are the tool's own parameter, so the sentence is given them rather than reaching for them. */
 export const SET_MAC_AVATAR_EXPRESSION_DESCRIPTION = (expressions: readonly string[]) =>
