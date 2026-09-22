@@ -339,7 +339,7 @@ struct PropsTests {
         state.apply(.rejected(code: "invalid"), requestId: "q2")
         #expect(UIProps.failures(state) == [FailureProps(requestId: "q2", text: "「もう一つ」を送れませんでした（invalid）")])
 
-        let history = UIProps.history(state)
+        let history = UIProps.history(state, time: .example)
         #expect(history.outgoing == [
             OutgoingRowProps(requestId: "q1", text: "架空のメッセージ", failure: nil),
             OutgoingRowProps(requestId: "q2", text: "もう一つ", failure: "送れませんでした（invalid）"),
@@ -351,12 +351,44 @@ struct PropsTests {
         let state = conversation(
             [owner("m1", event: "e1"), reply("r2", to: "e1"), notice("n3")],
             readThrough: "m1", unread: 1, notices: ["n3"])
-        let rows = UIProps.history(state).rows
+        let rows = UIProps.history(state, time: .example).rows
         #expect(rows == [
-            HistoryRowProps(messageId: "m1", text: "やあ", isOwner: true, isNotice: false, isUnread: false),
-            HistoryRowProps(messageId: "r2", text: "こんにちは", isOwner: false, isNotice: false, isUnread: true),
-            HistoryRowProps(messageId: "n3", text: "架空のお知らせ", isOwner: false, isNotice: true, isUnread: true),
+            HistoryRowProps(
+                messageId: "m1", text: "やあ", time: "1/1 9:00", isOwner: true, isNotice: false, isUnread: false),
+            HistoryRowProps(
+                messageId: "r2", text: "こんにちは", time: "1/1 9:00", isOwner: false, isNotice: false,
+                isUnread: true),
+            HistoryRowProps(
+                messageId: "n3", text: "架空のお知らせ", time: "1/1 9:00", isOwner: false, isNotice: true,
+                isUnread: true),
         ])
+    }
+
+    @Test("履歴の時刻は、今日なら時刻だけ、今年なら月日と時刻、それより前なら年も付ける")
+    func historyTimes() {
+        // The example's now is 2026-09-22 15:00 in Tokyo. The history is in time order.
+        let labels = MessageTime.example.labels([
+            "2025-12-31T14:59:00.000Z", "2026-01-01T00:05:00.000Z", "2026-01-01T00:06:00Z", "いつか",
+            "2026-09-21T14:59:00.000Z", "2026-09-21T15:00:00Z", "2026-09-22T05:32:00.000Z",
+        ].map(parseTimestamp))
+        #expect(labels == ["2025/12/31 23:59", "1/1 9:05", "1/1 9:06", nil, "9/21 23:59", "0:00", "14:32"])
+    }
+
+    @Test("夏時間の変わる日も、その日の時計の時刻で書く")
+    func historyTimesAcrossDaylightSaving() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let time = MessageTime(now: parseTimestamp("2026-09-22T12:00:00Z")!, calendar: calendar)
+        // 2026-03-08 is 23 hours long in New York: the clocks go from 2:00 to 3:00.
+        let labels = time.labels(["2026-03-08T06:30:00Z", "2026-03-08T07:30:00Z", "2026-03-08T15:30:00Z"].map(parseTimestamp))
+        #expect(labels == ["3/8 1:30", "3/8 3:30", "3/8 11:30"])
+    }
+
+    @Test("届いたメッセージの時刻は、受け取ったときに一度だけ読む")
+    func messageDate() {
+        #expect(reply("r1").date == parseTimestamp("2026-01-01T00:00:01.000Z"))
+        let odd = ShownMessage(messageId: "x", role: .natsumi, kind: .reply, text: "", createdAt: "いつか")
+        #expect(odd.date == nil)
     }
 
     @Test("接続の案内は常にあり、状態ごとに次の一手を持つ")

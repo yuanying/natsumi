@@ -104,6 +104,20 @@ public struct ConversationState: Equatable, Sendable {
         }
     }
 
+    /// `isUnread` for each of `messages`, in order. The read position and the notices are worked out once, not once
+    /// a row: the history is derived again whenever the rows in sight change.
+    public var unreadFlags: [Bool] {
+        let readIndex = readIndex
+        let notices = Set(unacknowledgedNotificationIds)
+        return messages.enumerated().map { index, message in
+            switch message.kind {
+            case .reply: index > readIndex
+            case .notice: notices.contains(message.messageId)
+            case .message: false
+            }
+        }
+    }
+
     /// Where reading has got to in `messages`, counting this device's reads not answered yet; -1 before all of them.
     /// A position not in `messages` is older than them.
     private var readIndex: Int {

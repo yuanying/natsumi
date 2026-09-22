@@ -99,10 +99,10 @@ final class RootComponent: Component {
 
         stageHosting = StageHostingView(rootView: Stage(
             props: StageProps(
-                size: .zero, character: UIProps.root(mediator.state, placement: placement).character,
+                size: .zero, character: UIProps.root(mediator.state, placement: placement, time: .current).character,
                 characterFrame: .zero, balloon: nil, balloonFrame: nil, notices: nil, noticesFrame: nil,
                 transition: .immediate),
-            character: character.view(UIProps.root(mediator.state, placement: placement).character),
+            character: character.view(UIProps.root(mediator.state, placement: placement, time: .current).character),
             balloon: nil, notices: nil))
         stageHosting.onPointer = { [weak self] in self?.pointerMoved() }
         stage.contentView = stageHosting
@@ -215,7 +215,7 @@ final class RootComponent: Component {
         // Measuring is what settles these, so they are not in play while it happens.
         placement.balloonHeight = nil
         placement.noticesHeight = nil
-        var props = UIProps.root(state, placement: placement)
+        var props = UIProps.root(state, placement: placement, time: .current)
         let inputs = LayoutInputs(props: props.withoutThinkingLine, character: characterFrame, visible: visibleFrame)
         let layout: OverlayLayout
         if let cached = laidOut, cached.inputs == inputs {
@@ -227,7 +227,7 @@ final class RootComponent: Component {
                 spacing: OverlayLayout.spacing(for: state.characterScale), steps: UIProps.budgetSteps(state)
             ) { budget in
                 placement.budget = budget
-                let stacked = UIProps.root(state, placement: placement)
+                let stacked = UIProps.root(state, placement: placement, time: .current)
                 // Each card is measured at its own width: an opened card is wider than the rest of the column.
                 return (
                     notices: stacked.notices.map { fittingSize(of: notices.probe($0), width: $0.width) },
@@ -240,7 +240,7 @@ final class RootComponent: Component {
             placement.noticesHeight = layout.notices?.height
             laidOut = (inputs, layout, placement)
         }
-        props = UIProps.root(state, placement: placement)
+        props = UIProps.root(state, placement: placement, time: .current)
 
         // How this pass is shown. The owner's hand, a new scale, a moved stage and the first drawing are not to be
         // seen happening; a run is seen over its own time; everything else is a card opening or the column settling.
@@ -737,4 +737,9 @@ final class PanelDelegate: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         if let window = notification.object as? NSWindow { didChangeKey(window, false) }
     }
+}
+
+private extension MessageTime {
+    /// The clock and the owner's calendar, read by Root when it draws. The core only takes them as given.
+    static var current: MessageTime { MessageTime(now: Date(), calendar: .current) }
 }

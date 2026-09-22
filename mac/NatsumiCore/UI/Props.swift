@@ -225,14 +225,17 @@ public struct FailureProps: Equatable, Sendable, Identifiable {
 public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var messageId: String
     public var text: String
+    /// When it was said, small beside the row. nil when the server's timestamp cannot be read.
+    public var time: String?
     public var isOwner: Bool
     public var isNotice: Bool
     /// An unread reply or a notice not checked yet. A reply is read once its row is seen in the key window.
     public var isUnread: Bool
 
-    public init(messageId: String, text: String, isOwner: Bool, isNotice: Bool, isUnread: Bool) {
+    public init(messageId: String, text: String, time: String?, isOwner: Bool, isNotice: Bool, isUnread: Bool) {
         self.messageId = messageId
         self.text = text
+        self.time = time
         self.isOwner = isOwner
         self.isNotice = isNotice
         self.isUnread = isUnread
@@ -382,7 +385,8 @@ public struct RootProps: Equatable, Sendable {
 /// The drawing parameters, derived from the mediator's state by pure functions. Nothing else in the app may build
 /// them.
 public enum UIProps {
-    public static func root(_ state: UIState, placement: ColumnPlacement) -> RootProps {
+    /// `time` is when this is drawn, for the history's times.
+    public static func root(_ state: UIState, placement: ColumnPlacement, time: MessageTime) -> RootProps {
         var placement = placement
         placement.width = state.columnWidth
         // An opened card takes the room at the sides as well as the room above or below (ADR 0016).
@@ -396,7 +400,7 @@ public enum UIProps {
             notices: notices(
                 conversation, hidden: state.noticesHidden, expanded: state.expanded, placement: placement,
                 scale: state.characterScale),
-            conversation: state.isConversationOpen ? self.conversation(state) : nil,
+            conversation: state.isConversationOpen ? self.conversation(state, time: time) : nil,
             settings: settings(state),
             menu: menu(state),
             isSettingsOpen: state.isSettingsOpen)
@@ -544,13 +548,13 @@ public enum UIProps {
     }
 
     /// The conversation window. It has been placed by the time it is drawn: opening it gives it its first place.
-    public static func conversation(_ state: UIState) -> ConversationProps {
+    public static func conversation(_ state: UIState, time: MessageTime) -> ConversationProps {
         let window = state.conversationWindow
         let conversation = state.conversation
         return ConversationProps(
             frame: window.frame ?? CGRect(origin: .zero, size: window.size), foldedHeight: window.foldedHeight,
             status: statusRow(state.status),
-            history: window.showsHistory ? history(conversation) : nil,
+            history: window.showsHistory ? history(conversation, time: time) : nil,
             failures: window.showsHistory ? [] : failures(conversation),
             toggleHelp: window.showsHistory ? "履歴をとじる（⌘L）" : "履歴をひらく（⌘L）")
     }
@@ -566,12 +570,15 @@ public enum UIProps {
         }
     }
 
-    public static func history(_ conversation: ConversationState) -> HistoryProps {
-        HistoryProps(
-            rows: conversation.messages.map { message in
-                HistoryRowProps(
-                    messageId: message.messageId, text: message.text, isOwner: message.role == .owner,
-                    isNotice: message.isNotice, isUnread: conversation.isUnread(message))
+    public static func history(_ conversation: ConversationState, time: MessageTime) -> HistoryProps {
+        let times = time.labels(conversation.messages.map(\.date))
+        let unread = conversation.unreadFlags
+        return HistoryProps(
+            rows: conversation.messages.indices.map { index in
+                let message = conversation.messages[index]
+                return HistoryRowProps(
+                    messageId: message.messageId, text: message.text, time: times[index],
+                    isOwner: message.role == .owner, isNotice: message.isNotice, isUnread: unread[index])
             },
             outgoing: conversation.outbox.map { item in
                 let failure: String? = switch item.status {

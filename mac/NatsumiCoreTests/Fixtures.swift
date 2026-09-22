@@ -66,3 +66,12 @@ final class MemorySecretStore: SecretStore, @unchecked Sendable {
     func write(_ data: Data, account: String) throws { items[account] = data }
     func delete(account: String) throws { items[account] = nil }
 }
+
+extension MessageTime {
+    /// 2026-09-22 15:00 in Tokyo: a fixed now, so the history's times do not depend on when the tests run.
+    static let example: MessageTime = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        return MessageTime(now: parseTimestamp("2026-09-22T06:00:00Z")!, calendar: calendar)
+    }()
+}

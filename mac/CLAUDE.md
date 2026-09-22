@@ -89,6 +89,7 @@
 | `NatsumiCore/UI/Props.swift` | `RootProps` と各パネルの Props、`ColumnPlacement`、`UIProps` の導出 |
 | `NatsumiCore/UI/Stacks.swift` | 束の数え方（`NoticeStack`・`BalloonText`・`CharacterBadge`） |
 | `NatsumiCore/UI/HistoryReading.swift` | 会話のウインドウで見えた返事のどこまでを既読にするか（`HistoryReading`） |
+| `NatsumiCore/UI/MessageTime.swift` | 履歴の行に添える時刻の書き方（`MessageTime`）。今と暦は Root が渡す |
 | `NatsumiCore/UI/StageProps.swift` | 舞台の描画パラメータ（`StageProps`・`StageTransition`）と舞台の座標への変換 |
 | `NatsumiCore/Keyboard/` | どこからでも会話のウインドウを出すショートカット（`HotKey`） |
 | `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）、大きさ（`CharacterScale`・`OverlaySettings`）、会話のウインドウの大きさと置き場所（`ConversationWindow`・`ConversationPlacement`）、走っての移動とポインタを避ける規則（`CharacterRun`・`PointerDodge`） |

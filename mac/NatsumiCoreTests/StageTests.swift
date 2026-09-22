@@ -24,7 +24,7 @@ struct StageTests {
         _ = mediator.handle(.launched(LaunchInfo(
             characterScale: .default, serverOrigin: nil,
             avatarDirectory: "/tmp/avatar", defaultAvatarDirectory: "/tmp/avatar")))
-        let root = UIProps.root(mediator.state, placement: ColumnPlacement())
+        let root = UIProps.root(mediator.state, placement: ColumnPlacement(), time: .example)
         let character = CGRect(x: 1400, y: 150, width: 100, height: 100)
         var layout = OverlayLayout()
         layout.balloon = CGRect(x: 1330, y: 258, width: 240, height: 80)

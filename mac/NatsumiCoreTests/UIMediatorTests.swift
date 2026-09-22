@@ -37,7 +37,7 @@ struct UIMediatorTests {
     private func props(_ mediator: UIMediator) -> RootProps {
         var placement = ColumnPlacement()
         placement.budget = UIProps.budgetSteps(mediator.state)[0]
-        return UIProps.root(mediator.state, placement: placement)
+        return UIProps.root(mediator.state, placement: placement, time: .example)
     }
 
     private func sent(_ effects: [UIEffect]) -> [ClientEnvelope] {

@@ -164,4 +164,17 @@ struct ReadStateTests {
         state.markAcknowledged("n2", requestId: "q1")
         #expect(state.isUnread(notice("n2")) == false)
     }
+
+    @Test("履歴のすべての行の印を、行ごとと同じ答えでまとめて出せる")
+    func allMarks() {
+        var state = ConversationState()
+        state.apply(snapshot(
+            [owner("m0", event: "e0"), reply("r1"), notice("n2"), reply("r3"), notice("n4")],
+            readThrough: "r1", unread: 1, notices: ["n2", "n4"]))
+        #expect(state.unreadFlags == [false, false, true, true, true])
+        state.markRead(through: "r3", requestId: "q1")
+        state.markAcknowledged("n4", requestId: "q2")
+        #expect(state.unreadFlags == [false, false, true, false, false])
+        #expect(state.unreadFlags == state.messages.map(state.isUnread))
+    }
 }

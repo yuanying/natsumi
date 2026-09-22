@@ -18,7 +18,7 @@ struct NoticeFlowTests {
     }
 
     private func props(_ mediator: UIMediator) -> RootProps {
-        UIProps.root(mediator.state, placement: ColumnPlacement())
+        UIProps.root(mediator.state, placement: ColumnPlacement(), time: .example)
     }
 
     /// Runs one exchange as the server sends it: the owner's message is accepted while natsumi is already thinking,
