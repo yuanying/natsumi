@@ -724,6 +724,36 @@ test('past the context limit the loop compacts between turns and the conversatio
   } finally { await f.cleanup(); }
 });
 
+test('a failed compaction says why in the log, without the conversation, and waits for the context to grow before trying again', async () => {
+  const f = await setup();
+  try {
+    const logs: string[] = [];
+    const { loop, events } = await f.open({ loop: { compactionThreshold: 1_500, compactionKeepRecent: 400 }, log: line => { logs.push(line); } });
+    behave(f, {});
+    const answer = f.model.auto!;
+    // The summary runs out of tokens while it is still thinking, the way it did on a slow local model.
+    f.model.auto = context => isSummary(context) ? { thinking: '考えている途中', finish: 'length' } : answer(context);
+    const long = 'あ'.repeat(1_500);
+    await completed(events, f.send(loop, `合言葉は ${PASSPHRASE} ${long}`).eventId);
+    for (let i = 0; i < 4 && !logs.some(line => line.includes('compaction')); i++) {
+      await completed(events, f.send(loop, `話 ${i} ${long}`).eventId);
+      await loop.idle();
+    }
+
+    const failures = logs.filter(line => line.startsWith('thinking loop: compaction failed'));
+    assert.equal(failures.length, 1, logs.join('\n'));
+    assert.match(failures[0]!, /token cap/);
+    assert.equal(failures[0]!.includes('\n'), false);
+    for (const line of logs) assert.equal(line.includes(PASSPHRASE) || line.includes('あああ'), false, line);
+
+    // The failure costs a whole summary call, so a short turn after it does not ask again.
+    const summaries = f.model.contexts.filter(isSummary).length;
+    await completed(events, f.send(loop, 'みじかい話').eventId);
+    await loop.idle();
+    assert.equal(f.model.contexts.filter(isSummary).length, summaries);
+  } finally { await f.cleanup(); }
+});
+
 test('the nightly review gets forty model calls by default, and a turn cut at its call limit says so in the log', async () => {
   const f = await setup();
   try {
