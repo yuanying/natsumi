@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import AuthenticationServices
 import NatsumiCore
 
@@ -26,10 +30,28 @@ final class GitHubLoginFlow: NSObject {
             for: AuthAPI.sessionRequest(server: server, loginCode: code, verifier: attempt.pkce.verifier))
         return try AuthAPI.session(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: data)
     }
+
+    /// What the owner is told when the login did not go through.
+    static func describe(_ error: Error) -> String {
+        switch error {
+        case LoginError.server(let code): "ログインできませんでした（\(code)）"
+        case LoginError.http(let status, let code): "ログインできませんでした（HTTP \(status)\(code.map { "、\($0)" } ?? "")）"
+        case LoginError.stateMismatch: "ログインの応答が一致しませんでした。やり直してください"
+        case is LoginError: "ログインできませんでした"
+        default: "ログインできませんでした（\(error.localizedDescription)）"
+        }
+    }
 }
 
 extension GitHubLoginFlow: ASWebAuthenticationPresentationContextProviding {
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        #if os(macOS)
         NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible } ?? ASPresentationAnchor()
+        #else
+        // The owner asked for the login on the screen, so there is a scene to show the sheet over.
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return scenes.flatMap(\.windows).first { $0.isKeyWindow } ?? scenes.first?.windows.first
+            ?? ASPresentationAnchor(windowScene: scenes[0])
+        #endif
     }
 }

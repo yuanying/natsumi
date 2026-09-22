@@ -576,7 +576,7 @@ final class RootComponent: Component {
             } catch LoginError.cancelled {
                 self.deliver(.loginFinished(.cancelled))
             } catch {
-                self.deliver(.loginFinished(.failed(Self.describe(error))))
+                self.deliver(.loginFinished(.failed(GitHubLoginFlow.describe(error))))
             }
         }
     }
@@ -690,16 +690,6 @@ final class RootComponent: Component {
             "アバターを読み込めないため、仮の絵を使っています"
         }
         deliver(.avatarLoaded(art, description: description))
-    }
-
-    static func describe(_ error: Error) -> String {
-        switch error {
-        case LoginError.server(let code): "ログインできませんでした（\(code)）"
-        case LoginError.http(let status, let code): "ログインできませんでした（HTTP \(status)\(code.map { "、\($0)" } ?? "")）"
-        case LoginError.stateMismatch: "ログインの応答が一致しませんでした。やり直してください"
-        case is LoginError: "ログインできませんでした"
-        default: "ログインできませんでした（\(error.localizedDescription)）"
-        }
     }
 }
 
