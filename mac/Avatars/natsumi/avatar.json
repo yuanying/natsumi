@@ -13,6 +13,16 @@
     "running": { "row": 7, "frames": 6 },
     "review": { "row": 8, "frames": 6 }
   },
+  "icons": {
+    "neutral": "icons/neutral.webp",
+    "happy": "icons/happy.webp",
+    "laughing": "icons/laughing.webp",
+    "surprised": "icons/surprised.webp",
+    "thinking": "icons/thinking.webp",
+    "worried": "icons/worried.webp",
+    "sad": "icons/sad.webp",
+    "sleepy": "icons/sleepy.webp"
+  },
   "expressions": {
     "neutral": "idle",
     "thinking": "review",

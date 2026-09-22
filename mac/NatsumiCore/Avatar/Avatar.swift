@@ -34,6 +34,8 @@ public struct AvatarManifest: Equatable, Sendable {
     public var framesPerSecond: Double
     public var animations: [String: AvatarAnimation]
     public var expressions: [Expression: String]
+    /// A face for each feeling, by path inside the avatar's directory: what the history shows beside her lines.
+    public var icons: [Expression: String] = [:]
 
     /// The layout of a Codex pet spritesheet and the default expression table.
     public static let codexPet = AvatarManifest(
@@ -81,6 +83,10 @@ public struct AvatarManifest: Equatable, Sendable {
             for (name, animation) in file.expressions ?? [:] {
                 if let expression = Expression(rawValue: name) { manifest.expressions[expression] = animation }
             }
+            for (name, path) in file.icons ?? [:] {
+                guard Self.isInside(path) else { throw AvatarLoadError.invalidManifest }
+                if let expression = Expression(rawValue: name) { manifest.icons[expression] = path }
+            }
         }
         try manifest.validate()
         return manifest
@@ -103,6 +109,12 @@ public struct AvatarManifest: Equatable, Sendable {
             if animations[candidate] != nil { return candidate }
         }
         return animationName(for: expression)
+    }
+
+    /// A relative path that stays inside the avatar's directory.
+    private static func isInside(_ path: String) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !path.isEmpty && !path.hasPrefix("/") && !parts.contains { $0.isEmpty || $0 == "." || $0 == ".." }
     }
 
     private func validate() throws {
@@ -137,6 +149,7 @@ public struct AvatarManifest: Equatable, Sendable {
         let framesPerSecond: Double?
         let animations: [String: AvatarAnimation]?
         let expressions: [String: String]?
+        let icons: [String: String]?
     }
 }
 
@@ -145,10 +158,12 @@ public struct AvatarAsset: Equatable, @unchecked Sendable {
     public let manifest: AvatarManifest
     public let directory: URL
     private let frames: [String: [CGImage]]
+    private let icons: [Expression: CGImage]
 
-    init(manifest: AvatarManifest, directory: URL, sheet: CGImage) {
+    init(manifest: AvatarManifest, directory: URL, sheet: CGImage, icons: [Expression: CGImage] = [:]) {
         self.manifest = manifest
         self.directory = directory
+        self.icons = icons
         var frames: [String: [CGImage]] = [:]
         for (name, animation) in manifest.animations {
             frames[name] = (0..<animation.frames).compactMap { column in
@@ -158,6 +173,11 @@ public struct AvatarAsset: Equatable, @unchecked Sendable {
             }
         }
         self.frames = frames
+    }
+
+    /// The face for a feeling, or nil when the avatar has none for it.
+    public func icon(for expression: Expression) -> CGImage? {
+        icons[expression]
     }
 
     public func frames(for expression: Expression, motion: CharacterMotion = .still) -> [CGImage] {
@@ -195,7 +215,15 @@ public enum AvatarLoader {
         guard sheet.width >= manifest.columns * manifest.cellWidth, sheet.height >= manifest.rows * manifest.cellHeight else {
             throw AvatarLoadError.imageTooSmall
         }
-        return AvatarAsset(manifest: manifest, directory: directory, sheet: sheet)
+        // A face that cannot be read is left out, not an error: the character itself still works without it.
+        var icons: [Expression: CGImage] = [:]
+        for (expression, path) in manifest.icons {
+            if let source = CGImageSourceCreateWithURL(directory.appendingPathComponent(path) as CFURL, nil),
+               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                icons[expression] = image
+            }
+        }
+        return AvatarAsset(manifest: manifest, directory: directory, sheet: sheet, icons: icons)
     }
 
     /// The first candidate directory that loads, or the placeholder.
