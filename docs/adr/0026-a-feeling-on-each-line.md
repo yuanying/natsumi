@@ -1,7 +1,7 @@
 # 0026. セリフごとに気持ちを載せる
 
 - Date: 2026-09-22
-- Status: Accepted
+- Status: Accepted（範囲の外としていた Mac の履歴の表情アイコンは [ADR 0027](0027-her-face-beside-each-line-in-the-history.md) で決定）
 
 ## Context
 

@@ -9,8 +9,10 @@ struct PropsTests {
         ShownMessage(messageId: id, role: .owner, kind: .message, text: "やあ", createdAt: "2026-01-01T00:00:00.000Z", eventId: event)
     }
 
-    private func reply(_ id: String, to event: String = "e0", text: String = "こんにちは") -> ShownMessage {
-        ShownMessage(messageId: id, role: .natsumi, kind: .reply, text: text, createdAt: "2026-01-01T00:00:01.000Z", replyTo: event)
+    private func reply(_ id: String, to event: String = "e0", text: String = "こんにちは", feeling: NatsumiCore.Expression? = nil) -> ShownMessage {
+        ShownMessage(
+            messageId: id, role: .natsumi, kind: .reply, text: text, createdAt: "2026-01-01T00:00:01.000Z", replyTo: event,
+            expression: feeling)
     }
 
     private func notice(_ id: String, text: String = "架空のお知らせ") -> ShownMessage {
@@ -400,11 +402,28 @@ struct PropsTests {
                 messageId: "m1", text: "やあ", time: "1/1 9:00", isOwner: true, isNotice: false, isUnread: false),
             HistoryRowProps(
                 messageId: "r2", text: "こんにちは", time: "1/1 9:00", isOwner: false, isNotice: false,
-                isUnread: true),
+                isUnread: true, face: FaceProps(expression: nil, isLarge: false, help: "気持ちの記録なし")),
             HistoryRowProps(
                 messageId: "n3", text: "架空のお知らせ", time: "1/1 9:00", isOwner: false, isNotice: true,
-                isUnread: true),
+                isUnread: true, face: FaceProps(expression: nil, isLarge: true, help: "気持ちの記録なし")),
         ])
+    }
+
+    @Test("natsumi のセリフには気持ちの顔を添え、いちばん新しいセリフの顔だけを大きくする")
+    func historyFaces() {
+        let state = conversation([
+            reply("r1", feeling: .happy), owner("m2", event: "e2"), reply("r3", to: "e2", feeling: .worried),
+            owner("m4", event: "e4"),
+        ])
+        let faces = UIProps.history(state, time: .example).rows.map(\.face)
+        #expect(faces == [
+            FaceProps(expression: .happy, isLarge: false, help: "気持ち: うれしい"),
+            nil,
+            // The newest of her lines, even with the owner's message after it.
+            FaceProps(expression: .worried, isLarge: true, help: "気持ち: 心配"),
+            nil,
+        ])
+        #expect(UIProps.history(conversation([owner("m1", event: "e1")]), time: .example).rows.map(\.face) == [nil])
     }
 
     @Test("履歴の時刻は、今日なら時刻だけ、今年なら月日と時刻、それより前なら年も付ける")

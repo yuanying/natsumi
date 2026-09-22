@@ -30,6 +30,28 @@ struct ServerEnvelopeTests {
             messageId: "m2", role: .natsumi, kind: .notice, text: "お知らせ", createdAt: "2026-01-01T00:00:00.000Z", about: ["e1"])))
     }
 
+    @Test("natsumi のセリフは気持ちを持つ。欄が無いものと知らない値は、気持ちが分からないものとして読む")
+    func lineFeeling() {
+        var happy = Fixture.message("r1", replyTo: "e1")
+        happy["expression"] = "happy"
+        #expect(Fixture.decoded(Fixture.envelope("conversation.message", seq: 1, payload: happy)).event == .message(ShownMessage(
+            messageId: "r1", role: .natsumi, kind: .reply, text: "こんにちは", createdAt: "2026-01-01T00:00:00.000Z",
+            replyTo: "e1", expression: .happy)))
+
+        // Lines from before the server kept a feeling have none (ADR 0026).
+        let older = Fixture.decoded(Fixture.envelope("conversation.message", seq: 2, payload: Fixture.message("r2")))
+        guard case .message(let olderLine) = older.event else { Issue.record("not a message"); return }
+        #expect(olderLine.expression == nil)
+
+        // A feeling added on the server later must not make the line unreadable.
+        var unknown = Fixture.message("r3")
+        unknown["expression"] = "angry"
+        let decoded = Fixture.decoded(Fixture.envelope("conversation.message", seq: 3, payload: unknown))
+        guard case .message(let unknownLine) = decoded.event else { Issue.record("not a message"); return }
+        #expect(unknownLine.text == "こんにちは")
+        #expect(unknownLine.expression == nil)
+    }
+
     @Test("conversation.thinking は、いま書かれている 1 行を運ぶ")
     func thinkingLine() {
         let envelope = Fixture.decoded(Fixture.thinking("まず要点を整理する", seq: 42))

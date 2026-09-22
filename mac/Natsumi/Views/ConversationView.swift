@@ -125,7 +125,7 @@ private struct HistoryList: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(props.rows) { row in
-                        MessageRow(props: row)
+                        MessageRow(props: row, avatar: props.avatar)
                             // What the owner has in sight is what they have read, while the window is theirs
                             // (ADR 0022). Half a row showing counts as seeing it.
                             .onScrollVisibilityChange(threshold: 0.5) { isVisible in
@@ -137,6 +137,7 @@ private struct HistoryList: View {
                     }
                     if props.isThinking {
                         HStack(spacing: 6) {
+                            FaceView(expression: .thinking, size: FaceView.small, avatar: props.avatar)
                             ProgressView().controlSize(.small)
                             Text("考え中…").foregroundStyle(.secondary)
                         }
@@ -155,10 +156,17 @@ private struct HistoryList: View {
 
 private struct MessageRow: View {
     let props: HistoryRowProps
+    let avatar: AvatarArt
 
     var body: some View {
-        HStack(alignment: .top) {
+        HStack(alignment: .bottom, spacing: 6) {
             if props.isOwner { Spacer(minLength: 40) }
+            if let face = props.face {
+                FaceView(expression: face.expression, size: face.isLarge ? FaceView.large : FaceView.small, avatar: avatar)
+                    .help(face.help)
+                    // Level with the bottom of the bubble, not with the time under it.
+                    .padding(.bottom, props.time == nil ? 0 : 16)
+            }
             VStack(alignment: props.isOwner ? .trailing : .leading, spacing: 2) {
                 bubble
                 // When it was said stays out of the way: small and faint, under the bubble on its side.
@@ -201,6 +209,40 @@ private struct MessageRow: View {
             }
         }
         .padding(1)
+    }
+}
+
+/// Her face for a feeling, round with the ink outline. A feeling that is not known is her neutral face, faded, so it
+/// reads as "not recorded" rather than as calm (ADR 0027). Without even that face, a dashed circle stands in.
+private struct FaceView: View {
+    static let small: CGFloat = 28
+    static let large: CGFloat = 52
+    static let unknownOpacity = 0.4
+
+    let expression: NatsumiCore.Expression?
+    let size: CGFloat
+    let avatar: AvatarArt
+
+    var body: some View {
+        if case .sprite(let asset) = avatar, let icon = asset.icon(for: expression ?? .neutral) {
+            Image(decorative: icon, scale: 1)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFill()
+                .frame(width: size, height: size)
+                .background(Comic.paper)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(Comic.ink, lineWidth: 1.5))
+                .opacity(expression == nil ? Self.unknownOpacity : 1)
+                .accessibilityHidden(true)
+        } else {
+            Circle()
+                .fill(Comic.paper)
+                .overlay(Circle().stroke(Comic.faint, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2])))
+                .overlay(Text("な").font(Comic.font(size * 0.4, bold: true)).foregroundStyle(Comic.faint))
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        }
     }
 }
 

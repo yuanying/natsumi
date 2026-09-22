@@ -18,6 +18,24 @@ private struct SampleAvatar {
         if let petJSON { try Data(petJSON.utf8).write(to: directory.appendingPathComponent("pet.json")) }
     }
 
+    /// A square icon of one color under `icons/`.
+    func writeIcon(_ name: String, side: Int = 8) throws {
+        let folder = directory.appendingPathComponent("icons")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        let destination = CGImageDestinationCreateWithURL(
+            folder.appendingPathComponent(name) as CFURL, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+    }
+
+    static func json(icons: String) -> String {
+        defaultJSON.replacingOccurrences(of: #""expressions": {"#, with: #""icons": \#(icons),\#n  "expressions": {"#)
+    }
+
     func remove() { try? FileManager.default.removeItem(at: directory) }
 
     static let defaultJSON = """
@@ -188,5 +206,28 @@ struct AvatarTests {
             #expect(frames.allSatisfy { $0.width == 192 && $0.height == 208 })
         }
         #expect(avatar.frames(for: .neutral).count == 6)
+    }
+
+    @Test("avatar.json の icons で、表情ごとの顔のアイコンを読む。無い表情と無いファイルは、アイコンなしになる")
+    func icons() throws {
+        let sample = try SampleAvatar(avatarJSON: SampleAvatar.json(icons: """
+            { "happy": "icons/happy.png", "sad": "icons/sad.png", "angry": "icons/angry.png" }
+            """))
+        defer { sample.remove() }
+        try sample.writeIcon("happy.png", side: 8)
+        let avatar = try AvatarLoader.load(directory: sample.directory)
+        #expect(avatar.icon(for: .happy)?.width == 8)
+        // Listed, but the file is not there: owners bring their own avatars, so it is not an error.
+        #expect(avatar.icon(for: .sad) == nil)
+        #expect(avatar.icon(for: .neutral) == nil)
+    }
+
+    @Test("アイコンの場所はアバターのディレクトリの中に限る")
+    func iconOutsideDirectory() throws {
+        for path in ["../happy.png", "/tmp/happy.png", "icons/../../happy.png", ""] {
+            let sample = try SampleAvatar(avatarJSON: SampleAvatar.json(icons: #"{ "happy": "\#(path)" }"#))
+            defer { sample.remove() }
+            #expect(throws: AvatarLoadError.invalidManifest) { try AvatarLoader.load(directory: sample.directory) }
+        }
     }
 }
