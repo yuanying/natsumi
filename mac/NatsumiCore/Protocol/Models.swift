@@ -25,6 +25,9 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
     public let kind: Kind
     public let text: String
     public let createdAt: String
+    /// `createdAt`, read once when the message arrives: the history is derived again whenever the rows in sight
+    /// change. nil when the server's timestamp cannot be read.
+    public let date: Date?
     /// The event of an owner message.
     public let eventId: String?
     /// The event a reply answers.
@@ -41,9 +44,25 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
         self.kind = kind
         self.text = text
         self.createdAt = createdAt
+        self.date = parseTimestamp(createdAt)
         self.eventId = eventId
         self.replyTo = replyTo
         self.about = about
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case messageId, role, kind, text, createdAt, eventId, replyTo, about
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            messageId: try values.decode(String.self, forKey: .messageId), role: try values.decode(Role.self, forKey: .role),
+            kind: try values.decode(Kind.self, forKey: .kind), text: try values.decode(String.self, forKey: .text),
+            createdAt: try values.decode(String.self, forKey: .createdAt),
+            eventId: try values.decodeIfPresent(String.self, forKey: .eventId),
+            replyTo: try values.decodeIfPresent(String.self, forKey: .replyTo),
+            about: try values.decodeIfPresent([String].self, forKey: .about))
     }
 
     public var id: String { messageId }

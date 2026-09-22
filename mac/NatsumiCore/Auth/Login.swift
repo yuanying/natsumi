@@ -113,13 +113,13 @@ public enum AuthAPI {
     }
 }
 
+/// An ISO 8601 time, with or without fractions of a second. The style is shared: making a formatter for each of
+/// the hundreds of messages in a snapshot is what costs.
 func parseTimestamp(_ text: String) -> Date? {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let date = formatter.date(from: text) { return date }
-    formatter.formatOptions = [.withInternetDateTime]
-    return formatter.date(from: text)
+    try? timestampStyle.parse(text)
 }
+
+private let timestampStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 
 /// 256 random bits as base64url: 43 characters, valid as both a PKCE verifier and a state.
 public func randomToken() -> String {

@@ -159,38 +159,48 @@ private struct MessageRow: View {
     var body: some View {
         HStack(alignment: .top) {
             if props.isOwner { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 2) {
-                if props.isNotice || props.isUnread {
-                    HStack(spacing: 6) {
-                        if props.isNotice {
-                            Label("お知らせ", systemImage: "bell.fill").font(Comic.font(10, bold: true))
-                        }
-                        if props.isUnread {
-                            Label(props.isNotice ? "未確認" : "未読", systemImage: "circle.fill")
-                                .font(Comic.font(10, bold: true))
-                                .foregroundStyle(props.isNotice ? Color.orange : Color.blue)
-                        }
-                    }
-                    .foregroundStyle(Comic.ink)
-                }
-                Text(props.text).font(Comic.font(13)).lineSpacing(3).textSelection(.enabled)
-            }
-            .foregroundStyle(props.isOwner ? Color.primary : Comic.ink)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background {
-                // natsumi's words look like her balloons: paper or yellow with the ink outline.
-                let shape = RoundedRectangle(cornerRadius: Comic.radius(1))
-                if props.isOwner {
-                    shape.fill(Color.accentColor.opacity(0.2))
-                } else {
-                    shape.fill(props.isNotice ? Comic.noticePaper : Comic.paper)
-                    shape.stroke(Comic.ink, lineWidth: 1.5)
+            VStack(alignment: props.isOwner ? .trailing : .leading, spacing: 2) {
+                bubble
+                // When it was said stays out of the way: small and faint, under the bubble on its side.
+                if let time = props.time {
+                    Text(time).font(.caption2).foregroundStyle(.tertiary).padding(.horizontal, 4)
                 }
             }
-            .padding(1)
             if !props.isOwner { Spacer(minLength: 40) }
         }
+    }
+
+    private var bubble: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if props.isNotice || props.isUnread {
+                HStack(spacing: 6) {
+                    if props.isNotice {
+                        Label("お知らせ", systemImage: "bell.fill").font(Comic.font(10, bold: true))
+                    }
+                    if props.isUnread {
+                        Label(props.isNotice ? "未確認" : "未読", systemImage: "circle.fill")
+                            .font(Comic.font(10, bold: true))
+                            .foregroundStyle(props.isNotice ? Color.orange : Color.blue)
+                    }
+                }
+                .foregroundStyle(Comic.ink)
+            }
+            Text(props.text).font(Comic.font(13)).lineSpacing(3).textSelection(.enabled)
+        }
+        .foregroundStyle(props.isOwner ? Color.primary : Comic.ink)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background {
+            // natsumi's words look like her balloons: paper or yellow with the ink outline.
+            let shape = RoundedRectangle(cornerRadius: Comic.radius(1))
+            if props.isOwner {
+                shape.fill(Color.accentColor.opacity(0.2))
+            } else {
+                shape.fill(props.isNotice ? Comic.noticePaper : Comic.paper)
+                shape.stroke(Comic.ink, lineWidth: 1.5)
+            }
+        }
+        .padding(1)
     }
 }
 
