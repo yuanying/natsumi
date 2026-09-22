@@ -7,6 +7,7 @@
 この一文がこのディレクトリの規約である。以下はそれを、判断に使える形に開いたものである。
 画面に出るもの（配置・見た目・キーボード・未読と知らせの扱い）の仕様は [ADR 0010](../docs/adr/0010-mac-app-structure.md)
 （会話のウインドウは [ADR 0021](../docs/adr/0021-the-input-and-the-history-in-one-window.md)、
+履歴のセリフに添える気持ちの顔は [ADR 0027](../docs/adr/0027-her-face-beside-each-line-in-the-history.md)、
 返事の吹き出しと既読になるできごとは [ADR 0022](../docs/adr/0022-only-her-last-line-in-the-balloon.md)、
 考え続けている間の返事の吹き出しは [ADR 0025](../docs/adr/0025-her-reply-stays-while-she-keeps-thinking.md)、
 どこからでも会話のウインドウを出すショートカットは [ADR 0023](../docs/adr/0023-a-global-shortcut-for-the-conversation-window.md)）、
