@@ -232,4 +232,17 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE session_rotations_new RENAME TO session_rotations;
     `,
   },
+  {
+    version: 9,
+    name: 'line-expression',
+    sql: `
+      -- The feeling natsumi chose for each of her lines, from the avatar expressions (ADR 0026). It is not the avatar's
+      -- expression and never moves it. Only her lines carry one. The lines written before this have none and are not
+      -- filled in: NULL reads as "not known", not as neutral.
+      --
+      -- Which values are allowed is kept by the tool and the server, not by a CHECK: the list grows with the avatar's
+      -- expressions, and a CHECK here would make every such change a rebuild of this table.
+      ALTER TABLE conversation_messages ADD COLUMN expression TEXT CHECK (expression IS NULL OR kind <> 'message');
+    `,
+  },
 ];

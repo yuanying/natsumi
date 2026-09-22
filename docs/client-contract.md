@@ -66,7 +66,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 内部のファイルパス、認証情報、Pi の session ファイル参照、任意の Pi SDK 呼び出しをクライアントに転送しない。
 
 ```json
-{"v":1,"epoch":"epoch-example","streamId":"stream-example","seq":42,"type":"conversation.message","payload":{"messageId":"message-example","role":"natsumi","kind":"reply","text":"こんにちは","replyTo":"event-example","createdAt":"2026-01-01T00:00:00.000Z"}}
+{"v":1,"epoch":"epoch-example","streamId":"stream-example","seq":42,"type":"conversation.message","payload":{"messageId":"message-example","role":"natsumi","kind":"reply","text":"こんにちは","replyTo":"event-example","expression":"happy","createdAt":"2026-01-01T00:00:00.000Z"}}
 ```
 
 `messageId` と `eventId` は natsumi が採番する ID である。Pi の session ID・entry ID・ツールの呼び出し（引数も結果も）はクライアントに渡さない。
@@ -88,7 +88,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）。envelope の seq が snapshot の sequence。承認待ちは後続の実装で加える |
 | `conversation.read` | readThroughMessageId、unreadReplyCount。カーソルが進んだときだけ全端末に届く |
 | `notification.acked` | notificationId、acknowledgedAt。知らせを初めて確認したときだけ全端末に届く |
-| `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は replyTo（答えたイベント）、notice は関係するイベントがあれば about |
+| `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は replyTo（答えたイベント）、notice は関係するイベントがあれば about。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026） |
 | `avatar.expression` | expression（neutral / happy / laughing / surprised / thinking / worried / sad / sleepy） |
 | `conversation.thinking` | line（natsumi がいま書いている思考の 1 行。120 文字まで。空文字は思考が終わったこと）。その場限りで、採番せず、再送もせず、記録もしない。下記「考えている 1 行」 |
 | `conversation.event.completed` | eventId、messageId、status（replied / no-reply / failed）。failed には reason（model-call-limit / timeout / model-error / stopped） |
@@ -123,11 +123,13 @@ natsumi は一本の思考ループで、本人のメッセージを 1 件ずつ
 3. 処理の間、natsumi が書いている思考の 1 行が `conversation.thinking` で届く（下記「考えている 1 行」）。
 4. natsumi が返事を確定すると、全文の `conversation.message`（kind: reply）が一度だけ届く。1 つのメッセージへの返事は最大 1 回である。
    相談や知らせは kind: notice で届く。**返事の途中の文字列は流れない。**
+   返事と知らせにはセリフの気持ち（expression）が付くが、それでアバターの表情は変わらない。
 5. 処理が終わると `conversation.event.completed` が届く。返事なしで終わることもある（no-reply）。
    表情が thinking のままなら（natsumi が自分で付けたものも含む）、ほかに待っているメッセージがなければ neutral の `avatar.expression` が続く。
 6. thinking 以外の表情は、最後に変わってから一定の時間（サーバーの設定、既定 3 分）で neutral に戻り、そのときも `avatar.expression` が届く（ADR 0014）。
 
 `session.snapshot` の `messages` は SQLite の記録から作る。natsumi の思考、内心、ツールの呼び出しは含まれない。
+`messages` の各要素は `conversation.message` の payload と同じ形で、natsumi のセリフの expression もそのまま載る。
 サーバーを再起動しても同じ履歴が返る。再起動の前に処理中だったメッセージは二度処理せず、返事がなければ failed になる。
 
 natsumi は毎晩決まった時刻に一日を振り返り、思考の記録を新しくする（ADR 0009）。Mac から見える変化は次のとおりである。

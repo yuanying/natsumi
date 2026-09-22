@@ -240,8 +240,8 @@ test('the ping comes only in the awake hours after a quiet interval, and carries
     // A conversation restarts it too.
     const sent = f.send(loop, '相談');
     const turn = await nextEvent(f);
-    turn.reply.call('notify_owner', { text: 'あとで確認してほしいことがあります' });
-    turn.reply.call('reply_to_mac', { text: 'はい' });
+    turn.reply.call('notify_owner', { text: 'あとで確認してほしいことがあります', expression: 'neutral' });
+    turn.reply.call('reply_to_mac', { text: 'はい', expression: 'neutral' });
     turn.reply.finish();
     (await f.model.next()).finish();
     await completed(events, sent.eventId);
@@ -394,7 +394,7 @@ test('thinking ends with the handling whoever set it; other expressions return t
     assert.equal(scheduler.tick(), undefined);
     assert.equal(loop.snapshot().avatar.expression, 'thinking');
     first.reply.call('set_mac_avatar_expression', { expression: 'thinking' });
-    first.reply.call('reply_to_mac', { text: 'うーん' });
+    first.reply.call('reply_to_mac', { text: 'うーん', expression: 'neutral' });
     first.reply.finish();
     (await f.model.next()).finish();
     await completed(events, sent.eventId);

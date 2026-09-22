@@ -128,7 +128,7 @@ function behave(f: Awaited<ReturnType<typeof setup>>, handlers: {
       return handlers.review?.(event, context) ?? { calls: [] };
     }
     return handlers.owner?.(event, context)
-      ?? { calls: [call('reply_to_mac', { text: 'はい' })] };
+      ?? { calls: [call('reply_to_mac', { text: 'はい', expression: 'neutral' })] };
   };
 }
 
@@ -150,7 +150,7 @@ test('run_shell writes memory and reads it back, and memories never ride in the 
     assert.match(written!.text, /終了コード 0/);
     // Memory moved, and the result says so: nothing else would tell her it was kept (ADR 0019).
     assert.match(written!.text, /記憶の変更: 合言葉\.md（追加）/);
-    call2.call('reply_to_mac', { text: '覚えました' });
+    call2.call('reply_to_mac', { text: '覚えました', expression: 'neutral' });
     call2.finish();
     (await f.model.next()).finish();
     await completed(events, first.eventId);
@@ -171,7 +171,7 @@ test('run_shell writes memory and reads it back, and memories never ride in the 
     assert.equal(found!.isError, false);
     assert.match(found!.text, new RegExp(PASSPHRASE));
     assert.doesNotMatch(found!.text, /記憶の変更/, 'reading memory is not changing it');
-    call4.call('reply_to_mac', { text: PASSPHRASE });
+    call4.call('reply_to_mac', { text: PASSPHRASE, expression: 'neutral' });
     call4.finish();
     (await f.model.next()).finish();
     await completed(again.events, asked.eventId);
@@ -241,7 +241,7 @@ test('a turn that changed memory ends in one commit; a turn that changed nothing
     call1.call('set_mac_avatar_expression', { expression: 'happy' });
     call1.finish();
     const call2 = await f.model.next();
-    call2.call('reply_to_mac', { text: '\u899a\u3048\u307e\u3057\u305f' });
+    call2.call('reply_to_mac', { text: '\u899a\u3048\u307e\u3057\u305f', expression: 'neutral' });
     call2.finish();
     (await f.model.next()).finish();
     await completed(events, first.eventId);
@@ -464,7 +464,7 @@ test('an owner message that arrives during the nightly switch waits and is handl
     assert.match(lastUserText(answer.context), /夜中にごめん/);
     assert.match(answer.context.systemPrompt ?? '', new RegExp(HANDOFF));
     assert.equal(JSON.stringify(answer.context.messages).includes(EARLIER), false);
-    answer.call('reply_to_mac', { text: '見ました' });
+    answer.call('reply_to_mac', { text: '見ました', expression: 'neutral' });
     answer.finish();
     (await f.model.next()).finish();
     assert.equal((await rotating).result, 'switched');
@@ -487,8 +487,8 @@ test('a review without a handoff note keeps the current session, and the tools r
     f.model.takeOver();
     const rotating = loop.rotate();
     const review = await f.model.next();
-    review.call('notify_owner', { text: '夜の報告' });
-    review.call('reply_to_mac', { text: '返事' });
+    review.call('notify_owner', { text: '夜の報告', expression: 'neutral' });
+    review.call('reply_to_mac', { text: '返事', expression: 'neutral' });
     review.finish();
     const review2 = await f.model.next();
     assert.deepEqual(toolResults(review2.context).map(r => r.isError), [true, true]);
@@ -505,7 +505,7 @@ test('a review without a handoff note keeps the current session, and the tools r
       if (context.messages.at(-1)?.role !== 'user') return { calls: [] };
       seen = context;
       return { calls: [call('write_handoff_note', { text: '勝手な引き継ぎ' }),
-        call('reply_to_mac', { text: '続けます' })] };
+        call('reply_to_mac', { text: '続けます', expression: 'neutral' })] };
     };
     const next = f.send(loop, 'まだ起きてる？');
     await completed(events, next.eventId);
@@ -639,7 +639,7 @@ test('run_shell is offered only with a runner socket, and an unreachable runner 
     const [unreachable] = toolResults(call4.context);
     assert.equal(unreachable!.isError, true);
     assert.match(unreachable!.text, /接続できません/);
-    call4.call('reply_to_mac', { text: 'いまは探せませんでした' });
+    call4.call('reply_to_mac', { text: 'いまは探せませんでした', expression: 'neutral' });
     call4.finish();
     (await f.model.next()).finish();
     assert.equal((await completed(shelled.events, asked.eventId)).payload.status, 'replied');
@@ -709,7 +709,7 @@ test('past the context limit the loop compacts between turns and the conversatio
     assert.ok(entries.includes('compaction'));
 
     let context: Context | undefined;
-    behave(f, { owner: (_event, seen) => { context = seen; return { calls: [call('reply_to_mac', { text: '続きです' })] }; } });
+    behave(f, { owner: (_event, seen) => { context = seen; return { calls: [call('reply_to_mac', { text: '続きです', expression: 'neutral' })] }; } });
     const after = f.send(loop, 'まだ続く？');
     assert.equal((await completed(events, after.eventId)).payload.status, 'replied');
     assert.match(textOf(context!.messages[0]!), new RegExp(`要約: ${PASSPHRASE}`));
@@ -958,7 +958,7 @@ test('a night with no change note still switches, and the day is told why the no
     const [refusal] = toolResults(turn2.context);
     assert.equal(refusal!.isError, true);
     assert.match(refusal!.text, /nightly_review/);
-    turn2.call('reply_to_mac', { text: '続けます' });
+    turn2.call('reply_to_mac', { text: '続けます', expression: 'neutral' });
     turn2.finish();
     (await f.model.next()).finish();
     await completed(events, morning.eventId);

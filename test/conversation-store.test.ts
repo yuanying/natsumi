@@ -148,3 +148,16 @@ test('the handoff SQLite carried over is read once and then gone', () => withSto
   assert.equal(store.carriedOverHandoff(), undefined);
   assert.equal(store.clearCarriedOverHandoff(), undefined);
 }));
+
+// ADR 0026: her lines keep the expression she chose; the owner's messages have none.
+test('insertMessage keeps the expression of a reply or a notice, and an owner message has none', () =>
+  withStore(store => {
+    const { row: owner } = store.insertOwnerMessage({ requestId: 'request-1', deviceId: 'device-1', text: 'おはよう' });
+    const reply = store.insertMessage({ role: 'natsumi', kind: 'reply', text: 'おはようございます', eventId: owner.event_id!,
+      expression: 'happy' });
+    const notice = store.insertMessage({ role: 'natsumi', kind: 'notice', text: '雨です', expression: 'worried' });
+    assert.equal(owner.expression, null);
+    assert.equal(reply.expression, 'happy');
+    assert.equal(notice.expression, 'worried');
+    assert.deepEqual(store.snapshotRows(10).map(row => row.expression), [null, 'happy', 'worried']);
+  }));
