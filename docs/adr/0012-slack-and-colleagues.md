@@ -1,7 +1,7 @@
 # 0012. Slack 連携と同僚 AI
 
 - Date: 2026-09-15
-- Status: Accepted
+- Status: Accepted（「同僚はサーバーの中」「同僚どうしは直接つながらない」を外に作用する同僚に限る点は [ADR 0025](0025-talking-to-outside-agents-over-a2a.md) で具体化）
 
 ## Context
 
