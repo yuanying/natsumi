@@ -109,6 +109,35 @@ public struct PhoneCharacterProps: Equatable, Sendable {
     }
 }
 
+/// The whole conversation, pushed over the main screen. The rows are derived as on the Mac (ADR 0027).
+public struct PhoneHistoryProps: Equatable, Sendable {
+    public var history: HistoryProps
+
+    public init(history: HistoryProps) {
+        self.history = history
+    }
+}
+
+/// The settings, pushed over the main screen.
+public struct PhoneSettingsProps: Equatable, Sendable {
+    public var serverOrigin: String
+    public var status: PhoneStatusProps
+    /// The ID the server gave this iPhone; empty until it has one.
+    public var device: String
+
+    public init(serverOrigin: String, status: PhoneStatusProps, device: String) {
+        self.serverOrigin = serverOrigin
+        self.status = status
+        self.device = device
+    }
+}
+
+/// The page open over the main screen.
+public enum PhonePageProps: Equatable, Sendable {
+    case history(PhoneHistoryProps)
+    case settings(PhoneSettingsProps)
+}
+
 /// The main screen: the only one where she moves.
 public struct PhoneMainProps: Equatable, Sendable {
     public var status: PhoneStatusProps
@@ -117,16 +146,19 @@ public struct PhoneMainProps: Equatable, Sendable {
     public var character: PhoneCharacterProps
     /// Messages that could not be recorded, over the input field.
     public var failures: [FailureProps]
+    /// The history or the settings when one is open over it.
+    public var page: PhonePageProps?
 
     public init(
         status: PhoneStatusProps, notices: PhoneNoticeProps?, balloon: PhoneBalloonProps?,
-        character: PhoneCharacterProps, failures: [FailureProps]
+        character: PhoneCharacterProps, failures: [FailureProps], page: PhonePageProps? = nil
     ) {
         self.status = status
         self.notices = notices
         self.balloon = balloon
         self.character = character
         self.failures = failures
+        self.page = page
     }
 }
 
@@ -156,7 +188,21 @@ public enum PhoneProps {
             status: status(state.status), notices: notices(conversation),
             balloon: balloon(conversation, time: time),
             character: PhoneCharacterProps(avatar: state.avatar, expression: conversation.expression),
-            failures: UIProps.failures(conversation))))
+            failures: UIProps.failures(conversation), page: page(state, time: time))))
+    }
+
+    /// Only the page that is open is derived: the history is the costly one.
+    static func page(_ state: PhoneState, time: MessageTime) -> PhonePageProps? {
+        switch state.page {
+        case .history:
+            .history(PhoneHistoryProps(history: UIProps.history(state.conversation, time: time, avatar: state.avatar)))
+        case .settings:
+            .settings(PhoneSettingsProps(
+                serverOrigin: state.serverOrigin ?? "", status: status(state.status),
+                device: state.session.deviceId ?? ""))
+        case nil:
+            nil
+        }
     }
 
     static func login(_ state: PhoneState) -> PhoneLoginProps {

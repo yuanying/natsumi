@@ -5,6 +5,7 @@ import XCTest
 /// This is for looking at the screens, not a gate: it needs the fake server on http://localhost:8787, which the
 /// simulator reaches as the Mac's own loopback. Screenshots are attached to the result bundle, and are also written
 /// to `$NATSUMI_SCREENSHOTS` when it is set (pass it as `TEST_RUNNER_NATSUMI_SCREENSHOTS` to xcodebuild).
+/// `$NATSUMI_SERVER` points it at a fake server on another port.
 @MainActor
 final class FakeServerWalkthroughTests: XCTestCase {
     private let app = XCUIApplication()
@@ -37,6 +38,22 @@ final class FakeServerWalkthroughTests: XCTestCase {
         shoot("6-thinking")
         XCTAssertTrue(app.staticTexts["「明日の午前って空いてる？」だね。わかった。"].waitForExistence(timeout: 15))
         shoot("7-reply")
+
+        app.buttons["会話の履歴"].tap()
+        XCTAssertTrue(app.navigationBars["会話"].waitForExistence(timeout: 5))
+        sleep(1)
+        shoot("8-history")
+        app.navigationBars.buttons.firstMatch.tap()
+        // Everything was seen in the history, so the notice card is gone.
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 5))
+        shoot("9-main-after-history")
+
+        app.buttons["設定"].tap()
+        XCTAssertTrue(app.navigationBars["設定"].waitForExistence(timeout: 5))
+        shoot("10-settings")
+        app.buttons["ログアウト"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+        shoot("11-logged-out")
     }
 
     /// The login screen, when the app has no session: the fake server's address, the button, and the system's
@@ -50,7 +67,7 @@ final class FakeServerWalkthroughTests: XCTestCase {
         if let old = field.value as? String, !old.isEmpty, old != field.placeholderValue {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count))
         }
-        field.typeText("http://localhost:8787")
+        field.typeText(ProcessInfo.processInfo.environment["NATSUMI_SERVER"] ?? "http://localhost:8787")
         button.tap()
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         for title in ["続ける", "Continue"] {

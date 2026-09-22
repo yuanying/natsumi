@@ -33,10 +33,22 @@ public enum PhoneEvent: Equatable, Sendable {
 
     /// The status at the top, when it offers to connect again.
     case reconnectRequested
+    /// The history button at the top right, or the notice card.
+    case historyOpenRequested
+    /// The settings button at the top right.
+    case settingsOpenRequested
+    /// Back from the history or the settings, by the button or by the swipe.
+    case pageClosed
     /// The × on her reply.
     case balloonCloseTapped
     case inputSubmitted(String)
     case outgoingDismissed(requestId: String)
+
+    // MARK: The history and the settings
+
+    /// A row of the history came into sight or went out of it.
+    case historyRowVisibilityChanged(messageId: String, isVisible: Bool)
+    case logoutRequested
 }
 
 /// What the iPhone's mediator asks the world outside to do. The root runs these and reports back with events.
@@ -57,6 +69,8 @@ public enum PhoneEffect: Equatable, Sendable {
     case resumeSession
     case startLogin
     case saveServerAddress(ServerAddress)
+    /// Tell the server the session is over and forget it here.
+    case logout
     /// Read the avatar bundled with the app and answer with `.avatarLoaded`.
     case loadAvatar
 }

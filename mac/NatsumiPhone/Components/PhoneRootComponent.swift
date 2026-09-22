@@ -16,6 +16,8 @@ final class PhoneRootComponent: PhoneComponent {
 
     private let login = LoginComponent()
     private let main = MainComponent()
+    private let history = HistoryComponent()
+    private let settings = SettingsComponent()
 
     private var pending: [PhoneEvent] = []
     private var draining = false
@@ -27,9 +29,13 @@ final class PhoneRootComponent: PhoneComponent {
         super.init(name: "root")
         adopt(login)
         adopt(main)
+        adopt(history)
+        adopt(settings)
         model.sinks = ScreenSinks(
-            login: login.sink, status: main.status.sink, balloon: main.balloon.sink, input: main.input.sink,
-            failures: main.failures.sink)
+            login: login.sink, main: main.sink, status: main.status.sink, header: main.header.sink,
+            notices: main.notices.sink, balloon: main.balloon.sink, input: main.input.sink,
+            failures: main.failures.sink, historyRows: history.rows.sink, historyInput: history.input.sink,
+            historyOutgoing: history.outgoing.sink, settings: settings.buttons.sink)
     }
 
     /// Everything the tree is touched from outside with.
@@ -100,6 +106,8 @@ final class PhoneRootComponent: PhoneComponent {
             startLogin()
         case .saveServerAddress(let address):
             account.serverAddress = address
+        case .logout:
+            logout()
         case .loadAvatar:
             let bundled = Bundle.main.resourceURL?.appendingPathComponent("Avatars/natsumi", isDirectory: true)
             deliver(.avatarLoaded(AvatarLoader.resolve(candidates: bundled.map { [$0] } ?? [])))
@@ -136,6 +144,16 @@ final class PhoneRootComponent: PhoneComponent {
         }
     }
 
+    private func logout() {
+        let token = account.session()?.token
+        let server = account.serverAddress
+        account.clearSession()
+        guard let token, let server else { return }
+        Task {
+            _ = try? await URLSession.shared.data(for: AuthAPI.logoutRequest(server: server, token: token))
+        }
+    }
+
     private func startLogin() {
         guard let server = account.serverAddress else { return }
         Task { [weak self] in
@@ -156,10 +174,17 @@ final class PhoneRootComponent: PhoneComponent {
 /// The ports the screens raise events through, one for each component that has something to raise.
 struct ScreenSinks {
     var login: PhoneEventSink = .ignored
+    var main: PhoneEventSink = .ignored
     var status: PhoneEventSink = .ignored
+    var header: PhoneEventSink = .ignored
+    var notices: PhoneEventSink = .ignored
     var balloon: PhoneEventSink = .ignored
     var input: PhoneEventSink = .ignored
     var failures: PhoneEventSink = .ignored
+    var historyRows: PhoneEventSink = .ignored
+    var historyInput: PhoneEventSink = .ignored
+    var historyOutgoing: PhoneEventSink = .ignored
+    var settings: PhoneEventSink = .ignored
 }
 
 /// SwiftUI's window group cannot be handed a value the way a hosting view can, so it reads the props it was last

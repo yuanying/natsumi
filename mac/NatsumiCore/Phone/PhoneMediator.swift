@@ -15,6 +15,10 @@ public struct PhoneMediator {
     }
 
     public mutating func handle(_ event: PhoneEvent) -> [PhoneEffect] {
+        decide(event) + readWhatIsSeen()
+    }
+
+    private mutating func decide(_ event: PhoneEvent) -> [PhoneEffect] {
         switch event {
         // MARK: The app and the world outside
         case .launched(let serverOrigin):
@@ -102,6 +106,8 @@ public struct PhoneMediator {
             }
             state.loginMessage = nil
             state.status = .loggingIn
+            // The next session starts on the main screen, whatever was open when the last one ended.
+            closePage()
             guard address.origin.absoluteString != state.serverOrigin else { return [.startLogin] }
             state.serverOrigin = address.origin.absoluteString
             state.session = SessionMachine(deviceId: nil, makeRequestId: makeRequestId)
@@ -123,7 +129,64 @@ public struct PhoneMediator {
         case .outgoingDismissed(let requestId):
             state.session.dismiss(requestId: requestId)
             return []
+
+        // MARK: The history and the settings
+        case .historyOpenRequested:
+            guard state.hasSession, state.page != .history else { return [] }
+            state.page = .history
+            state.visibleHistoryIds = []
+            // Notices older than the history have no row to be seen in; opening the history is as far as the owner
+            // can go to see them, so it checks them (ADR 0028).
+            let listed = Set(state.conversation.messages.map(\.messageId))
+            return apply(state.session.acknowledge(
+                state.conversation.unacknowledgedNotificationIds.filter { !listed.contains($0) }))
+
+        case .settingsOpenRequested:
+            guard state.hasSession else { return [] }
+            state.page = .settings
+            state.visibleHistoryIds = []
+            return []
+
+        case .pageClosed:
+            closePage()
+            return []
+
+        case .historyRowVisibilityChanged(let id, let isVisible):
+            guard state.isReadingHistory else { return [] }
+            if isVisible {
+                state.visibleHistoryIds.insert(id)
+            } else {
+                state.visibleHistoryIds.remove(id)
+            }
+            return []
+
+        case .logoutRequested:
+            _ = state.session.stop()
+            state.session = SessionMachine(deviceId: nil, makeRequestId: makeRequestId)
+            state.hasSession = false
+            state.status = state.serverOrigin == nil ? .needsServer : .needsLogin
+            closePage()
+            return [.disconnect, .logout]
         }
+    }
+
+    private mutating func closePage() {
+        state.page = nil
+        state.visibleHistoryIds = []
+    }
+
+    /// Reads the replies and checks the notices the owner has seen in the history (ADR 0022, ADR 0028). Asked after
+    /// every event, since any of them can bring these together — a row coming into sight, or a line arriving under
+    /// the owner's eyes.
+    private mutating func readWhatIsSeen() -> [PhoneEffect] {
+        guard state.isReadingHistory else { return [] }
+        var effects: [PhoneEffect] = []
+        if let id = HistoryReading.target(state.conversation, visible: state.visibleHistoryIds) {
+            effects += apply(state.session.readReplies(through: id))
+        }
+        let seen = state.conversation.unacknowledgedNotificationIds.filter { state.visibleHistoryIds.contains($0) }
+        if !seen.isEmpty { effects += apply(state.session.acknowledge(seen)) }
+        return effects
     }
 
     /// Drops the connection and asks whether there is still a session to come back with.

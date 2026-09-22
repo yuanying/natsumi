@@ -8,18 +8,46 @@ struct MainView: View {
     let sinks: ScreenSinks
 
     var body: some View {
+        // The page open over the main screen is in the props; the stack only shows it, and going back by the button
+        // or by the swipe is raised as an event like any other.
+        NavigationStack(path: Binding(
+            get: { props.page.map { [PageRoute($0)] } ?? [] },
+            set: { if $0.isEmpty { sinks.main(.pageClosed) } }
+        )) {
+            screen
+                .toolbarVisibility(.hidden, for: .navigationBar)
+                .navigationDestination(for: PageRoute.self) { _ in
+                    switch props.page {
+                    case .history(let history):
+                        HistoryView(props: history, sinks: sinks)
+                    case .settings(let settings):
+                        SettingsView(props: settings, send: sinks.settings)
+                    case nil:
+                        EmptyView()
+                    }
+                }
+        }
+        .tint(Comic.pageInk)
+    }
+
+    private var screen: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 8) {
                 StatusView(props: props.status, send: sinks.status)
                 Spacer()
+                RoundButton(systemName: "text.bubble", label: "会話の履歴") { sinks.header(.historyOpenRequested) }
+                RoundButton(systemName: "slider.horizontal.3", label: "設定") { sinks.header(.settingsOpenRequested) }
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
 
             if let notices = props.notices {
-                NoticeCardView(props: notices)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
+                Button { sinks.notices(.historyOpenRequested) } label: {
+                    NoticeCardView(props: notices)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
             }
 
             // The balloon takes what her standing place leaves, and only its own text scrolls when that is not
@@ -50,6 +78,38 @@ struct MainView: View {
         }
         .foregroundStyle(Comic.pageInk)
         .background(Comic.page)
+    }
+}
+
+/// Which page is pushed. The page's own props come from the main props each time it is drawn.
+enum PageRoute: Hashable {
+    case history
+    case settings
+
+    init(_ page: PhonePageProps) {
+        switch page {
+        case .history: self = .history
+        case .settings: self = .settings
+        }
+    }
+}
+
+/// A round button with an ink outline, at the top right of the main screen.
+struct RoundButton: View {
+    let systemName: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(Comic.pageInk)
+                .frame(width: 44, height: 44)
+                .background { InkedPaper(shape: Circle(), fill: Comic.surface, ink: Comic.pageInk) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 }
 

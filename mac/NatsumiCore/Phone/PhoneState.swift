@@ -13,9 +13,23 @@ public struct PhoneState {
     public internal(set) var loginMessage: String?
     public internal(set) var avatar = AvatarArt.placeholder
 
+    /// The page over the main screen, if one is open.
+    public internal(set) var page: PhonePage?
+    /// The rows of the history in sight, by message ID, while the history is open.
+    var visibleHistoryIds: Set<String> = []
+
     public var conversation: ConversationState { session.conversation }
+
+    /// The owner is reading the history: what is in sight there is read and checked.
+    public var isReadingHistory: Bool { hasSession && page == .history }
 
     init(session: SessionMachine) {
         self.session = session
     }
+}
+
+/// A page pushed over the main screen.
+public enum PhonePage: Equatable, Sendable {
+    case history
+    case settings
 }
