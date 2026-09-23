@@ -7,7 +7,7 @@ Calendar の予定表現では UTC 時刻に加えて元の IANA timezone を保
 
 ## 接続と envelope
 
-HTTPS の GitHub OAuth callback 後、短期セッションで WSS に接続する。
+HTTPS の GitHub OAuth callback 後、セッションで WSS に接続する。
 セッション失効・本人以外のアカウントは接続と全コマンドを拒否する。
 Mac の `deviceId` はサーバー登録の ID であり、認証を代替しない。
 方式の理由は [ADR 0006](adr/0006-github-login-and-transport.md) にある。
@@ -24,7 +24,7 @@ Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
 4. `POST /auth/session` に JSON で `code` と `codeVerifier` を送る。成功すると `token` と `expiresAt` が返る。
    login code は 60 秒で期限が切れ、1 回しか使えない（verifier が誤っていた場合も使えなくなる）。
 5. 以後の HTTPS 要求と WSS の upgrade には `Authorization: Bearer <token>` を付ける。
-   トークンは Keychain に保存する。期限（12 時間）が切れたら 1 からやり直す。
+   トークンは Keychain に保存する。期限が切れたら 1 からやり直す。期限は最後に使ってから 30 日で、使うたびに延びる（下記「セッションの延長」）。
 6. `POST /auth/logout`（Bearer 付き）でセッションを失効させる。成功すると 204 が返り、そのセッションの WSS は閉じられる。
 
 | 経路 | 失敗時 | エラーコード |
@@ -37,6 +37,20 @@ Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
 
 エラー応答は `{"error": "<コード>"}` だけで、上流の本文や秘密を含まない。
 
+### セッションの延長
+
+セッションは、最後に使ってから 30 日で切れる。理由は [ADR 0030](adr/0030-a-session-that-lasts-while-it-is-used.md) にある。
+
+- WSS の接続が認証を通ったとき、および接続が開いている間、サーバーはセッションを延ばす。期限は「その時刻から 30 日後」になる。
+  書き込みは 1 時間に 1 回までなので、期限は最大で 1 時間ぶん手前に見えることがある。
+- 延びた期限は、`session.sync` への答え（`session.snapshot`・再送の `command.accepted`・`service.unavailable`）の `sessionExpiresAt` と、
+  接続中に期限が動いたときの `session.renewed`（`expiresAt`）で届く。
+- クライアントは、これらの値が手元の期限より後のときだけ、保存した期限を置き換える。延長は期限を後ろにしか動かさないので、
+  再送で古い値が届いても手元の期限は戻らない。
+- `session.renewed` は `conversation.thinking` と同じく、その場限りで採番しない（下記「考えている 1 行」）。
+  同期の前にも届き得る。知らないクライアントは捨ててよい。その場合も、30 日で再ログインするだけで壊れない。
+- ログアウトは今までどおり即時に効く。期限を過ぎたセッションは延ばせず、その接続は close code 1008 で閉じられる。
+
 ### WSS への接続
 
 `wss://<publicOrigin のホスト>/v1/ws` に Bearer 付きで upgrade する。
@@ -45,7 +59,7 @@ Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
 
 クライアントのメッセージは 1 件ごとに `v` を検証する。`v` が 1 でなければ `command.rejected`（`unsupported-version`）を送り、
 close code 1002 で閉じる。JSON のオブジェクトでなければ `invalid-envelope` を送り、1007 で閉じる。1 メッセージは 64 KiB までとする。
-未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる（command を受けるたびに期限を確かめる）。
+未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる（command を受けるたびと、定期的に期限を確かめる）。
 下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack` は実装済みで、それ以外の command は
 `command.rejected`（`not-implemented`）を返す。`session.sync` の前の応答は、その接続だけの一時的な stream で採番する。
 会話の扱いの理由は [ADR 0008](adr/0008-single-thinking-loop-and-mac-conversation.md)、
@@ -59,8 +73,8 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 その stream 内で単調増加する `seq` を持つ。stream は同一 epoch 中の端末再接続をまたいで維持する。
 全端末向けイベントにも各 stream で個別に採番し、端末限定イベントはその stream だけで採番する。
 他端末への配信で自端末の seq は進まない。通知先の決定に使うサーバー操作順序は別の内部カウンターとする。
-例外は `conversation.thinking` だけで、これは採番せず、その stream がいま出している seq をそのまま付けて送る
-（下記「考えている 1 行」）。
+例外は `conversation.thinking` と `session.renewed` で、これらは採番せず、その stream がいま出している seq をそのまま付けて送る
+（下記「考えている 1 行」、上記「セッションの延長」）。
 同じ deviceId から二重接続した場合は、新接続が旧接続を置き換える。
 `requestId` は応答の相関に使い、購読者全体へのイベントでは省略できる。
 内部のファイルパス、認証情報、Pi の session ファイル参照、任意の Pi SDK 呼び出しをクライアントに転送しない。
@@ -85,7 +99,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 
 | サーバー event | 内容 |
 | --- | --- |
-| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）。envelope の seq が snapshot の sequence。承認待ちは後続の実装で加える |
+| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）。envelope の seq が snapshot の sequence。承認待ちは後続の実装で加える |
 | `conversation.read` | readThroughMessageId、unreadReplyCount。カーソルが進んだときだけ全端末に届く |
 | `notification.acked` | notificationId、acknowledgedAt。知らせを初めて確認したときだけ全端末に届く |
 | `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は replyTo（答えたイベント）、notice は関係するイベントがあれば about。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026） |
@@ -94,8 +108,9 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `conversation.event.completed` | eventId、messageId、status（replied / no-reply / failed）。failed には reason（model-call-limit / timeout / model-error / stopped） |
 | `approval.pending` / `approval.resolved` | approvalId、revision、具体的変更内容または確定結果 |
 | `notification.batch` | 未実装で、送られない。知らせは `conversation.message`（kind: notice）で届く。下記「通知と定期処理」 |
-| `command.accepted` | command ごとの結果（`conversation.send` は messageId・eventId・state、`session.sync` の再送は deviceId と mode: resume） |
-| `command.rejected` / `service.unavailable` | 安全なエラーコード。上流の生エラー本文は転送しない。`service.unavailable` の code は pi-unavailable / conversation-restore-failed / stopping |
+| `session.renewed` | expiresAt（延びたセッションの期限）。接続中に期限が動いたときだけ、その接続に届く。その場限りで、採番せず、再送もしない。上記「セッションの延長」 |
+| `command.accepted` | command ごとの結果（`conversation.send` は messageId・eventId・state、`session.sync` の再送は deviceId・mode: resume・sessionExpiresAt） |
+| `command.rejected` / `service.unavailable` | 安全なエラーコード。上流の生エラー本文は転送しない。`service.unavailable` の code は pi-unavailable / conversation-restore-failed / stopping。`session.sync` への答えのときは deviceId と sessionExpiresAt も付く |
 
 ### 端末の登録と stream
 
@@ -105,7 +120,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 2. `payload.resume` に前回最後に受け取ったイベントの epoch・streamId・seq を入れる。同じ epoch・streamId で、その seq より後が
    サーバーのバッファに残っていれば、欠けたイベントが元の seq のまま届き、続けて `command.accepted`（mode: resume）が届く。
 3. それ以外の場合は `session.snapshot` が届く。Mac は表示をこの snapshot で置き換え、以後はこれより大きい seq のイベントを適用する。
-4. 会話が使えない場合は `service.unavailable` が届く（deviceId も付く）。
+4. 会話が使えない場合は `service.unavailable` が届く（deviceId と sessionExpiresAt も付く）。
 5. 同期の前の会話 command（`conversation.send`・`conversation.read`・`notification.ack`）は `sync-required`、
    接続の端末と異なる `deviceId` の command は `device-mismatch` で拒否される。
 6. 同じ端末で新しく接続すると古い接続は close code 4001 で閉じられる。受信が大きく遅れた接続は 4002 で閉じられるので、再接続して同期する。
