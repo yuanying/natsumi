@@ -167,7 +167,7 @@ test('schema 9 adds the line expression and leaves every earlier row without one
   insert.run('message-2', 2, 'natsumi', 'reply', 'event-1', null, null);
   insert.run('message-3', 3, 'natsumi', 'notice', null, null, null);
 
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [9]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 9)).applied, [9]);
 
   assert.deepEqual(plainRows(db.prepare('SELECT message_id, expression FROM conversation_messages ORDER BY position').all()), [
     { message_id: 'message-1', expression: null },
@@ -182,4 +182,30 @@ test('schema 9 adds the line expression and leaves every earlier row without one
   assert.throws(() => withExpression.run('message-5', 5, 'owner', 'message', 'event-5', 'request-5', 'device-1', 'happy'),
     /constraint/i);
   withExpression.run('message-6', 6, 'owner', 'message', 'event-6', 'request-6', 'device-1', null);
+}));
+
+/**
+ * Schema 10 adds where to push a device that is away (ADR 0029). The devices already registered stay as they were and
+ * have no registration until they send push.register.
+ */
+test('schema 10 adds one push registration per device, one device per token, and keeps the devices', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 9));
+  db.prepare(`INSERT INTO devices (device_id, github_user_id, client_session_id, created_at, last_seen_at) VALUES (?, 1, 's', 'x', 'x')`)
+    .run('device-1');
+  db.prepare(`INSERT INTO devices (device_id, github_user_id, client_session_id, created_at, last_seen_at) VALUES (?, 1, 's', 'x', 'x')`)
+    .run('device-2');
+
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 10)).applied, [10]);
+
+  assert.deepEqual(plainRows(db.prepare('SELECT device_id FROM devices ORDER BY device_id').all()), [{ device_id: 'device-1' }, { device_id: 'device-2' }]);
+  assert.deepEqual(plainRows(db.prepare('SELECT * FROM push_registrations').all()), []);
+  const insert = db.prepare(`INSERT INTO push_registrations (device_id, token, public_key, environment, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'x', 'x')`);
+  const key = new Uint8Array(65).fill(4);
+  insert.run('device-1', 'aa', key, 'sandbox');
+  assert.throws(() => insert.run('device-1', 'bb', key, 'sandbox'), /constraint/i, 'one per device');
+  assert.throws(() => insert.run('device-2', 'aa', key, 'sandbox'), /constraint/i, 'one device per token');
+  assert.throws(() => insert.run('device-2', 'bb', key, 'development'), /constraint/i);
+  assert.throws(() => insert.run('device-2', 'bb', new Uint8Array(33), 'sandbox'), /constraint/i);
+  assert.throws(() => insert.run('device-missing', 'cc', key, 'sandbox'), /constraint/i);
 }));

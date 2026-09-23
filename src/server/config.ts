@@ -143,6 +143,18 @@ const MIN_SHELL_WAIT_SECONDS = 10;
 /** A warning under a kibibyte would fire on an empty workspace. */
 const MIN_SIZE_WARN_BYTES = 1024;
 
+/** Pushes to the iPhone through APNs with token authentication (ADR 0029). Without it nothing is pushed. */
+export interface ApnsConfig {
+  /** The Apple Developer team that owns the key, the JWT's issuer. */
+  teamId: string;
+  /** The ID of the .p8 key, the JWT's `kid`. */
+  keyId: string;
+  /** The app's bundle ID, sent as `apns-topic`. */
+  topic: string;
+  /** The .p8 key (PKCS#8 PEM). */
+  key: SecretReference;
+}
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -150,6 +162,7 @@ export interface ServerConfig {
   listen: ListenConfig;
   github: GitHubConfig;
   loop: LoopConfig;
+  apns?: ApnsConfig;
 }
 
 export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
@@ -166,6 +179,7 @@ const SECTIONS = {
   listen: parseListen,
   github: parseGitHub,
   loop: parseLoop,
+  apns: parseApns,
 } satisfies { [K in keyof ServerConfig]: Section<ServerConfig[K]> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -198,6 +212,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     listen: SECTIONS.listen(required(root, 'listen', ''), 'listen'),
     github: SECTIONS.github(required(root, 'github', ''), 'github'),
     loop: SECTIONS.loop(root.loop ?? {}, 'loop'),
+    ...(root.apns === undefined ? {} : { apns: SECTIONS.apns(root.apns, 'apns') }),
   };
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
@@ -345,6 +360,24 @@ function parseGitHub(value: unknown, path: string): GitHubConfig {
     clientId: nonEmptyString(required(github, 'clientId', path), `${path}.clientId`),
     clientSecret, callbackUrl: callback.href, allowedUserId: id,
   };
+}
+
+/** Apple's team and key IDs are ten upper-case letters or digits. */
+const APPLE_ID = /^[A-Z0-9]{10}$/;
+/** A bundle ID: dot-separated parts of letters, digits and hyphens. */
+const BUNDLE_ID = /^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/;
+
+function parseApns(value: unknown, path: string): ApnsConfig {
+  const apns = object(value, path);
+  onlyKeys(apns, path, ['teamId', 'keyId', 'topic', 'keyEnv', 'keyFile']);
+  const key = secretReference(apns, path, 'key');
+  for (const name of ['teamId', 'keyId']) {
+    const id = required(apns, name, path);
+    if (typeof id !== 'string' || !APPLE_ID.test(id)) throw new ConfigError(`${path}.${name}`, 'must be ten upper-case letters or digits');
+  }
+  const topic = required(apns, 'topic', path);
+  if (typeof topic !== 'string' || !BUNDLE_ID.test(topic)) throw new ConfigError(`${path}.topic`, 'must be the app\'s bundle ID');
+  return { teamId: apns.teamId as string, keyId: apns.keyId as string, topic, key };
 }
 
 function parseLoop(value: unknown, path: string): LoopConfig {

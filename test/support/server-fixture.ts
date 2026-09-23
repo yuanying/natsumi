@@ -91,7 +91,11 @@ export interface FixtureOptions {
   env?: Record<string, string | undefined>;
   /** Live events kept per device stream for replay. */
   streamBufferSize?: number;
+  /** Turns APNs on, sending to a local stand-in for both environments with this throwaway key (ADR 0029). */
+  apns?: { origin: string; pem: string; retryDelaysMs?: number[] };
 }
+
+export const APNS_KEY_ENV = 'NATSUMI_APNS_KEY';
 
 /** A running server on loopback plaintext with a stub GitHub, a scripted Pi model, a controllable clock and captured logs. */
 export async function startFixture(options: FixtureOptions = {}) {
@@ -106,13 +110,15 @@ export async function startFixture(options: FixtureOptions = {}) {
 
   let server: RunningServer;
   const launch = async (allowedUserId: number) => {
-    await writeFile(configFile, JSON.stringify(serverConfig(root, { allowedUserId })));
+    const { apns } = options;
+    await writeFile(configFile, JSON.stringify(serverConfig(root, { allowedUserId, apns: apns !== undefined })));
     server = await startServer({
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
-      env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET },
+      env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET, ...(apns ? { [APNS_KEY_ENV]: apns.pem } : {}) },
       github: stub.endpoints, clock: () => clock.now, log: line => { logs.push(line); },
       pi: { runtime: fixtureRuntime, configureSession: session => { session.agent.streamFunction = model.streamFunction; } },
       streamBufferSize: options.streamBufferSize,
+      ...(apns ? { apns: { origins: { sandbox: apns.origin, production: apns.origin }, retryDelaysMs: apns.retryDelaysMs } } : {}),
     });
   };
   try { await launch(options.allowedUserId ?? OWNER.id); } catch (error) {
@@ -146,7 +152,8 @@ export async function startFixture(options: FixtureOptions = {}) {
 
 export type Fixture = Awaited<ReturnType<typeof startFixture>>;
 
-export function serverConfig(root: string, { allowedUserId = OWNER.id, listen }: { allowedUserId?: number; listen?: unknown } = {}) {
+export function serverConfig(root: string, { allowedUserId = OWNER.id, listen, apns = false }:
+  { allowedUserId?: number; listen?: unknown; apns?: boolean } = {}) {
   return {
     pi: {
       agentDirectory: join(root, 'pi', 'agent'), sessionDirectory: join(root, 'pi', 'sessions'),
@@ -158,6 +165,7 @@ export function serverConfig(root: string, { allowedUserId = OWNER.id, listen }:
       clientId: 'Iv1.fixtureclient', clientSecretEnv: 'NATSUMI_GITHUB_CLIENT_SECRET',
       callbackUrl: `${PUBLIC_ORIGIN}/auth/github/callback`, allowedUserId,
     },
+    ...(apns ? { apns: { teamId: 'TEAM000001', keyId: 'KEY0000001', topic: 'net.example.natsumi', keyEnv: APNS_KEY_ENV } } : {}),
   };
 }
 
