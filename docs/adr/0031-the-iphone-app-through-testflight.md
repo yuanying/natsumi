@@ -1,7 +1,7 @@
 # 0031. iPhone のアプリを GitHub Actions でビルドし、TestFlight で配る
 
 - Date: 2026-09-23
-- Status: Accepted（最初の実行の結果と、開発版と TestFlight 版を共存させないことを末尾に追記）
+- Status: Accepted（最初の実行の結果、TestFlight 版で通知が届いたこと、開発版と TestFlight 版を共存させないことを末尾に追記）
 
 ## Context
 
@@ -92,7 +92,7 @@ iPhone の TestFlight アプリが新しいビルドを自動で入れるので�
 - Xcode 27.0（`xcode-27` のイメージ。実体は `Xcode_27_Release_Candidate.app`）で archive と export が通り、
   1.0 (2) を App Store Connect にアップロードした。開発用の .p12 による archive の署名、クラウドの配布用証明書による
   export の署名、API キーでのアップロードが、この ADR の形のまま通ることを確かめた。
-- APNs の鍵の環境は Sandbox & Production である（本人が確かめた）。TestFlight 版（production）にも、サーバーの設定を
-  変えずに送れる条件はそろっている。実機に通知が届くことはまだ確かめていない。
+- APNs の鍵の環境は Sandbox & Production である（本人が確かめた）。
+- 2026-09-23 に、本人が TestFlight 版の実機で通知が届くことを確かめた（送り先は production の APNs）。
 - 開発版と TestFlight 版は bundle ID が同じで、共存しない。共存させる仕組み（別の bundle ID など）は作らない。
   開発中に実機で確かめるときだけ Xcode から上書きし、終わったら TestFlight から入れ直す（本人の決定）。
