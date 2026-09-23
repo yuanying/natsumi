@@ -491,7 +491,10 @@ test('a review without a handoff note keeps the current session, and the tools r
     review.call('reply_to_mac', { text: '返事', expression: 'neutral' });
     review.finish();
     const review2 = await f.model.next();
-    assert.deepEqual(toolResults(review2.context).map(r => r.isError), [true, true]);
+    const refused = toolResults(review2.context);
+    assert.deepEqual(refused.map(r => r.isError), [true, true]);
+    // Neither speaks to the owner at night; what should reach tomorrow goes into the handoff (ADR 0032).
+    for (const result of refused) assert.match(result.text, /夜の振り返りの間[\s\S]*write_handoff_note/);
     review2.finish();
     const outcome = await rotating;
     assert.deepEqual(outcome, { result: 'failed', reason: 'no-handoff' });

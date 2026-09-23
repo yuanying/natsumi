@@ -149,36 +149,45 @@ test('an owner message is shown at once with the thinking expression and gets on
   } finally { await f.cleanup(); }
 });
 
-test('reply_to_mac is refused a second time, and a message answered in an earlier turn cannot be answered again', async () => {
+test('reply_to_mac can be called again in the same turn: the first answers the message, the rest answer none', async () => {
   const f = await setup();
   try {
     const { loop, events } = await f.open();
     const sent = f.send(loop, 'こんにちは');
     const first = await f.model.next();
     first.call('reply_to_mac', { text: '一回目', expression: 'neutral' });
-    first.call('reply_to_mac', { text: '二回目', expression: 'neutral' });
+    first.call('reply_to_mac', { text: '二回目', expression: 'happy' });
     first.finish();
     const second = await f.model.next();
     const results = toolResults(second.context);
-    assert.deepEqual(results.map(r => r.isError), [false, true]);
+    assert.deepEqual(results.map(r => r.isError), [false, false]);
     assert.match(results[0]!.text, /送りました/);
-    assert.match(results[1]!.text, /もう返事を送りました/);
+    assert.match(results[1]!.text, /送りました/);
+    // She may go on talking, but is told not to say the same thing again.
+    assert.match(results[1]!.text, /繰り返さない/);
     second.finish();
-    await completed(events, sent.eventId);
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
 
-    // A later turn answers its own message, never the one already answered.
+    // A later turn answers its own message first, and what follows answers none.
     const later = f.send(loop, 'もう一件');
     const third = await f.model.next();
     third.call('reply_to_mac', { text: '二件目への返事', expression: 'neutral' });
-    third.call('reply_to_mac', { text: '遅れた返事', expression: 'neutral' });
+    third.call('reply_to_mac', { text: '付け足し', expression: 'neutral' });
     third.finish();
     const fourth = await f.model.next();
-    assert.deepEqual(toolResults(fourth.context).map(r => r.isError), [false, true]);
+    assert.deepEqual(toolResults(fourth.context).map(r => r.isError), [false, false]);
     fourth.finish();
     await completed(events, later.eventId);
     await loop.idle();
-    assert.deepEqual(messages(events, 'natsumi').map(e => [e.payload.text, e.payload.replyTo]),
-      [['一回目', sent.eventId], ['二件目への返事', later.eventId]]);
+    // A reply that answered no message carries no replyTo, rather than a null one.
+    assert.deepEqual(messages(events, 'natsumi').map(e => [e.payload.text, e.payload.replyTo, 'replyTo' in e.payload]),
+      [['一回目', sent.eventId, true], ['二回目', undefined, false], ['二件目への返事', later.eventId, true], ['付け足し', undefined, false]]);
+    assert.deepEqual(loop.snapshot().messages.map(m => [m.kind, m.text, m.replyTo]), [
+      ['message', 'こんにちは', undefined], ['reply', '一回目', sent.eventId], ['reply', '二回目', undefined],
+      ['message', 'もう一件', undefined], ['reply', '二件目への返事', later.eventId], ['reply', '付け足し', undefined],
+    ]);
+    // Every one of her lines is a reply the owner has not read yet.
+    assert.equal(loop.snapshot().unreadReplyCount, 4);
   } finally { await f.cleanup(); }
 });
 
@@ -285,7 +294,7 @@ test('a reply carrying template control strings or non-Japanese script is refuse
     assert.deepEqual(refused.map(r => r.isError), [true, true]);
     assert.match(refused[0]!.text, /日本語以外/);
     assert.match(refused[1]!.text, /日本語以外/);
-    // A refused reply does not use up the one reply.
+    // A refused reply answers nothing: the one written again answers the message.
     call3.call('reply_to_mac', { text: '了解です', expression: 'neutral' });
     call3.finish();
     (await f.model.next()).finish();
@@ -705,7 +714,7 @@ const onPrompt = (step: (context: Context) => ReturnType<NonNullable<ScriptedMod
 const eventState = (f: Awaited<ReturnType<typeof setup>>, eventId: string) =>
   (f.db.prepare('SELECT state FROM loop_events WHERE event_id = ?').get(eventId) as { state: string }).state;
 
-test('reply_to_mac names no event, answers the message being handled, and is refused when none is waiting', async () => {
+test('reply_to_mac names no event, answers the message being handled, and speaks in a turn with no message too', async () => {
   const f = await setup();
   try {
     const { loop, events } = await f.open();
@@ -718,36 +727,36 @@ test('reply_to_mac names no event, answers the message being handled, and is ref
     assert.equal(JSON.stringify(first.context).includes(sent.eventId), false);
     assert.doesNotMatch(first.context.systemPrompt ?? "", /finish_event|event_id/);
     first.call('reply_to_mac', { text: '一回目', expression: 'neutral' });
-    first.call('reply_to_mac', { text: '二回目', expression: 'neutral' });
     first.finish();
     const second = await f.model.next();
     const results = toolResults(second.context);
-    assert.deepEqual(results.map(r => r.isError), [false, true]);
+    assert.deepEqual(results.map(r => r.isError), [false]);
     assert.match(results[0]!.text, /送りました/);
-    assert.match(results[1]!.text, /送信していません/);
-    // The refusal says why and what to do instead, without an ID to go looking for.
-    assert.match(results[1]!.text, /notify_owner/);
-    assert.doesNotMatch(results[1]!.text, /event-/);
+    assert.doesNotMatch(results[0]!.text, /event-/);
     second.finish();
     assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
     await loop.idle();
     assert.equal(f.model.calls, 2);
-    const replies = messages(events, 'natsumi');
-    assert.deepEqual(replies.map(e => [e.payload.text, e.payload.replyTo]), [['一回目', sent.eventId]]);
+    assert.deepEqual(messages(events, 'natsumi').map(e => [e.payload.text, e.payload.replyTo]), [['一回目', sent.eventId]]);
 
-    // A ping has no message to answer.
+    // A ping has no message to answer, and she may still speak to the owner, as often as she has something to say.
     f.model.takeOver();
     assert.equal(loop.ping(), true);
     const ping = await f.model.next();
     assert.equal('event_id' in eventLines(lastUserText(ping.context))[0]!, false);
-    ping.call('reply_to_mac', { text: '誰にも宛てていない返事', expression: 'neutral' });
+    ping.call('reply_to_mac', { text: 'そろそろお昼ですね', expression: 'happy' });
+    ping.call('reply_to_mac', { text: '何か食べましたか？', expression: 'neutral' });
     ping.finish();
     const after = await f.model.next();
-    assert.deepEqual(toolResults(after.context).map(r => r.isError), [true]);
-    assert.match(toolResults(after.context)[0]!.text, /本人のメッセージ/);
+    assert.deepEqual(toolResults(after.context).map(r => r.isError), [false, false]);
     after.finish();
     await loop.idle();
-    assert.equal(messages(events, 'natsumi').length, 1);
+    const spoken = messages(events, 'natsumi').slice(1);
+    assert.deepEqual(spoken.map(e => [e.payload.kind, e.payload.text, 'replyTo' in e.payload]),
+      [['reply', 'そろそろお昼ですね', false], ['reply', '何か食べましたか？', false]]);
+    // A ping was never an owner message, so it tells no device it was answered.
+    assert.equal(events.some(e => e.type === 'conversation.event.completed' && e.payload.eventId !== sent.eventId), false);
+    assert.deepEqual(loop.snapshot().pendingEvents, []);
   } finally { await f.cleanup(); }
 });
 
@@ -771,22 +780,23 @@ test('one reply answers every message steered in before it, and a message steere
     assert.deepEqual([eventState(f, first.eventId), eventState(f, second.eventId)], ['replied', 'replied']);
     assert.deepEqual(loop.snapshot().pendingEvents, []);
     const third = f.send(loop, '三件目');
-    call3.call('reply_to_mac', { text: '同じ宛先への二度目', expression: 'neutral' });
+    call3.call('reply_to_mac', { text: '続けてひとこと', expression: 'neutral' });
     call3.finish();
 
     const call4 = await f.model.next();
     assert.equal(eventLines(lastUserText(call4.context))[0]!.text, '三件目');
-    // Refused before the third arrived: nothing was waiting then.
-    assert.deepEqual(toolResults(call4.context).map(r => r.isError), [true]);
+    // Sent before the third arrived: nothing was waiting then, so it answers none, and the third still waits.
+    assert.deepEqual(toolResults(call4.context).map(r => r.isError), [false]);
+    assert.equal(eventState(f, third.eventId), 'processing');
     call4.call('reply_to_mac', { text: '三件目への返事', expression: 'neutral' });
     call4.finish();
     (await f.model.next()).finish();
 
     await loop.idle();
     for (const sent of [first, second, third]) assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
-    // The reply points at the newest message it answered.
+    // The reply points at the newest message it answered; the one in between answered none.
     assert.deepEqual(messages(events, 'natsumi').map(e => [e.payload.text, e.payload.replyTo]),
-      [['二件まとめての返事', second.eventId], ['三件目への返事', third.eventId]]);
+      [['二件まとめての返事', second.eventId], ['続けてひとこと', undefined], ['三件目への返事', third.eventId]]);
   } finally { await f.cleanup(); }
 });
 

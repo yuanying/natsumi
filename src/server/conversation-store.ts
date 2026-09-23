@@ -95,7 +95,10 @@ export class ConversationStore {
     return { row, eventId };
   }
 
-  /** What natsumi sent the owner: a reply to an event, or a notice about some, with the feeling she chose for it. */
+  /**
+   * What natsumi sent the owner: a reply, naming the event it answered if it answered one (ADR 0032), or a notice
+   * about some, with the feeling she chose for it.
+   */
   insertMessage(message: { role: MessageRow['role']; kind: MessageRow['kind']; text: string; eventId?: string;
     about?: string[]; requestId?: string; deviceId?: string; expression?: Expression }): MessageRow {
     const { db } = this;
@@ -115,7 +118,7 @@ export class ConversationStore {
       JOIN loop_events e ON e.event_id = m.event_id WHERE m.request_id = ?`).get(requestId) as ExistingMessage | undefined;
   }
 
-  /** Whether the event has been answered. One reply per event is a unique index, this is what reads it. */
+  /** Whether the event has been answered. One answering reply per event is a unique index, this is what reads it. */
   hasReply(eventId: string): boolean {
     return this.db.prepare(`SELECT 1 FROM conversation_messages WHERE kind = 'reply' AND event_id = ?`).get(eventId) !== undefined;
   }
