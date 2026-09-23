@@ -14,6 +14,7 @@
 		A10000000000000000000054 /* NatsumiCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* NatsumiCore.framework */; };
 		A10000000000000000000055 /* NatsumiCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* NatsumiCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000056 /* Avatars in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* Avatars */; };
+		A10000000000000000000057 /* NatsumiWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000026 /* NatsumiWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +46,13 @@
 			remoteGlobalIDString = A10000000000000000000033;
 			remoteInfo = NatsumiPhone;
 		};
+		A10000000000000000000094 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000035;
+			remoteInfo = NatsumiWidgets;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -70,6 +78,17 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A1000000000000000000004E /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A10000000000000000000057 /* NatsumiWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -79,7 +98,18 @@
 		A10000000000000000000023 /* Avatars */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Avatars; sourceTree = "<group>"; };
 		A10000000000000000000024 /* NatsumiPhone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NatsumiPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000025 /* NatsumiPhoneUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NatsumiPhoneUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000026 /* NatsumiWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NatsumiWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A10000000000000000000018 /* Exceptions for "NatsumiWidgets" folder in "NatsumiWidgets" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A10000000000000000000035 /* NatsumiWidgets */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A10000000000000000000010 /* Natsumi */ = {
@@ -110,6 +140,19 @@
 		A10000000000000000000015 /* NatsumiPhoneUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = NatsumiPhoneUITests;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000016 /* NatsumiWidgets */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A10000000000000000000018 /* Exceptions for "NatsumiWidgets" folder in "NatsumiWidgets" target */,
+			);
+			path = NatsumiWidgets;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000017 /* NatsumiLaunch */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NatsumiLaunch;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -153,6 +196,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A1000000000000000000005E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -165,6 +215,8 @@
 				A10000000000000000000013 /* NatsumiPhone */,
 				A10000000000000000000014 /* Shared */,
 				A10000000000000000000015 /* NatsumiPhoneUITests */,
+				A10000000000000000000016 /* NatsumiWidgets */,
+				A10000000000000000000017 /* NatsumiLaunch */,
 				A10000000000000000000023 /* Avatars */,
 				A10000000000000000000003 /* Products */,
 			);
@@ -178,6 +230,7 @@
 				A10000000000000000000022 /* NatsumiCoreTests.xctest */,
 				A10000000000000000000024 /* NatsumiPhone.app */,
 				A10000000000000000000025 /* NatsumiPhoneUITests.xctest */,
+				A10000000000000000000026 /* NatsumiWidgets.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -257,15 +310,18 @@
 				A1000000000000000000004B /* Frameworks */,
 				A1000000000000000000004C /* Resources */,
 				A1000000000000000000004D /* Embed Frameworks */,
+				A1000000000000000000004E /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				A10000000000000000000062 /* PBXTargetDependency */,
+				A10000000000000000000064 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A10000000000000000000013 /* NatsumiPhone */,
 				A10000000000000000000014 /* Shared */,
+				A10000000000000000000017 /* NatsumiLaunch */,
 			);
 			name = NatsumiPhone;
 			productName = NatsumiPhone;
@@ -292,6 +348,27 @@
 			productName = NatsumiPhoneUITests;
 			productReference = A10000000000000000000025 /* NatsumiPhoneUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		A10000000000000000000035 /* NatsumiWidgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000076 /* Build configuration list for PBXNativeTarget "NatsumiWidgets" */;
+			buildPhases = (
+				A1000000000000000000005D /* Sources */,
+				A1000000000000000000005E /* Frameworks */,
+				A1000000000000000000005F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A10000000000000000000016 /* NatsumiWidgets */,
+				A10000000000000000000017 /* NatsumiLaunch */,
+			);
+			name = NatsumiWidgets;
+			productName = NatsumiWidgets;
+			productReference = A10000000000000000000026 /* NatsumiWidgets.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -322,6 +399,7 @@
 				A10000000000000000000032 /* NatsumiCoreTests */,
 				A10000000000000000000033 /* NatsumiPhone */,
 				A10000000000000000000034 /* NatsumiPhoneUITests */,
+				A10000000000000000000035 /* NatsumiWidgets */,
 			);
 		};
 /* End PBXProject section */
@@ -358,6 +436,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A1000000000000000000005C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A1000000000000000000005F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -402,6 +487,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A1000000000000000000005D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -424,6 +516,11 @@
 			isa = PBXTargetDependency;
 			target = A10000000000000000000033 /* NatsumiPhone */;
 			targetProxy = A10000000000000000000093 /* PBXContainerItemProxy */;
+		};
+		A10000000000000000000064 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000035 /* NatsumiWidgets */;
+			targetProxy = A10000000000000000000094 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -699,6 +796,58 @@
 			};
 			name = Release;
 		};
+		A1000000000000000000008C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
+				"CODE_SIGN_STYLE[sdk=iphoneos*]" = Automatic;
+				DEVELOPMENT_TEAM = R849P56TAV;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NatsumiWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = natsumi;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.yuanying.natsumi.phone.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A1000000000000000000008D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
+				"CODE_SIGN_STYLE[sdk=iphoneos*]" = Automatic;
+				DEVELOPMENT_TEAM = R849P56TAV;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NatsumiWidgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = natsumi;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.yuanying.natsumi.phone.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -752,6 +901,15 @@
 			buildConfigurations = (
 				A1000000000000000000008A /* Debug */,
 				A1000000000000000000008B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000076 /* Build configuration list for PBXNativeTarget "NatsumiWidgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000000000000000000008C /* Debug */,
+				A1000000000000000000008D /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
