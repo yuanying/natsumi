@@ -372,7 +372,20 @@ iOS 26 以降の iPhone と Xcode 27 を使います。ロジックは Mac と�
 xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destination 'generic/platform=iOS Simulator' -derivedDataPath mac/build
 ```
 
-- シミュレータではそのまま動きます。実機に入れるときは、Xcode でターゲット `NatsumiPhone` の Signing に自分のチームを選んでください。
+- シミュレータではそのまま動きます。
+
+実機に入れるときは、iOS のときだけ自動署名になるようにしてあるので、次の手順で Xcode にチームを選ばせます。
+
+1. Xcode の Settings… > Accounts に Apple ID を足します（有料の Developer Program は要りません）。
+2. `mac/Natsumi.xcodeproj` を開き、ターゲット `NatsumiPhone` と `NatsumiCore` の Signing & Capabilities で Team を選びます。
+   `NatsumiCore` はアプリに埋め込む framework なので、こちらにも要ります。Team を選ぶと `DEVELOPMENT_TEAM` が
+   プロジェクトのファイルに書かれます。
+3. Bundle Identifier（`io.github.yuanying.natsumi.phone`）がほかの人に取られていると断られます。その場合は自分のものに変えます。
+4. iPhone を USB でつなぎ、iPhone 側で「このコンピュータを信頼」を選び、Xcode の実行先に選んで ⌘R で入れます。
+5. 初回は iPhone の 設定 > 一般 > VPN とデバイス管理 で、自分の Apple ID の開発者を信頼します。
+   無料の Apple ID で署名したアプリは 7 日で期限が切れるので、切れたらもう一度 ⌘R で入れ直します。
+
+実機は Mac の `localhost` に届かないので、偽のサーバーではなく本物のサーバー（https）につなぎます。
 - 起動するとログインの画面が出ます。サーバーの URL を入れて「GitHub でログイン」を押します。セッションのトークンは Keychain にだけ保存されます。
 - メインの画面には、キャラクター・最後の未読の返事（全文。長いときは吹き出しの中だけがスクロールします）・知らせ・入力欄が出ます。
   吹き出しの × は、Mac と同じく最後の返事までを既読にします。
