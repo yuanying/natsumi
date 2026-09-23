@@ -484,6 +484,8 @@ final class RootComponent: Component {
             if let data = try? envelope.encoded(), let text = String(data: data, encoding: .utf8) { socket?.send(text) }
         case .saveDeviceId(let id):
             account.deviceId = id
+        case .extendSession(let expiresAt):
+            account.extendSession(until: expiresAt)
         case .clearSession:
             account.clearSession()
         case .scheduleReconnect(let delay):

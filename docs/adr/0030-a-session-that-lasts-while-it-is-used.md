@@ -1,7 +1,7 @@
 # 0030. 使っている間は切れないクライアントのセッション
 
 - Date: 2026-09-23
-- Status: Accepted
+- Status: Accepted（クライアントが期限を受け取って Keychain の期限を延ばす対応は、Mac と iPhone の両方に入った）
 
 ## Context
 

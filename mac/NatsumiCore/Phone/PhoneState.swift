@@ -19,6 +19,11 @@ public struct PhoneState {
     public internal(set) var page: PhonePage?
     /// The rows of the history in sight, by message ID, while the history is open.
     var visibleHistoryIds: Set<String> = []
+    /// Where this iPhone's notifications go. It outlives a session: the next login registers the same (ADR 0029).
+    var pushRegistration: PushRegistration?
+    /// The last tidying asked for while synced, so the same one is not asked for again. Cleared when the connection
+    /// is left, so coming back tidies once more.
+    var lastTidy: PushTidy?
 
     public var conversation: ConversationState { session.conversation }
 

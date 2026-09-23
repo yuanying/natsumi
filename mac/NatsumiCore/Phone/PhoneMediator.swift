@@ -15,7 +15,8 @@ public struct PhoneMediator {
     }
 
     public mutating func handle(_ event: PhoneEvent) -> [PhoneEffect] {
-        decide(event) + readWhatIsSeen()
+        let effects = decide(event) + readWhatIsSeen()
+        return effects + tidyNotifications()
     }
 
     private mutating func decide(_ event: PhoneEvent) -> [PhoneEffect] {
@@ -37,7 +38,8 @@ public struct PhoneMediator {
                 return []
             }
             state.session = SessionMachine(deviceId: deviceId, makeRequestId: makeRequestId)
-            return apply(state.session.start())
+            if let registration = state.pushRegistration { _ = state.session.registerPush(registration) }
+            return [.registerForNotifications] + apply(state.session.start())
 
         case .credentialsMissing:
             _ = state.session.stop()
@@ -90,6 +92,13 @@ public struct PhoneMediator {
         case .enteredBackground:
             guard state.hasSession else { return [] }
             return apply(state.session.stop())
+
+        case .pushRegistrationReady(let registration):
+            state.pushRegistration = registration
+            return apply(state.session.registerPush(registration))
+
+        case .backgroundPushReceived(let push):
+            return [.tidyNotifications(.background(push))]
 
         // MARK: Login
         case .loginSubmitted(let text):
@@ -195,6 +204,19 @@ public struct PhoneMediator {
         return effects
     }
 
+    /// Keeps the badge and the delivered notifications in step with what the owner has read and checked, whenever
+    /// that changes while synced (ADR 0029).
+    private mutating func tidyNotifications() -> [PhoneEffect] {
+        guard state.session.phase == .ready else {
+            state.lastTidy = nil
+            return []
+        }
+        let tidy = PushTidy.synced(state.conversation)
+        guard tidy != state.lastTidy else { return [] }
+        state.lastTidy = tidy
+        return [.tidyNotifications(tidy)]
+    }
+
     /// Drops the connection and asks whether there is still a session to come back with.
     private mutating func resume() -> [PhoneEffect] {
         _ = state.session.stop()
@@ -214,6 +236,7 @@ public struct PhoneMediator {
             case .disconnect: out.append(.disconnect)
             case .send(let envelope): out.append(.sendToServer(envelope))
             case .saveDeviceId(let id): out.append(.saveDeviceId(id))
+            case .extendSession(let expiresAt): out.append(.extendSession(until: expiresAt))
             case .requireLogin:
                 state.hasSession = false
                 out += [.disconnect, .clearSession]

@@ -431,6 +431,7 @@ public struct UIMediator {
             case .disconnect: out.append(.disconnect)
             case .send(let envelope): out.append(.sendToServer(envelope))
             case .saveDeviceId(let id): out.append(.saveDeviceId(id))
+            case .extendSession(let expiresAt): out.append(.extendSession(until: expiresAt))
             case .requireLogin:
                 state.hasSession = false
                 out += [.disconnect, .clearSession]

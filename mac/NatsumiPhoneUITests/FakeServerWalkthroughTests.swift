@@ -82,6 +82,14 @@ final class FakeServerWalkthroughTests: XCTestCase {
                 break
             }
         }
+        // Once logged in, the app asks whether it may show notifications (ADR 0029).
+        for title in ["許可", "Allow"] {
+            let allow = springboard.buttons[title]
+            if allow.waitForExistence(timeout: 3) {
+                allow.tap()
+                break
+            }
+        }
     }
 
     private func shoot(_ name: String) {

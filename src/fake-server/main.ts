@@ -101,6 +101,10 @@ function answer(envelope: ClientEnvelope): void {
     case 'conversation.send':
       converse(String(payload.text), requestId);
       return;
+    case 'push.register':
+      // Nothing is sent from here: the simulator's pushes are not the server's to make.
+      broadcast('command.accepted', { environment: payload.environment }, requestId);
+      return;
     default:
       broadcast('command.rejected', { code: 'unsupported' }, requestId);
   }

@@ -18,6 +18,8 @@ public enum SessionEffect: Equatable, Sendable {
     case saveDeviceId(String)
     case requireLogin
     case scheduleReconnect(after: TimeInterval)
+    /// Keep the saved session until this time, if that is later than what is saved (ADR 0030).
+    case extendSession(until: Date)
 }
 
 public enum SessionPhase: Equatable, Sendable {
@@ -40,6 +42,8 @@ public struct SessionMachine {
     public private(set) var deviceId: String?
     public private(set) var conversation = ConversationState()
 
+    /// Where this iPhone wants its notifications, sent after every sync (ADR 0029). The Mac has none.
+    private var pushRegistration: PushRegistration?
     private var tracker = StreamTracker()
     private var syncRequestId: String?
     private var failures = 0
@@ -106,6 +110,14 @@ public struct SessionMachine {
         return effects
     }
 
+    /// Keeps the registration and sends it now when synced. Every later sync sends it again, since the token can
+    /// change and the server may have dropped it.
+    public mutating func registerPush(_ registration: PushRegistration) -> [SessionEffect] {
+        pushRegistration = registration
+        guard phase == .ready, let deviceId else { return [] }
+        return [.send(ClientEnvelope(requestId: makeRequestId(), deviceId: deviceId, command: .pushRegister(registration)))]
+    }
+
     private mutating func read(through messageId: String) -> [SessionEffect] {
         let requestId = makeRequestId()
         guard let change = conversation.markRead(through: messageId, requestId: requestId) else { return [] }
@@ -138,12 +150,13 @@ public struct SessionMachine {
             break
         }
         guard let event = envelope.event else { return [] }
+        if case .sessionRenewed(let expiresAt) = event { return [.extendSession(until: expiresAt)] }
 
         guard isSyncAnswer else {
             conversation.apply(event, requestId: envelope.requestId)
             return []
         }
-        var effects: [SessionEffect] = []
+        var effects: [SessionEffect] = envelope.sessionExpiresAt.map { [.extendSession(until: $0)] } ?? []
         switch event {
         case .snapshot(let snapshot):
             syncRequestId = nil
@@ -218,8 +231,13 @@ public struct SessionMachine {
             SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: .conversationSend(text: $0.text)))
         }
         // Reads and checks are safe to send again: the position only moves forward and a check is recorded once.
-        return sends + conversation.localReadChanges.map {
-            .send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: $0.command))
+        let changes = conversation.localReadChanges.map {
+            SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: $0.command))
         }
+        // Registering is idempotent on the server: the same device's registration is overwritten.
+        let register = pushRegistration.map {
+            [SessionEffect.send(ClientEnvelope(requestId: makeRequestId(), deviceId: deviceId, command: .pushRegister($0)))]
+        } ?? []
+        return sends + changes + register
     }
 }

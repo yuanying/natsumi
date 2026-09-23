@@ -202,6 +202,9 @@ public struct ConversationState: Equatable, Sendable {
             readState.unreadReplyCount = count
         case .notificationAcked(let id):
             readState.unacknowledgedNotificationIds.removeAll { $0 == id }
+        case .sessionRenewed:
+            // The session's, not the conversation's.
+            break
         case .accepted(let accepted):
             if let index = changeIndex(requestId) {
                 localReadChanges.remove(at: index)

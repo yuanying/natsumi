@@ -232,7 +232,7 @@ iPhone は接続のたびに、`session.sync` の後で `push.register` を送�
 | --- | --- |
 | `token` | APNs の device token の 16 進（大文字も可。サーバーは小文字にして持つ） |
 | `publicKey` | 通知のための P-256 の公開鍵。X9.63 の非圧縮形式（65 バイト、先頭 0x04）の base64。曲線の上の点でなければ断る |
-| `environment` | `sandbox`（Debug の build）または `production`（配布したもの） |
+| `environment` | `sandbox`（開発用に署名したもの。アプリは署名の provisioning profile の `aps-environment` で決める）または `production`（配布したもの） |
 
 - 形が合わなければ `command.rejected`（`invalid-request`）になる。受け付けると `command.accepted`（`environment`）が返る。
 - 登録は端末ごとに 1 つで、送るたびに上書きする。同じ token を別の端末が登録すると、前の端末の登録は消える（入れ直したアプリ）。

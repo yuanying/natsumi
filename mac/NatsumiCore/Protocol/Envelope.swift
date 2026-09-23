@@ -20,6 +20,9 @@ public enum ServerEvent: Equatable, Sendable {
     case readMoved(readThroughMessageId: String, unreadReplyCount: Int)
     /// `notification.acked`: some device checked a notice for the first time.
     case notificationAcked(notificationId: String)
+    /// `session.renewed`: the server moved the session's expiry while connected (ADR 0030). Like the line of
+    /// thinking, it takes no number on the stream.
+    case sessionRenewed(expiresAt: Date)
     case accepted(CommandAccepted)
     case rejected(code: String)
     case unavailable(code: String, deviceId: String?)
@@ -31,6 +34,16 @@ public struct ServerEnvelope: Equatable, Sendable {
     public let position: StreamPosition
     public let requestId: String?
     public let event: ServerEvent?
+    /// The session's expiry on an answer to `session.sync` (the snapshot, the resume's `command.accepted`, or
+    /// `service.unavailable`), or nil when the server did not say (ADR 0030).
+    public let sessionExpiresAt: Date?
+
+    public init(position: StreamPosition, requestId: String?, event: ServerEvent?, sessionExpiresAt: Date? = nil) {
+        self.position = position
+        self.requestId = requestId
+        self.event = event
+        self.sessionExpiresAt = sessionExpiresAt
+    }
 
     public static func decode(_ data: Data) throws -> ServerEnvelope {
         let decoder = JSONDecoder()
@@ -57,12 +70,20 @@ public struct ServerEnvelope: Equatable, Sendable {
         case "conversation.read":
             payload(ReadPayload.self).map { .readMoved(readThroughMessageId: $0.readThroughMessageId, unreadReplyCount: $0.unreadReplyCount) }
         case "notification.acked": payload(AckedPayload.self).map { .notificationAcked(notificationId: $0.notificationId) }
+        case "session.renewed": payload(RenewedPayload.self).flatMap { parseTimestamp($0.expiresAt) }.map { .sessionRenewed(expiresAt: $0) }
         case "command.accepted": payload(CommandAccepted.self).map { .accepted($0) }
         case "command.rejected": payload(CodePayload.self).map { .rejected(code: $0.code) }
         case "service.unavailable": payload(CodePayload.self).map { .unavailable(code: $0.code, deviceId: $0.deviceId) }
         default: nil
         }
-        return ServerEnvelope(position: StreamPosition(epoch: epoch, streamId: streamId, seq: seq), requestId: head.requestId, event: event)
+        let expiresAt: Date? = switch type {
+        case "session.snapshot", "command.accepted", "service.unavailable":
+            payload(ExpiryPayload.self)?.sessionExpiresAt.flatMap(parseTimestamp)
+        default: nil
+        }
+        return ServerEnvelope(
+            position: StreamPosition(epoch: epoch, streamId: streamId, seq: seq), requestId: head.requestId, event: event,
+            sessionExpiresAt: expiresAt)
     }
 
     private struct Head: Decodable {
@@ -97,6 +118,10 @@ public struct ServerEnvelope: Equatable, Sendable {
 
     private struct ThinkingPayload: Decodable { let line: String }
 
+    private struct RenewedPayload: Decodable { let expiresAt: String }
+
+    private struct ExpiryPayload: Decodable { let sessionExpiresAt: String? }
+
     private struct CodePayload: Decodable {
         let code: String
         let deviceId: String?
@@ -108,6 +133,8 @@ public enum ClientCommand: Equatable, Sendable {
     case conversationSend(text: String)
     case conversationRead(throughMessageId: String)
     case notificationAck(notificationId: String)
+    /// Where to send this iPhone's notifications, and the key to seal them to (ADR 0029).
+    case pushRegister(PushRegistration)
 }
 
 /// One command to the server.
@@ -142,6 +169,11 @@ public struct ClientEnvelope: Equatable, Sendable {
         case .notificationAck(let notificationId):
             object["type"] = "notification.ack"
             object["payload"] = ["notificationId": notificationId]
+        case .pushRegister(let registration):
+            object["type"] = "push.register"
+            object["payload"] = [
+                "token": registration.token, "publicKey": registration.publicKey, "environment": registration.environment.rawValue,
+            ]
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }

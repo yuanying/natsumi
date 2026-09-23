@@ -10,6 +10,8 @@ public enum UIEffect: Equatable, Sendable {
     case disconnect
     case sendToServer(ClientEnvelope)
     case saveDeviceId(String)
+    /// Keep the saved session until this time, if that is later than what is saved (ADR 0030).
+    case extendSession(until: Date)
     case clearSession
     case scheduleReconnect(after: TimeInterval)
 
