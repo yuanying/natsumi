@@ -129,10 +129,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const allowedUserId = config.github.allowedUserId;
     const connections = hub = new ConnectionHub({
       publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize,
+      // Connecting is a use of the session and renews it (ADR 0030).
       authenticate: request => {
         const token = bearerToken(request);
-        return token ? sessions.verify(token, allowedUserId) : undefined;
+        const session = token ? sessions.verify(token, allowedUserId) : undefined;
+        const expiresAt = session && sessions.renew(session.sessionId);
+        return expiresAt ? { ...session!, expiresAt } : undefined;
       },
+      renew: sessionId => sessions.renew(sessionId),
     });
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>

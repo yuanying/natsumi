@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { DatabaseSync } from 'node:sqlite';
 import { MIGRATIONS } from '../src/server/migrations.ts';
-import { SESSION_TTL_MS, SessionStore } from '../src/server/sessions.ts';
+import { SESSION_RENEW_INTERVAL_MS, SESSION_TTL_MS, SessionStore } from '../src/server/sessions.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 
 const OWNER_ID = 4242001;
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
 
 async function withStore(fn: (store: SessionStore, clock: { now: number }, db: DatabaseSync, path: string) => Promise<void> | void) {
   const root = await mkdtemp(join(tmpdir(), 'natsumi-sessions-'));
@@ -21,8 +23,9 @@ async function withStore(fn: (store: SessionStore, clock: { now: number }, db: D
   } finally { db.close(); await rm(root, { recursive: true, force: true }); }
 }
 
-test('sessions are short-lived', () => {
-  assert.ok(SESSION_TTL_MS > 0 && SESSION_TTL_MS <= 24 * 3_600_000);
+test('a session lasts thirty days from its last use, and is renewed at most once an hour', () => {
+  assert.equal(SESSION_TTL_MS, 30 * DAY);
+  assert.equal(SESSION_RENEW_INTERVAL_MS, HOUR);
 });
 
 test('a session token verifies for its account until it expires', () => withStore((store, clock) => {
@@ -68,4 +71,60 @@ test('the state database never holds a session token in plaintext', () => withSt
     assert.ok(!rows.includes(token), 'token found in rows');
     for (const bytes of files) assert.ok(!bytes.includes(token), 'token found in database file');
   }
+}));
+
+const storedEnd = (db: DatabaseSync, sessionId: string) =>
+  (db.prepare('SELECT expires_at FROM client_sessions WHERE session_id = ?').get(sessionId) as { expires_at: string }).expires_at;
+
+test('renewing a session moves its end thirty days past the use', () => withStore((store, clock) => {
+  const session = store.create(OWNER_ID);
+  clock.now += 2 * HOUR;
+  const renewed = new Date(clock.now + SESSION_TTL_MS).toISOString();
+  assert.equal(store.renew(session.sessionId), renewed);
+  assert.equal(store.verify(session.token, OWNER_ID)?.expiresAt, renewed);
+}));
+
+test('a session used within every thirty days never expires', () => withStore((store, clock) => {
+  const session = store.create(OWNER_ID);
+  for (let i = 0; i < 6; i += 1) {
+    clock.now += 29 * DAY;
+    assert.ok(store.renew(session.sessionId), `renewal ${i}`);
+  }
+  assert.ok(store.verify(session.token, OWNER_ID));
+}));
+
+test('a session unused for thirty days is refused and can no longer be renewed', () => withStore((store, clock) => {
+  const session = store.create(OWNER_ID);
+  clock.now += 2 * HOUR;
+  store.renew(session.sessionId);
+  clock.now += SESSION_TTL_MS;
+  assert.equal(store.verify(session.token, OWNER_ID), undefined);
+  assert.equal(store.renew(session.sessionId), undefined);
+}));
+
+test('a revoked session is not renewed', () => withStore((store, clock) => {
+  const session = store.create(OWNER_ID);
+  store.revoke(session.token);
+  clock.now += 2 * HOUR;
+  assert.equal(store.renew(session.sessionId), undefined);
+  assert.equal(store.verify(session.token, OWNER_ID), undefined);
+  assert.equal(store.renew('session-unknown'), undefined);
+}));
+
+test('within an hour of the last renewal a use writes nothing and reports the end it already has', () => withStore((store, clock, db) => {
+  const session = store.create(OWNER_ID);
+  const changes = () => (db.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+  const before = changes();
+  for (let minute = 1; minute < 60; minute += 1) {
+    clock.now = Date.parse(session.expiresAt) - SESSION_TTL_MS + minute * 60_000;
+    assert.equal(store.renew(session.sessionId), session.expiresAt);
+  }
+  assert.equal(changes(), before, 'no row was written');
+  assert.equal(storedEnd(db, session.sessionId), session.expiresAt);
+
+  clock.now = Date.parse(session.expiresAt) - SESSION_TTL_MS + HOUR;
+  const renewed = store.renew(session.sessionId);
+  assert.equal(renewed, new Date(clock.now + SESSION_TTL_MS).toISOString());
+  assert.equal(storedEnd(db, session.sessionId), renewed);
+  assert.equal(changes(), before + 1);
 }));
