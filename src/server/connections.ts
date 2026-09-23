@@ -17,7 +17,9 @@ export const CLOSE_TOO_SLOW = 4002;
 
 /** Commands of the v1 client contract. The ones not handled below receive a safe rejection. */
 const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.read', 'conversation.interrupt', 'approval.decide',
-  'notification.ack', 'device.activity']);
+  'notification.ack', 'device.activity', 'push.register']);
+/** Commands that act for a device, and so need `session.sync` first and the connection's own device ID. */
+const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register']);
 
 interface Connection {
   session: VerifiedSession;
@@ -59,6 +61,11 @@ export interface HubLoop {
   snapshot(): Record<string, unknown>;
 }
 
+/** Where a device asks to be pushed while it is away (ADR 0029). Kept whether or not APNs is configured. */
+export interface HubPush {
+  register(deviceId: string, payload: Record<string, unknown>): { kind: 'accepted'; environment: string } | { kind: 'rejected'; code: string };
+}
+
 export interface ConnectionHubOptions {
   publicOrigin: string;
   /** The live session presented by an upgrade request, or undefined. Its use is already recorded. */
@@ -68,6 +75,7 @@ export interface ConnectionHubOptions {
   now: () => number;
   db: DatabaseSync;
   loop: HubLoop;
+  push: HubPush;
   /** Events kept per device stream for replay after a reconnect. */
   streamBufferSize?: number;
 }
@@ -108,6 +116,12 @@ export class ConnectionHub {
     const session = this.options.authenticate(request);
     if (!session) return refuse(socket, 401, 'unauthorized');
     this.server.handleUpgrade(request, socket, head, ws => this.accept(ws, session));
+  }
+
+  /** Whether the device has a synced connection now. A device that has one gets events, not pushes. */
+  isConnected(deviceId: string): boolean {
+    for (const connection of this.connections.values()) if (connection.deviceId === deviceId) return true;
+    return false;
   }
 
   /** Closes every connection opened with this session (logout). */
@@ -178,7 +192,7 @@ export class ConnectionHub {
     const reject = (code: string) => out().publish('command.rejected', { code }, id);
 
     if (type === 'session.sync') return this.sync(ws, connection, deviceId, payload, id);
-    if (type === 'conversation.send' || type === 'conversation.read' || type === 'notification.ack') {
+    if (DEVICE_COMMANDS.has(type)) {
       if (!connection.stream || !connection.deviceId) return reject('sync-required');
       if (deviceId !== connection.deviceId) return reject('device-mismatch');
     }
@@ -198,6 +212,9 @@ export class ConnectionHub {
         if (!isId(notificationId)) return reject('invalid-request');
         return answer(stream!, this.options.loop.acknowledgeNotice({ notificationId, deviceId: connection.deviceId! }), id);
       }
+      case 'push.register':
+        // Independent of the loop: a device registers even while natsumi cannot talk.
+        return answer(stream!, this.options.push.register(connection.deviceId!, payload), id);
       default:
         // conversation.interrupt among them: a thought in progress is never stopped from outside (ADR 0008).
         return reject('not-implemented');

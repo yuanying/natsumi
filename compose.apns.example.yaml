@@ -1,0 +1,16 @@
+# The APNs signing key for pushing to the iPhone (ADR 0029). Only for a server with `apns` in its config: without
+# the key file this override stops compose, so the default compose.yaml does not mount it.
+#
+#   docker compose -f compose.yaml -f compose.apns.example.yaml up -d
+#   docker compose -f compose.yaml -f compose.ipv6.example.yaml -f compose.apns.example.yaml up -d
+#
+# List it after compose.ipv6.example.yaml, which replaces the secrets; this file then adds the key to them.
+# The config points at the mount with "apns": { ..., "keyFile": "/run/secrets/natsumi_apns_key" }.
+services:
+  natsumi:
+    secrets:
+      - natsumi_apns_key
+
+secrets:
+  natsumi_apns_key:
+    file: ${NATSUMI_APNS_KEY_FILE:-./secrets/apns-key.p8}

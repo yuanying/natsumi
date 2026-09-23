@@ -1,0 +1,29 @@
+{
+  "description": "Shared test vector for natsumi push encryption v1 (ADR 0029). TEST ONLY: both private keys below are disposable, were made for this file from public labels, and must never be used for anything else.",
+  "testOnly": true,
+  "encoding": "Every binary value is standard base64 (RFC 4648 section 4) with padding. Keys are P-256: private keys raw 32 bytes, public keys X9.63 uncompressed 65 bytes.",
+  "layout": "ct is the AES-256-GCM ciphertext followed by its 16-byte tag (no nonce inside). AAD is the UTF-8 bytes of messageId. salt is epk followed by the device public key. In CryptoKit: AES.GCM.SealedBox(combined: nonce + ct).",
+  "info": "natsumi-push-v1",
+  "device": {
+    "privateKey": "oeHCclYldxGn3ThXw8e3VCKiEBU1GtpL1OEudwF48rk=",
+    "publicKey": "BPmEdahJJErQ5tCVqB2LDTZ+M4kAkl5waekP52hripQj7RgMNuKi57VXNE1sKR2Hvp4tbDrJdj07e+V8nn2heAY="
+  },
+  "ephemeral": {
+    "privateKey": "vGM7ehQntOaLUUtnK6Y+2z+PLEBuoIotaFrECbzX2hk=",
+    "publicKey": "BE9pdPxMD4RziPDpu3l9GU2GZBnbrhx6aZQwprv1deqpUK6DOZgQjRnbZQOrYiQyK9w1knq2zJb+gqyTeYNYZUI="
+  },
+  "nonce": "AAECAwQFBgcICQoL",
+  "messageId": "message-00000000-0000-4000-8000-000000000001",
+  "plaintext": "{\"text\":\"テスト用の返事です。今日は晴れ。\",\"expression\":\"happy\"}",
+  "intermediate": {
+    "sharedSecret": "jBsKywe2v3eagGLRFqRY2faMURvy7cs8ncXJbYw7O54=",
+    "salt": "BE9pdPxMD4RziPDpu3l9GU2GZBnbrhx6aZQwprv1deqpUK6DOZgQjRnbZQOrYiQyK9w1knq2zJb+gqyTeYNYZUIE+YR1qEkkStDm0JWoHYsNNn4ziQCSXnBp6Q/naGuKlCPtGAw24qLntVc0TWwpHYe+ni1sOsl2PTt75XyefaF4Bg==",
+    "key": "B3o04PG5+5PA/C3d4FmktO75G1I1bboS+hPs4Hyss78="
+  },
+  "e": {
+    "v": 1,
+    "epk": "BE9pdPxMD4RziPDpu3l9GU2GZBnbrhx6aZQwprv1deqpUK6DOZgQjRnbZQOrYiQyK9w1knq2zJb+gqyTeYNYZUI=",
+    "nonce": "AAECAwQFBgcICQoL",
+    "ct": "RDIzHK/RMb5Ir7u4YncKE9pNdTFpNZJnr7QveGvFBUx6C4MO3BiGyIoTA6g8eK8ZaWWCR5Rnk71+9blB4vK5HdhGMoogpq/iR0kMy/313JY5ziYOvpKmT/TQwEHvlNMK"
+  }
+}

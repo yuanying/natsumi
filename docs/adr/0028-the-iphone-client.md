@@ -1,7 +1,7 @@
 # 0028. iPhone のクライアント
 
 - Date: 2026-09-22
-- Status: Accepted
+- Status: Accepted（範囲外としていた裏にいる間の通知（APNs）は [ADR 0029](0029-push-notifications-on-the-iphone.md) で決定）
 
 ## Context
 
@@ -56,7 +56,7 @@ iOS は裏に回ったアプリをすぐに止める。止まったまま接続�
 - 裏に回ったら、接続を切る（`SessionMachine` を止める）。
 - 前に戻ったら、同じ `SessionMachine` のままつなぎ直す。stream の位置から同期し直すので、欠けた分だけが届き、
   送りかけのメッセージも残る。再接続の待ち時間の途中なら、待たずにつなぐ。
-- 裏にいる間の通知（APNs）は、この ADR の範囲外とする。
+- 裏にいる間の通知（APNs）は、この ADR の範囲外とする（[ADR 0029](0029-push-notifications-on-the-iphone.md) で決定）。
 
 ### 5. メインの画面
 

@@ -1,9 +1,10 @@
 import { join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { ApnsClient, parseApnsKey, type ApnsEnvironment } from './apns.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
-import { loadConfig, type ServerConfig } from './config.ts';
+import { ConfigError, loadConfig, type ServerConfig } from './config.ts';
 import { ConnectionHub } from './connections.ts';
 import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from './data-directory.ts';
 import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-login.ts';
@@ -13,6 +14,7 @@ import { MIGRATIONS } from './migrations.ts';
 import { isoAt } from './nightly.ts';
 import { createModelRuntime } from './pi-runtime.ts';
 import { preparePiState } from './pi-state.ts';
+import { parseRegistration, PushNotifier, PushRegistrations } from './push.ts';
 import { readSecret, readTlsFiles } from './secrets.ts';
 import { SessionStore } from './sessions.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
@@ -43,6 +45,8 @@ export interface StartOptions {
   };
   /** Events kept per device stream for replay after a reconnect. */
   streamBufferSize?: number;
+  /** Replaces the APNs hosts and the waits between tries. Tests point them at a local stand-in. */
+  apns?: { origins?: Record<ApnsEnvironment, string>; retryDelaysMs?: number[] };
 }
 
 type Address = { host: string; port: number };
@@ -73,6 +77,12 @@ export interface RunningServer {
 export async function startServer(options: StartOptions): Promise<RunningServer> {
   const config = await loadConfig(resolve(options.cwd, options.config));
   const clientSecret = await readSecret(config.github.clientSecret, 'github.clientSecret', options.env);
+  // A key that cannot sign stops startup here, not at the first push.
+  const apnsKey = config.apns ? parseApnsKey(await readSecret(config.apns.key, 'apns.key', options.env)) : undefined;
+  if (config.apns && !apnsKey) {
+    throw new ConfigError('file' in config.apns.key ? 'apns.keyFile' : 'apns.keyEnv',
+      'the referenced key is not an EC P-256 private key in PEM (the .p8 file)');
+  }
   const tls = config.listen.tls;
   const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
   const now = options.clock ?? Date.now;
@@ -82,6 +92,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   const lock = acquireProcessLock(dataDirectory);
   let db: DatabaseSync | undefined;
   let hub: ConnectionHub | undefined;
+  let notifier: PushNotifier | undefined;
+  let apns: ApnsClient | undefined;
   let loop: ThinkingLoop | undefined;
   let listener: Listener | undefined;
   let challenge: ChallengeListener | undefined;
@@ -92,6 +104,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   const closeAll = async () => {
     timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
     scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
+    notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
+    apns?.close();
     await certificates?.close(); // Abandons an ACME order in flight: no certificate arrives at a listener being closed.
     try {
       if (listener) await listener.close(); else await hub?.close(); // Stops serving clients; closing the listener closes the hub with it.
@@ -127,6 +141,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
 
     const sessions = new SessionStore(db, now);
     const allowedUserId = config.github.allowedUserId;
+    const registrations = new PushRegistrations(db, now);
     const connections = hub = new ConnectionHub({
       publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize,
       // Connecting is a use of the session and renews it (ADR 0030).
@@ -137,7 +152,28 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         return expiresAt ? { ...session!, expiresAt } : undefined;
       },
       renew: sessionId => sessions.renew(sessionId),
+      push: {
+        register: (deviceId, payload) => {
+          const registration = parseRegistration(payload);
+          if (!registration) return { kind: 'rejected', code: 'invalid-request' };
+          registrations.save(deviceId, registration);
+          return { kind: 'accepted', environment: registration.environment };
+        },
+      },
     });
+
+    // Pushes to the iPhones that are away (ADR 0029). Registrations are kept either way, so adding apns later needs
+    // no new registration from the devices.
+    if (config.apns && apnsKey) {
+      apns = new ApnsClient({ teamId: config.apns.teamId, keyId: config.apns.keyId, topic: config.apns.topic, key: apnsKey, now,
+        origins: options.apns?.origins });
+      notifier = new PushNotifier({
+        db, loop: thinkingLoop, registrations, sender: apns, allowedUserId, isConnected: deviceId => connections.isConnected(deviceId),
+        log, retryDelaysMs: options.apns?.retryDelaysMs,
+      });
+    } else {
+      log('push: apns is not configured; registrations are kept and nothing is sent');
+    }
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log });

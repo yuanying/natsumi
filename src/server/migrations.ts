@@ -245,4 +245,22 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE conversation_messages ADD COLUMN expression TEXT CHECK (expression IS NULL OR kind <> 'message');
     `,
   },
+  {
+    version: 10,
+    name: 'push-registrations',
+    sql: `
+      -- Where to push a device that is not connected (ADR 0029): its APNs device token, the public key its pushes are
+      -- encrypted to, and which APNs it belongs to. One per device, overwritten on every push.register; a token
+      -- belongs to one device at a time. Only the public key is here: the device keeps its private key.
+      -- Whether a device may still be sent to is not kept here: it follows the session the device last synced with.
+      CREATE TABLE push_registrations (
+        device_id TEXT PRIMARY KEY REFERENCES devices (device_id),
+        token TEXT NOT NULL UNIQUE,
+        public_key BLOB NOT NULL CHECK (length(public_key) = 65),
+        environment TEXT NOT NULL CHECK (environment IN ('sandbox', 'production')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];

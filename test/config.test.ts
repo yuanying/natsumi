@@ -363,3 +363,28 @@ test('an unreadable or malformed config file stops startup with a clear error', 
       (error: unknown) => error instanceof ConfigError && /JSON/.test(error.message));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+const apns = () => ({ teamId: 'TEAM000001', keyId: 'KEY0000001', topic: 'net.example.natsumi', keyFile: '/run/secrets/natsumi_apns_key' });
+
+test('APNs is off unless the apns section is given (ADR 0029)', () => {
+  assert.equal('apns' in parseConfig(base()), false);
+  assert.deepEqual(parseConfig({ ...base(), apns: apns() }).apns,
+    { teamId: 'TEAM000001', keyId: 'KEY0000001', topic: 'net.example.natsumi', key: { file: '/run/secrets/natsumi_apns_key' } });
+  const { keyFile: _, ...rest } = apns();
+  assert.deepEqual(parseConfig({ ...base(), apns: { ...rest, keyEnv: 'NATSUMI_APNS_KEY' } }).apns?.key, { env: 'NATSUMI_APNS_KEY' });
+});
+
+test('the APNs key is referenced exactly once, and the IDs and topic are checked', () => {
+  const { keyFile: _, ...noKey } = apns();
+  rejects({ ...base(), apns: noKey }, 'apns.keyEnv', /required/);
+  rejects({ ...base(), apns: { ...apns(), keyEnv: 'NATSUMI_APNS_KEY' } }, 'apns.keyFile', /only one/);
+  rejects({ ...base(), apns: { ...apns(), keyFile: 'secrets/apns.p8' } }, 'apns.keyFile');
+  for (const teamId of ['', 'team000001', 'TEAM00001', 'TEAM0000011', 12345]) rejects({ ...base(), apns: { ...apns(), teamId } }, 'apns.teamId');
+  for (const keyId of ['', 'KEY-000001', 'KEY000001']) rejects({ ...base(), apns: { ...apns(), keyId } }, 'apns.keyId');
+  for (const topic of ['', 'natsumi', 'net.example.natsumi/x', 'net..example', '.net.example', 'net.example natsumi']) {
+    rejects({ ...base(), apns: { ...apns(), topic } }, 'apns.topic');
+  }
+  for (const topic of ['com.example.app', 'net.example.Natsumi-iOS', 'a.b']) assert.equal(parseConfig({ ...base(), apns: { ...apns(), topic } }).apns?.topic, topic);
+  rejects({ ...base(), apns: { ...apns(), environment: 'sandbox' } }, 'apns.environment', /unknown/);
+  rejects({ ...base(), apns: 'on' }, 'apns', /object/);
+});
