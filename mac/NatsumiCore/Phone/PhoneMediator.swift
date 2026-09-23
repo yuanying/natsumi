@@ -122,6 +122,10 @@ public struct PhoneMediator {
             guard let last = UIProps.shownReply(state.conversation, readingHistory: false) else { return [] }
             return apply(state.session.readReplies(through: last.messageId))
 
+        case .inputFocusChanged(let isComposing):
+            state.isComposing = isComposing
+            return []
+
         case .inputSubmitted(let text):
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
             return apply(state.session.send(text: text))
@@ -134,6 +138,7 @@ public struct PhoneMediator {
         case .historyOpenRequested:
             guard state.hasSession, state.page != .history else { return [] }
             state.page = .history
+            state.isComposing = false
             state.visibleHistoryIds = []
             // Notices older than the history have no row to be seen in; opening the history is as far as the owner
             // can go to see them, so it checks them (ADR 0028).
@@ -144,6 +149,7 @@ public struct PhoneMediator {
         case .settingsOpenRequested:
             guard state.hasSession else { return [] }
             state.page = .settings
+            state.isComposing = false
             state.visibleHistoryIds = []
             return []
 

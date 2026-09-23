@@ -144,20 +144,26 @@ public struct PhoneMainProps: Equatable, Sendable {
     public var notices: PhoneNoticeProps?
     public var balloon: PhoneBalloonProps?
     public var character: PhoneCharacterProps
-    /// Messages that could not be recorded, over the input field.
-    public var failures: [FailureProps]
+    /// Messages the server has not recorded yet, over the input field: while the owner is writing, all of them, so
+    /// that what was just sent is seen going; otherwise only the ones that could not be recorded.
+    public var outgoing: [OutgoingRowProps]
+    /// The owner is writing, with the keyboard over half the screen: she is drawn as a face beside what she says,
+    /// and the notices keep out of the way.
+    public var isComposing: Bool
     /// The history or the settings when one is open over it.
     public var page: PhonePageProps?
 
     public init(
         status: PhoneStatusProps, notices: PhoneNoticeProps?, balloon: PhoneBalloonProps?,
-        character: PhoneCharacterProps, failures: [FailureProps], page: PhonePageProps? = nil
+        character: PhoneCharacterProps, outgoing: [OutgoingRowProps], isComposing: Bool = false,
+        page: PhonePageProps? = nil
     ) {
         self.status = status
         self.notices = notices
         self.balloon = balloon
         self.character = character
-        self.failures = failures
+        self.outgoing = outgoing
+        self.isComposing = isComposing
         self.page = page
     }
 }
@@ -185,10 +191,25 @@ public enum PhoneProps {
         guard state.hasSession else { return PhoneRootProps(screen: .login(login(state))) }
         let conversation = state.conversation
         return PhoneRootProps(screen: .main(PhoneMainProps(
-            status: status(state.status), notices: notices(conversation),
+            status: status(state.status),
+            notices: state.isComposing ? nil : notices(conversation),
             balloon: balloon(conversation, time: time),
             character: PhoneCharacterProps(avatar: state.avatar, expression: conversation.expression),
-            failures: UIProps.failures(conversation), page: page(state, time: time))))
+            outgoing: outgoing(conversation, isComposing: state.isComposing), isComposing: state.isComposing,
+            page: page(state, time: time))))
+    }
+
+    /// What is over the input field. While the owner is writing, the message just sent is there with 「受付中…」 under
+    /// it; otherwise only what could not be recorded is, to be read and dismissed.
+    static func outgoing(_ conversation: ConversationState, isComposing: Bool) -> [OutgoingRowProps] {
+        conversation.outbox.compactMap { item in
+            let failure: String? = switch item.status {
+            case .sending: nil
+            case .rejected(let code), .unavailable(let code): "送れませんでした（\(code)）"
+            }
+            guard isComposing || failure != nil else { return nil }
+            return OutgoingRowProps(requestId: item.requestId, text: item.text, failure: failure)
+        }
     }
 
     /// Only the page that is open is derived: the history is the costly one.

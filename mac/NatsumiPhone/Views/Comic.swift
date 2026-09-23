@@ -49,13 +49,21 @@ extension Color {
     }
 }
 
-/// A speech balloon: a rounded box with a tail pointing down at her from the middle of its bottom edge.
+/// Where a balloon's tail points: down at her when she stands below it, or left at her face when she is beside it.
+enum BalloonTailSide {
+    case bottom
+    case leading
+}
+
+/// A speech balloon: a rounded box with a tail pointing at her.
 struct SpeechBalloonShape: Shape {
     var radius: CGFloat = 16
     var tailWidth: CGFloat = 16
     var tailHeight: CGFloat = 9
+    var side: BalloonTailSide = .bottom
 
     func path(in rect: CGRect) -> Path {
+        guard side == .bottom else { return leadingTail(in: rect) }
         let box = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height - tailHeight)
         let r = min(radius, box.height / 2, box.width / 2)
         var path = Path()
@@ -69,6 +77,20 @@ struct SpeechBalloonShape: Shape {
         path.addArc(tangent1End: CGPoint(x: box.minX, y: box.maxY), tangent2End: CGPoint(x: box.minX, y: box.minY), radius: r)
         path.addArc(tangent1End: CGPoint(x: box.minX, y: box.minY), tangent2End: CGPoint(x: box.maxX, y: box.minY), radius: r)
         path.closeSubpath()
+        return path
+    }
+
+    /// The tail on the left side, low down, pointing at the face beside it.
+    private func leadingTail(in rect: CGRect) -> Path {
+        let box = CGRect(x: rect.minX + tailHeight, y: rect.minY, width: rect.width - tailHeight, height: rect.height)
+        var path = Path(roundedRect: box, cornerRadius: min(radius, box.height / 2))
+        var tail = Path()
+        let bottom = box.maxY - radius
+        tail.move(to: CGPoint(x: box.minX + 1, y: bottom - tailWidth))
+        tail.addLine(to: CGPoint(x: rect.minX, y: bottom))
+        tail.addLine(to: CGPoint(x: box.minX + 1, y: bottom))
+        tail.closeSubpath()
+        path.addPath(tail)
         return path
     }
 }

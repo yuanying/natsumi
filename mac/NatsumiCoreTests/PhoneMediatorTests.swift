@@ -212,9 +212,34 @@ struct PhoneMediatorTests {
 
         _ = mediator.handle(.socketReceived(Fixture.envelope(
             "command.rejected", seq: 2, requestId: "r2", payload: ["code": "too-long"])))
-        #expect(main(mediator)?.failures == [FailureProps(requestId: "r2", text: "「架空のメッセージ」を送れませんでした（too-long）")])
+        #expect(main(mediator)?.outgoing
+            == [OutgoingRowProps(requestId: "r2", text: "架空のメッセージ", failure: "送れませんでした（too-long）")])
         _ = mediator.handle(.outgoingDismissed(requestId: "r2"))
-        #expect(main(mediator)?.failures == [])
+        #expect(main(mediator)?.outgoing == [])
+    }
+
+    @Test("話しかけている間は、知らせを引っ込め、送ったばかりの行を入力欄の上に出す")
+    func composing() {
+        var notice = Fixture.message("n1", kind: "notice", text: "架空のお知らせ")
+        notice["about"] = ["e1"]
+        var mediator = synced(messages: [notice, Fixture.message("r1", text: "架空の返事")],
+                              unread: 1, unacknowledged: ["n1"])
+        #expect(main(mediator)?.isComposing == false)
+        #expect(main(mediator)?.notices != nil)
+
+        #expect(mediator.handle(.inputFocusChanged(true)).isEmpty)
+        #expect(main(mediator)?.isComposing == true)
+        // The card would cover what she said while there is little room; the count comes back when the keyboard goes.
+        #expect(main(mediator)?.notices == nil)
+        guard case .reply = main(mediator)?.balloon else { Issue.record("返事が出ていない"); return }
+
+        _ = mediator.handle(.inputSubmitted("架空のメッセージ"))
+        #expect(main(mediator)?.outgoing == [OutgoingRowProps(requestId: "r2", text: "架空のメッセージ", failure: nil)])
+
+        _ = mediator.handle(.inputFocusChanged(false))
+        #expect(main(mediator)?.notices != nil)
+        // With the keyboard gone, only what could not be recorded stays over the input field.
+        #expect(main(mediator)?.outgoing == [])
     }
 
     @Test("知らせは 1 行目と未読の数を黄色いカードで出し、後ろに重なる枚数を添える")

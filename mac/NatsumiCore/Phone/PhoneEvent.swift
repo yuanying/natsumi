@@ -41,6 +41,8 @@ public enum PhoneEvent: Equatable, Sendable {
     case pageClosed
     /// The × on her reply.
     case balloonCloseTapped
+    /// The owner is in the text field, or has left it: the keyboard is up or gone (ADR 0028).
+    case inputFocusChanged(Bool)
     case inputSubmitted(String)
     case outgoingDismissed(requestId: String)
 

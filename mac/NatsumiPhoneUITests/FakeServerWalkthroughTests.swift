@@ -39,21 +39,26 @@ final class FakeServerWalkthroughTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["「明日の午前って空いてる？」だね。わかった。"].waitForExistence(timeout: 15))
         shoot("7-reply")
 
+        // 「閉じる」 takes the keyboard away, and the main screen is back as it was.
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 5))
+        shoot("8-closed")
+
         app.buttons["会話の履歴"].tap()
         XCTAssertTrue(app.navigationBars["会話"].waitForExistence(timeout: 5))
         sleep(1)
-        shoot("8-history")
+        shoot("9-history")
         app.navigationBars.buttons.firstMatch.tap()
         // Everything was seen in the history, so the notice card is gone.
         XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 5))
-        shoot("9-main-after-history")
+        shoot("10-main-after-history")
 
         app.buttons["設定"].tap()
         XCTAssertTrue(app.navigationBars["設定"].waitForExistence(timeout: 5))
-        shoot("10-settings")
+        shoot("11-settings")
         app.buttons["ログアウト"].tap()
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
-        shoot("11-logged-out")
+        shoot("12-logged-out")
     }
 
     /// The login screen, when the app has no session: the fake server's address, the button, and the system's

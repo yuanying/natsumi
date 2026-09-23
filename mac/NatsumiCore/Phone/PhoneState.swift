@@ -13,6 +13,8 @@ public struct PhoneState {
     public internal(set) var loginMessage: String?
     public internal(set) var avatar = AvatarArt.placeholder
 
+    /// The owner is in the text field of the main screen, with the keyboard over half of it.
+    public internal(set) var isComposing = false
     /// The page over the main screen, if one is open.
     public internal(set) var page: PhonePage?
     /// The rows of the history in sight, by message ID, while the history is open.

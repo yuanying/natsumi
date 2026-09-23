@@ -33,10 +33,22 @@ struct MainView: View {
     private var screen: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                StatusView(props: props.status, send: sinks.status)
+                if props.isComposing {
+                    // The keyboard has half the screen: the status stands down for a way out of it.
+                    Button { sinks.input(.inputFocusChanged(false)) } label: {
+                        Label("閉じる", systemImage: "chevron.down")
+                            .font(Comic.font(15))
+                            .frame(height: 44)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    StatusView(props: props.status, send: sinks.status)
+                }
                 Spacer()
                 RoundButton(systemName: "text.bubble", label: "会話の履歴") { sinks.header(.historyOpenRequested) }
-                RoundButton(systemName: "slider.horizontal.3", label: "設定") { sinks.header(.settingsOpenRequested) }
+                if !props.isComposing {
+                    RoundButton(systemName: "slider.horizontal.3", label: "設定") { sinks.header(.settingsOpenRequested) }
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -50,31 +62,56 @@ struct MainView: View {
                 .padding(.top, 16)
             }
 
-            // The balloon takes what her standing place leaves, and only its own text scrolls when that is not
-            // enough; the character and the input field stay where they are. When the room is short (the keyboard
-            // is up), she gives up to half of it so that what she said can still be read.
-            GeometryReader { room in
-                VStack(spacing: 16) {
+            if props.isComposing {
+                // She stands aside as a face while the owner writes, and what they just said is under her.
+                VStack(alignment: .leading, spacing: 10) {
                     Spacer(minLength: 0)
-                    switch props.balloon {
-                    case .reply(let reply):
-                        ReplyBalloonView(props: reply, send: sinks.balloon)
-                    case .thought(let thinking):
-                        ThoughtBubbleView(props: thinking)
-                    case nil:
-                        EmptyView()
+                    HStack(alignment: .bottom, spacing: 10) {
+                        FaceView(
+                            avatar: props.character.avatar, expression: props.character.expression, size: 76)
+                        switch props.balloon {
+                        case .reply(let reply):
+                            ReplyBalloonView(props: reply, tail: .leading, send: sinks.balloon)
+                        case .thought(let thinking):
+                            ThoughtBubbleView(props: thinking, width: nil, tail: .leading)
+                        case nil:
+                            Spacer(minLength: 0)
+                        }
                     }
-                    CharacterView(props: props.character, maxHeight: room.size.height / 2)
                 }
-                .frame(width: room.size.width, height: room.size.height)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .frame(maxHeight: .infinity)
+            } else {
+                // The balloon takes what her standing place leaves, and only its own text scrolls when that is not
+                // enough; the character and the input field stay where they are.
+                GeometryReader { room in
+                    VStack(spacing: 16) {
+                        Spacer(minLength: 0)
+                        switch props.balloon {
+                        case .reply(let reply):
+                            ReplyBalloonView(props: reply, send: sinks.balloon)
+                        case .thought(let thinking):
+                            ThoughtBubbleView(props: thinking)
+                        case nil:
+                            EmptyView()
+                        }
+                        CharacterView(props: props.character, maxHeight: room.size.height / 2)
+                    }
+                    .frame(width: room.size.width, height: room.size.height)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+
+            VStack(alignment: .trailing, spacing: 10) {
+                ForEach(props.outgoing) { item in
+                    OutgoingRowView(props: item, send: sinks.failures)
+                }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
-            ForEach(props.failures) { failure in
-                FailureRow(props: failure, send: sinks.failures)
-            }
-            InputBar(send: sinks.input)
+            .padding(.bottom, props.outgoing.isEmpty ? 0 : 4)
+            InputBar(isComposing: props.isComposing, send: sinks.input)
         }
         .foregroundStyle(Comic.pageInk)
         .background(Comic.page)
@@ -184,6 +221,8 @@ struct NoticeCardView: View {
 /// Her last reply, whole. The text scrolls inside the balloon when it is longer than the room it has.
 struct ReplyBalloonView: View {
     let props: PhoneReplyProps
+    /// Where it points at her: down when she stands under it, left when she is a face beside it.
+    var tail: BalloonTailSide = .bottom
     let send: PhoneEventSink
 
     var body: some View {
@@ -216,11 +255,11 @@ struct ReplyBalloonView: View {
             }
         }
         .foregroundStyle(Comic.ink)
-        .padding(.leading, 16)
+        .padding(.leading, tail == .leading ? 16 + 9 : 16)
         .padding(.trailing, 4)
         .padding(.top, 6)
-        .padding(.bottom, 12 + 9)
-        .background { InkedPaper(shape: SpeechBalloonShape()) }
+        .padding(.bottom, tail == .leading ? 12 : 12 + 9)
+        .background { InkedPaper(shape: SpeechBalloonShape(side: tail)) }
     }
 
     private var text: some View {
@@ -237,22 +276,30 @@ struct ReplyBalloonView: View {
 /// The comic thought bubble while she is receiving or thinking, with small circles leading down to her.
 struct ThoughtBubbleView: View {
     let props: ThinkingProps
+    /// nil takes whatever width it is given; beside her standing place it keeps to its own.
+    var width: CGFloat? = 260
+    /// The trail of circles goes down at her, or down to the left at the face beside it.
+    var tail: BalloonTailSide = .bottom
 
     var body: some View {
         ThinkingLine(props: props, size: 14)
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
-            .frame(width: 260, alignment: .leading)
+            .frame(maxWidth: width == nil ? .infinity : width, alignment: .leading)
             .background { InkedPaper(shape: RoundedRectangle(cornerRadius: 26)) }
-            .overlay(alignment: .bottom) {
-                ZStack(alignment: .topLeading) {
-                    InkedPaper(shape: Circle()).frame(width: 14, height: 14)
-                    InkedPaper(shape: Circle(), line: 2).frame(width: 8, height: 8).offset(x: 10, y: 14)
-                }
-                .frame(width: 24, height: 24, alignment: .topLeading)
-                .offset(y: 26)
-            }
+            .overlay(alignment: tail == .leading ? .bottomLeading : .bottom) { trail }
             .padding(.bottom, 22)
+    }
+
+    private var trail: some View {
+        ZStack(alignment: .topLeading) {
+            InkedPaper(shape: Circle()).frame(width: 14, height: 14)
+            InkedPaper(shape: Circle(), line: 2)
+                .frame(width: 8, height: 8)
+                .offset(x: tail == .leading ? -8 : 10, y: 14)
+        }
+        .frame(width: 24, height: 24, alignment: .topLeading)
+        .offset(x: tail == .leading ? 14 : 0, y: 26)
     }
 }
 
@@ -316,31 +363,13 @@ struct CharacterView: View {
     }
 }
 
-/// A message that could not be recorded, with its ×.
-struct FailureRow: View {
-    let props: FailureProps
-    let send: PhoneEventSink
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-            Text(props.text).lineLimit(2)
-            Spacer(minLength: 0)
-            Button { send(.outgoingDismissed(requestId: props.requestId)) } label: {
-                Image(systemName: "xmark").frame(width: 32, height: 32)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("消す")
-        }
-        .font(Comic.font(13))
-        .foregroundStyle(Comic.trouble)
-        .padding(.horizontal, 20)
-    }
-}
-
 /// The text field and the yellow send button.
 struct InputBar: View {
+    /// The owner is in the field: the field says so, and the keyboard is up.
+    var isComposing = false
     let send: PhoneEventSink
+
+    @FocusState private var isFocused: Bool
 
     /// What the owner is typing. The input method keeps what it is converting on its own side, so the text belongs
     /// to the field until it is sent.
@@ -352,12 +381,23 @@ struct InputBar: View {
             TextField("話しかける", text: $draft, axis: .vertical)
                 .font(Comic.font(16))
                 .lineLimit(1...5)
+                .focused($isFocused)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 13)
                 .frame(minHeight: 50)
                 .background {
                     InkedPaper(shape: RoundedRectangle(cornerRadius: 25), fill: Comic.surface, ink: Comic.pageInk)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 25)
+                                .stroke(Comic.notice, lineWidth: 3)
+                                .padding(-3)
+                                .opacity(isComposing ? 1 : 0)
+                        }
                 }
+                // The keyboard being up is the mediator's to know, and its answer is what puts the caret in or
+                // takes it out: the field says what happened, and follows what comes back.
+                .onChange(of: isFocused) { send(.inputFocusChanged(isFocused)) }
+                .onChange(of: isComposing) { if isFocused != isComposing { isFocused = isComposing } }
             Button {
                 send(.inputSubmitted(draft))
                 draft = ""
