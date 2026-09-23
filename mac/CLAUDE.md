@@ -13,6 +13,12 @@
 どこからでも会話のウインドウを出すショートカットは [ADR 0023](../docs/adr/0023-a-global-shortcut-for-the-conversation-window.md)）、
 この構造そのものの理由は [ADR 0015](../docs/adr/0015-mac-ui-passive-view-tree.md) にある。
 
+iPhone のアプリ（`NatsumiPhone`）も同じ規約で作る（[ADR 0028](../docs/adr/0028-the-iphone-client.md)）。
+木は `TreeComponent<Event>` でイベントの型について汎用であり、Mac は `Component`・`UIEvent`・`UIMediator`、
+iPhone は `PhoneComponent`・`PhoneEvent`・`PhoneMediator` を使う。以下の `UIEvent`・`UIMediator`・`UIProps` などは、
+iPhone では `PhoneEvent`・`PhoneMediator`・`PhoneProps` と読み替える。何を既読にし、何を吹き出しに出すかは
+iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでずらさない。
+
 ## 1. Root からなる階層構造
 
 - 画面に出るものはすべて `Component` として木に属し、根は `RootComponent` ひとつである。
@@ -83,7 +89,7 @@
 
 | 置き場所 | 中身 |
 |---|---|
-| `NatsumiCore/UI/Component.swift` | `Component`（木とバブリング）、`EventSink` |
+| `NatsumiCore/UI/Component.swift` | `TreeComponent<Event>`（木とバブリング）、`EventSinkOf<Event>`、Mac の別名 `Component`・`EventSink` |
 | `NatsumiCore/UI/UIEvent.swift` | `UIEvent`、`LaunchInfo`、`LoginOutcome` |
 | `NatsumiCore/UI/UIEffect.swift` | `UIEffect` |
 | `NatsumiCore/UI/UIState.swift` | `UIState`、`ConnectionStatus` |
@@ -97,7 +103,12 @@
 | `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）、大きさ（`CharacterScale`・`OverlaySettings`）、会話のウインドウの大きさと置き場所（`ConversationWindow`・`ConversationPlacement`）、走っての移動とポインタを避ける規則（`CharacterRun`・`PointerDodge`） |
 | `Natsumi/Components/` | Root と各部品のコンポーネント、`OverlayPanel` と hosting view、キャラクターのマウスの受け口（`CharacterMouseArea`） |
 | `Natsumi/Views/` | SwiftUI の Passive View、舞台（`StageView`）、`Comic` の見た目 |
-| `Natsumi/Adapters/` | OS に触る部分（WebSocket・GitHub ログイン・グローバルなショートカットの登録） |
+| `Natsumi/Adapters/` | Mac だけの OS に触る部分（グローバルなショートカットの登録） |
+| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン） |
+| `NatsumiCore/Phone/` | iPhone の `PhoneEvent`・`PhoneEffect`・`PhoneState`・`PhoneMediator`・`PhoneProps` |
+| `NatsumiPhone/Components/` | iPhone の Root（`PhoneRootComponent`）と各画面のコンポーネント、Props の受け渡しの箱（`ScreenModel`） |
+| `NatsumiPhone/Views/` | iPhone の SwiftUI の Passive View と `Comic` の見た目 |
+| `NatsumiPhoneUITests/` | 偽のサーバー（`npm run fake-server`）を相手に画面を辿って撮る UI テスト。関門ではない |
 
 名前の付け方は、パネルのコンポーネントが `<名前>Component`、その View が `<名前>View`、
 その描画パラメータが `<名前>Props` である。子のコンポーネントの名前は `"balloon.close"` のように親から辿れる形にする。
@@ -114,7 +125,7 @@
 ## テスト
 
 - Mediator・Props の導出・木の伝播は、**すべて `NatsumiCoreTests` でテストする。** UI なしで確かめられることが、
-  この構造を選んだ理由のひとつである（`UIMediatorTests`・`PropsTests`・`ComponentTests`）。
+  この構造を選んだ理由のひとつである（`UIMediatorTests`・`PropsTests`・`ComponentTests`・`PhoneMediatorTests`）。
 - テストは先に書く。期待する入出力を書き、失敗を見てから実装する。実装に合わせてテストを書き換えない。
 - build とテストのコマンドは [README](../README.md) にある。Keychain を使うテストがあるので、ログイン中の GUI の
   セッションで実行する。

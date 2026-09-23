@@ -363,6 +363,59 @@ cp <アセットのディレクトリ>/pet.json <アセットのディレクト�
   書き方は同梱の [avatar.json](mac/Avatars/natsumi/avatar.json) を見てください。対応表にない表情は neutral の動作で表示します。
 - 置いた後は、設定の「読み込み直す」で反映します。
 
+## iPhone アプリ
+
+同じ `mac/Natsumi.xcodeproj` に iPhone のアプリ `NatsumiPhone` があります（[ADR 0028](docs/adr/0028-the-iphone-client.md)）。
+iOS 26 以降の iPhone と Xcode 27 を使います。ロジックは Mac と同じ `NatsumiCore` で、そのテストは Mac の scheme で走ります。
+
+```sh
+xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destination 'generic/platform=iOS Simulator' -derivedDataPath mac/build
+```
+
+- シミュレータではそのまま動きます。
+
+実機に入れるときは、iOS のときだけ自動署名になるようにしてあるので、次の手順で Xcode にチームを選ばせます。
+
+1. Xcode の Settings… > Accounts に Apple ID を足します（有料の Developer Program は要りません）。
+2. `mac/Natsumi.xcodeproj` を開き、ターゲット `NatsumiPhone` と `NatsumiCore` の Signing & Capabilities で Team を選びます。
+   `NatsumiCore` はアプリに埋め込む framework なので、こちらにも要ります。Team を選ぶと `DEVELOPMENT_TEAM` が
+   プロジェクトのファイルに書かれます。
+3. Bundle Identifier（`io.github.yuanying.natsumi.phone`）がほかの人に取られていると断られます。その場合は自分のものに変えます。
+4. iPhone を USB でつなぎ、iPhone 側で「このコンピュータを信頼」を選び、Xcode の実行先に選んで ⌘R で入れます。
+5. 初回は iPhone の 設定 > 一般 > VPN とデバイス管理 で、自分の Apple ID の開発者を信頼します。
+   無料の Apple ID で署名したアプリは 7 日で期限が切れるので、切れたらもう一度 ⌘R で入れ直します。
+
+実機は Mac の `localhost` に届かないので、偽のサーバーではなく本物のサーバー（https）につなぎます。
+- 起動するとログインの画面が出ます。サーバーの URL を入れて「GitHub でログイン」を押します。セッションのトークンは Keychain にだけ保存されます。
+- メインの画面には、キャラクター・最後の未読の返事（全文。長いときは吹き出しの中だけがスクロールします）・知らせ・入力欄が出ます。
+  吹き出しの × は、Mac と同じく最後の返事までを既読にします。
+- 入力欄に入ると、キャラクターは気持ちの顔になって入力欄の上に寄り、彼女のセリフがその横に出ます。送ったメッセージは「受付中…」と出ます。
+  「閉じる」でキーボードを下ろすと、元の画面に戻ります。
+- 右上のボタンで会話の履歴と設定を開きます。知らせのカードを押しても履歴が開きます。
+  履歴で見えた返事は既読に、見えた知らせは確認済みになります。
+- 設定には、サーバー・接続の状態・この端末の ID と、ログアウトがあります。
+- アプリが裏に回ると接続を切り、前に戻ると続きから同期し直します。
+
+### 偽のサーバーで確かめる
+
+GitHub もモデルも使わずに画面を確かめるための、偽のサーバーがあります。`http://localhost:8787` で待ち受け、
+ログインは GitHub を通さずに通り、架空の会話と知らせを返し、送ったメッセージには少し考えてから返事をします。
+
+```sh
+npm ci
+npm run fake-server -- [--port 8787] [--reply-delay 5] [--short]
+```
+
+シミュレータのアプリでは、サーバーに `http://localhost:8787` を入れてログインします。
+UI テスト `NatsumiPhoneUITests` は、この偽のサーバーを相手にログイン・返事・履歴・設定・ログアウトまでを辿り、画面を撮ります
+（偽のサーバーを先に起動してください。別のポートで動かすときは `TEST_RUNNER_NATSUMI_SERVER` に URL を渡します）。撮った画面は結果の bundle に添付され、`TEST_RUNNER_NATSUMI_SCREENSHOTS` に
+ディレクトリを渡すとそこにも書き出されます。
+
+```sh
+TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
+  xcodebuild test -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destination 'platform=iOS Simulator,name=iPhone 17' -derivedDataPath mac/build
+```
+
 ## ライセンス
 
 - コードは [MIT License](LICENSE) です。
@@ -371,7 +424,7 @@ cp <アセットのディレクトリ>/pet.json <アセットのディレクト�
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json)（証明書ファイル）と [ACME の設定例](config.acme.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。

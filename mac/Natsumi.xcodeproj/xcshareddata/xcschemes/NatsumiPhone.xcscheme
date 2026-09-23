@@ -14,23 +14,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A10000000000000000000030"
-               BuildableName = "Natsumi.app"
-               BlueprintName = "Natsumi"
-               ReferencedContainer = "container:Natsumi.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "NO"
-            buildForProfiling = "NO"
-            buildForArchiving = "NO"
-            buildForAnalyzing = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A10000000000000000000032"
-               BuildableName = "NatsumiCoreTests.xctest"
-               BlueprintName = "NatsumiCoreTests"
+               BlueprintIdentifier = "A10000000000000000000033"
+               BuildableName = "NatsumiPhone.app"
+               BlueprintName = "NatsumiPhone"
                ReferencedContainer = "container:Natsumi.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -46,9 +32,9 @@
             skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A10000000000000000000032"
-               BuildableName = "NatsumiCoreTests.xctest"
-               BlueprintName = "NatsumiCoreTests"
+               BlueprintIdentifier = "A10000000000000000000034"
+               BuildableName = "NatsumiPhoneUITests.xctest"
+               BlueprintName = "NatsumiPhoneUITests"
                ReferencedContainer = "container:Natsumi.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -68,9 +54,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A10000000000000000000030"
-            BuildableName = "Natsumi.app"
-            BlueprintName = "Natsumi"
+            BlueprintIdentifier = "A10000000000000000000033"
+            BuildableName = "NatsumiPhone.app"
+            BlueprintName = "NatsumiPhone"
             ReferencedContainer = "container:Natsumi.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -85,9 +71,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A10000000000000000000030"
-            BuildableName = "Natsumi.app"
-            BlueprintName = "Natsumi"
+            BlueprintIdentifier = "A10000000000000000000033"
+            BuildableName = "NatsumiPhone.app"
+            BlueprintName = "NatsumiPhone"
             ReferencedContainer = "container:Natsumi.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
