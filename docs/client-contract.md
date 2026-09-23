@@ -60,7 +60,7 @@ Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
 クライアントのメッセージは 1 件ごとに `v` を検証する。`v` が 1 でなければ `command.rejected`（`unsupported-version`）を送り、
 close code 1002 で閉じる。JSON のオブジェクトでなければ `invalid-envelope` を送り、1007 で閉じる。1 メッセージは 64 KiB までとする。
 未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる（command を受けるたびと、定期的に期限を確かめる）。
-下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack` は実装済みで、それ以外の command は
+下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register` は実装済みで、それ以外の command は
 `command.rejected`（`not-implemented`）を返す。`session.sync` の前の応答は、その接続だけの一時的な stream で採番する。
 会話の扱いの理由は [ADR 0008](adr/0008-single-thinking-loop-and-mac-conversation.md)、
 既読と知らせの確認の理由は [ADR 0013](adr/0013-read-state-on-the-server.md) にある。
@@ -96,6 +96,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `approval.decide` | approvalId、revision、approve/reject | 確定した承認状態。内容・期限・権限を再検証（未実装） |
 | `notification.ack` | notificationId（知らせの messageId） | `command.accepted`（notificationId、acknowledgedAt。2 回目以降も最初の時刻）、または invalid-request / `service.unavailable` |
 | `device.activity` | 明示操作の kind のみ | サーバー受理順で通知先更新。画面内容は含めない（未実装） |
+| `push.register` | token、publicKey、environment | `command.accepted`（environment）、または invalid-request。下記「iPhone への通知」 |
 
 | サーバー event | 内容 |
 | --- | --- |
@@ -121,7 +122,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
    サーバーのバッファに残っていれば、欠けたイベントが元の seq のまま届き、続けて `command.accepted`（mode: resume）が届く。
 3. それ以外の場合は `session.snapshot` が届く。Mac は表示をこの snapshot で置き換え、以後はこれより大きい seq のイベントを適用する。
 4. 会話が使えない場合は `service.unavailable` が届く（deviceId と sessionExpiresAt も付く）。
-5. 同期の前の会話 command（`conversation.send`・`conversation.read`・`notification.ack`）は `sync-required`、
+5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`）は `sync-required`、
    接続の端末と異なる `deviceId` の command は `device-mismatch` で拒否される。
 6. 同じ端末で新しく接続すると古い接続は close code 4001 で閉じられる。受信が大きく遅れた接続は 4002 で閉じられるので、再接続して同期する。
 
@@ -215,6 +216,95 @@ Mac 再起動時はサーバーの snapshot を正とし、永続的な独自会
 3. これらのイベントも stream の seq で採番され、差分の再送に含まれる。snapshot を受け取った端末は、snapshot の 3 つの項目で状態を置き換える。
 
 サーバーを更新して既読の記録を初めて持ったとき、それまでの会話はすべて既読・確認済みになる。以後の返事と知らせだけが未読になる。
+
+## iPhone への通知
+
+iPhone は裏に回ると接続を切るので、その間の返事と知らせは APNs で知らせる
+（[ADR 0029](adr/0029-push-notifications-on-the-iphone.md)）。本文は端末の公開鍵で暗号化し、Apple のサーバーを平文で通さない。
+Mac は登録しない。以下の base64 は、すべて標準の base64（RFC 4648 の 4 節、`+` と `/`、`=` の詰め物あり）である。
+URL 用の base64（`-` と `_`）や詰め物のないものは受け付けない。
+
+### 登録
+
+iPhone は接続のたびに、`session.sync` の後で `push.register` を送る。
+
+| payload | 内容 |
+| --- | --- |
+| `token` | APNs の device token の 16 進（大文字も可。サーバーは小文字にして持つ） |
+| `publicKey` | 通知のための P-256 の公開鍵。X9.63 の非圧縮形式（65 バイト、先頭 0x04）の base64。曲線の上の点でなければ断る |
+| `environment` | `sandbox`（Debug の build）または `production`（配布したもの） |
+
+- 形が合わなければ `command.rejected`（`invalid-request`）になる。受け付けると `command.accepted`（`environment`）が返る。
+- 登録は端末ごとに 1 つで、送るたびに上書きする。同じ token を別の端末が登録すると、前の端末の登録は消える（入れ直したアプリ）。
+- 送り先になるのは、その端末が最後に同期したセッションが生きている（取り消されておらず期限内の）間だけである。
+  ログアウトや期限切れの後は送らない。セッションは最後に使ってから 30 日で切れ、接続するたびに延びる
+  （[ADR 0030](adr/0030-a-session-that-lasts-while-it-is-used.md)）。30 日以内に一度でも iPhone のアプリを開いて接続すれば、
+  通知は止まらない。30 日まったく開かないと止まり、次に開いてログインし直すと戻る。
+- サーバーに `apns` の設定がなくても登録は受け付けて記録する。送るのは設定があるときだけである。
+- APNs が `410` か `BadDeviceToken` を返すと、その登録を消す。アプリは次の接続でまた登録する。
+
+### いつ送るか
+
+登録があり、**いま接続していない**端末に送る。接続していれば会話のイベントで届くので送らない。
+
+| きっかけ | 送るもの |
+| --- | --- |
+| 返事（`conversation.message` の kind: reply）を記録した | alert |
+| 知らせ（kind: notice）を記録した | alert |
+| 既読のカーソルが進んだ（`conversation.read`） | background（kind: read） |
+| 知らせが初めて確認された（`notification.acked`） | background（kind: acked） |
+
+本人のメッセージは送らない。5xx・429・つながらないときは、同じ `apns-id` で数回（既定では 5 秒・30 秒・2 分の後）送り直し、
+だめなら諦める。送り直しはメモリの中だけで、サーバーを再起動すると消える。
+
+### alert
+
+ヘッダーは `apns-push-type: alert`、`apns-priority: 10`、`apns-topic`（アプリの bundle ID）、`apns-id`（UUID）。
+
+```json
+{"aps":{"alert":{"title":"なつみ","body":"返事があります"},"mutable-content":1,"badge":3,"sound":"default"},"messageId":"message-example","kind":"reply","position":42,"e":{"v":1,"epk":"BE9p…","nonce":"AAEC…","ct":"RDIz…"}}
+```
+
+- `aps.alert` は決まった文である。本文は kind: reply なら「返事があります」、notice なら「知らせがあります」。
+  Notification Service Extension が復号に失敗したときは、この文がそのまま出る。
+- `aps.badge` は、送る時点の未読の返事の数と未確認の知らせの数の和である。
+- 平文の `messageId`（会話の messageId。知らせならそのまま notificationId）、`kind`（`reply` / `notice`）、`position`（会話の位置の整数）は、
+  会話の中身ではなく片づけに使う。
+- `e` はオブジェクトで、`v`（数値の 1）と、base64 の文字列 `epk`・`nonce`・`ct` を持つ。
+
+### e の暗号
+
+平文は UTF-8 の JSON `{"text": "…", "expression": "…"}` である。`expression` はセリフの気持ちで、記録の無い古いセリフでは欄が無い。
+`text` は 1000 文字（Unicode のコードポイント）までに切り、切ったときは最後の 1 文字を `…` にする。
+全角の文字が多く payload が 4096 バイトを超えるときは、収まるまでさらに短く切る（そのときも末尾は `…`）。
+全文はアプリを開けば会話の同期で読める。
+
+1. サーバーは送るたびに P-256 の一時的な鍵ペアを作る。`epk` はその公開鍵（X9.63 の非圧縮、65 バイト）である。
+2. 一時的な秘密鍵と端末の公開鍵で ECDH を取り、共有の秘密（32 バイトの x 座標）を得る。
+3. HKDF-SHA256 で鍵を導く。入力はその共有の秘密、salt は `epk` と端末の公開鍵（どちらも 65 バイト）をこの順につないだ 130 バイト、
+   info は ASCII の `natsumi-push-v1`、長さは 32 バイト。
+4. AES-256-GCM で暗号化する。nonce は 12 バイトの乱数（`nonce`）、AAD は messageId の UTF-8 のバイト列、tag は 16 バイト。
+5. `ct` は暗号文の後ろに tag の 16 バイトをつないだものである。nonce は `ct` に含めない。
+
+CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り、`hkdfDerivedSymmetricKey(using: SHA256.self, salt:, sharedInfo:, outputByteCount: 32)`
+で鍵を導き、`AES.GCM.SealedBox(combined: nonce + ct)`（nonce ‖ 暗号文 ‖ tag）を `authenticating: messageId` で開けば同じになる。
+手順が 2 つの言語でずれていないことは、共通のテストベクタ [test/fixtures/push/vector-v1.json](../test/fixtures/push/vector-v1.json) で確かめる。
+ベクタは固定の鍵と nonce から作った `e` と、途中の値（共有の秘密・salt・鍵）を持つ。中の秘密鍵はテスト専用の使い捨てである。
+
+### background
+
+ヘッダーは `apns-push-type: background`、`apns-priority: 5`、`apns-topic`、`apns-id`。`aps` は `content-available` だけで、
+バッジの数は `aps` の外に置く（アプリが自分でバッジを直す）。
+
+```json
+{"aps":{"content-available":1},"kind":"read","badge":1,"readThroughPosition":42}
+{"aps":{"content-available":1},"kind":"acked","badge":0,"readThroughPosition":42,"notificationId":"message-example"}
+```
+
+- `badge` は送る時点の未読の返事と未確認の知らせの和、`readThroughPosition` は既読のカーソルの位置（カーソルが無ければ欄が無い）。
+- kind: acked は、確認された知らせの `notificationId` を持つ。
+- アプリはバッジを直し、届いている通知のうち、`position` が `readThroughPosition` 以下の返事と、確認済みの知らせを消す。
+- background push は iOS が間引くので確実には届かない。アプリは前に戻ったとき、同期した状態に合わせて通知とバッジを片づける。
 
 ## 承認と外部実行
 

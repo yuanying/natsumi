@@ -59,6 +59,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      作業環境の runner のソケット `workspaceSocket`（絶対パス。これがあるときだけ `run_shell` が使えます）、
      runner の応答を待つ秒数 `shellWaitSeconds`（既定 75 秒。runner 側の応答の上限 60 秒より長くします）、
      永続する書き場所の合計の目安 `workspaceSizeWarnBytes`（既定 1 GiB。超えると次のターンで natsumi に知らせます）。
+   - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
 4. ビルドして起動します。
 
 ```sh
@@ -201,6 +202,49 @@ volume の代わりに既存のディレクトリを bind mount する場合は�
   既定ではホストの `secrets/tls-cert.pem`、`secrets/tls-key.pem`、`secrets/github-client-secret` を読みます
   （`NATSUMI_TLS_CERT`、`NATSUMI_TLS_KEY`、`NATSUMI_GITHUB_CLIENT_SECRET_FILE` で変更できます）。
   `secrets/` は Git の追跡対象外です。ファイルはホストの権限のままマウントされるため、UID 1000 だけが読めるようにしてください。
+
+### iPhone に通知を送る
+
+iPhone のアプリが裏にいる間の返事と知らせは、サーバーが APNs に送ります（[ADR 0029](docs/adr/0029-push-notifications-on-the-iphone.md)）。
+有料の Apple Developer Program が要ります。設定に `apns` がなければ何も送りません（iPhone の登録は受け付けて記録します）。
+
+1. Apple Developer の Certificates, Identifiers & Profiles → Keys で、Apple Push Notifications service（APNs）を有効にした鍵を作り、
+   .p8 のファイルをダウンロードします。ダウンロードできるのは 1 度だけです。sandbox と production のどちらにも使えます。
+2. .p8 を `secrets/apns-key.p8` などに置き、コンテナのユーザーだけが読めるようにします（例: `chmod 600`、所有者はコンテナの UID）。
+   `secrets/` は Git の追跡対象外です。
+3. 設定に `apns` を足します。値は架空の例です。
+
+   ```json
+   "apns": {
+     "teamId": "ABCDE12345",
+     "keyId": "KEY1234567",
+     "topic": "net.example.natsumi",
+     "keyFile": "/run/secrets/natsumi_apns_key"
+   }
+   ```
+
+   `teamId` はチームの ID、`keyId` は鍵の ID（どちらも 10 文字の英大文字と数字）、`topic` はアプリの bundle ID です。
+   鍵は `keyFile`（secret mount のパス）か `keyEnv`（PEM の中身を入れた環境変数の名前）のどちらか一方で参照します。
+   鍵が読めない、または P-256 の秘密鍵でなければ起動を止めます。
+4. Compose では override の [compose.apns.example.yaml](compose.apns.example.yaml) を足して、鍵を `/run/secrets/natsumi_apns_key` にマウントします。
+   既定ではホストの `secrets/apns-key.p8` を読みます（`NATSUMI_APNS_KEY_FILE` で変更できます）。
+   鍵のファイルがないと compose が止まるので、既定の `compose.yaml` には入っていません。
+
+```sh
+docker compose -f compose.yaml -f compose.apns.example.yaml up -d
+# 固定 IPv6 の構成では、compose.ipv6.example.yaml の後に置きます。
+docker compose -f compose.yaml -f compose.ipv6.example.yaml -f compose.apns.example.yaml up -d
+```
+
+- 送り先（`api.sandbox.push.apple.com` か `api.push.apple.com`）は、iPhone が登録するときの `environment` で決まります。
+  Debug で build したアプリは sandbox、配布したものは production です。
+- 送れなかった通知は、メモリの中で数回だけ送り直します。サーバーを再起動すると送り直しの予定は消えます。
+  返事と知らせそのものは会話に残っているので、アプリを開けば読めます。
+- 送るのは、その iPhone のセッションが生きている間だけです。セッションは最後に使ってから 30 日で切れ、接続するたびに延びるので
+  （[ADR 0030](docs/adr/0030-a-session-that-lasts-while-it-is-used.md)）、30 日以内に一度でもアプリを開けば通知は止まりません。
+  ログアウトすると送らなくなります。
+- ログには端末の ID と APNs の応答だけを出し、本文・device token・鍵は出しません。
+- 登録は `.natsumi/state.sqlite` の `push_registrations`（migration 10）に持ちます。
 
 ### natsumi の作業環境（natsumi-workspace）
 

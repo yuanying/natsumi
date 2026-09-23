@@ -108,3 +108,30 @@ natsumi の返事にも知らせにも気づけない。ADR 0028 は、裏にい
 - ADR 0028 の 4 の「裏にいる間の通知（APNs）は範囲外」は、この ADR で置き換える。
 - ADR 0013 で未定のまま残していた「特定の端末だけで目立たせる」ことは、iPhone についてはこの ADR で決めた。
   配信先を 1 つに絞ることや lease、再配信は、引き続き作らない。
+
+## 追記: サーバーの実装で決めた細部（2026-09-23）
+
+決定を変えるものではなく、2 つの言語でそろえる必要のある細部を定める。形の全体は
+[client-contract.md](../client-contract.md) の「iPhone への通知」にある。
+
+- **tag の位置**: `ct` は AES-256-GCM の暗号文の後ろに 16 バイトの tag をつないだものとする。nonce は `ct` に含めない。
+  CryptoKit の `AES.GCM.SealedBox(combined:)` には `nonce ‖ ct` を渡せばよい。
+- **base64**: `epk`・`nonce`・`ct` と、`push.register` の `publicKey` は、どれも標準の base64（`+` `/`、詰め物あり）とする。
+  Foundation の `Data(base64Encoded:)` と `base64EncodedString()` がそのまま使える。
+- **`e` の形**: `e` は payload の中のオブジェクト `{ "v": 1, "epk", "nonce", "ct" }` で、`v` は数値である。
+- **AAD と info**: AAD は messageId の UTF-8 のバイト列、info は ASCII の `natsumi-push-v1` とする。
+- **平文**: `{ "text", "expression" }` の JSON で、気持ちを記録する前の古いセリフには `expression` が無い。
+  本文は 1000 文字（コードポイント）で切り、切ったときは末尾を `…` にする。
+- **4KB に収まらないとき**: 全角の文字は UTF-8 で 3〜4 バイトになるので、1000 文字でも payload が APNs の上限
+  4096 バイトを超える。そのときは収まるまでさらに短く切る。3 の「4KB に収まるよう 1000 文字で切る」の目的を、そのまま満たすためである。
+- **background push の中身**: `aps` は `content-available` だけにし、バッジの数（`badge`）・`readThroughPosition`・
+  確認した `notificationId` は `aps` の外に置く。`kind` は `read` か `acked` とする。Apple は background の通知の `aps` に
+  `content-available` だけを置くよう求めているためである。アプリがバッジを自分で直す。
+- **token と登録**: device token は 16 進で受け、小文字にして持つ。1 つの token は 1 つの端末だけのものとし、
+  別の端末が同じ token を登録したら前の登録を消す（入れ直したアプリが二重に鳴らないように）。
+- **送り直し**: 既定では 5 秒・30 秒・2 分の後の 3 回で、同じ `apns-id` を使う。それ以外の 4xx は送り直さずに log に残す。
+- **共通のテストベクタ**: `test/fixtures/push/vector-v1.json` に置く。実装とは別に WebCrypto で作り、Node のテストが
+  実装での再現と WebCrypto での復号を確かめる。中の秘密鍵は、公開したラベルから作ったテスト専用の使い捨てである。
+- **セッションの期限**: 4 の「セッションが失効したら送らない」は、期限切れも含む。セッションは最後に使ってから 30 日で切れ、
+  接続するたびに延びる（[ADR 0030](0030-a-session-that-lasts-while-it-is-used.md)）。30 日以内に一度でも iPhone のアプリを開いて
+  接続すれば通知は止まらない。30 日まったく開かないと止まり、次に開いてログインし直すと戻る。
