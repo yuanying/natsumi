@@ -15,6 +15,8 @@
 		A10000000000000000000055 /* NatsumiCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A10000000000000000000021 /* NatsumiCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000056 /* Avatars in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000023 /* Avatars */; };
 		A10000000000000000000057 /* NatsumiWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000026 /* NatsumiWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000058 /* NatsumiNotifications.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000027 /* NatsumiNotifications.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000059 /* icons in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000028 /* icons */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -53,6 +55,13 @@
 			remoteGlobalIDString = A10000000000000000000035;
 			remoteInfo = NatsumiWidgets;
 		};
+		A10000000000000000000095 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A10000000000000000000036;
+			remoteInfo = NatsumiNotifications;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -85,6 +94,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				A10000000000000000000057 /* NatsumiWidgets.appex in Embed Foundation Extensions */,
+				A10000000000000000000058 /* NatsumiNotifications.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -99,6 +109,8 @@
 		A10000000000000000000024 /* NatsumiPhone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NatsumiPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000025 /* NatsumiPhoneUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NatsumiPhoneUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000026 /* NatsumiWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NatsumiWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000027 /* NatsumiNotifications.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NatsumiNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000028 /* icons */ = {isa = PBXFileReference; lastKnownFileType = folder; name = icons; path = Avatars/natsumi/icons; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -108,6 +120,22 @@
 				Info.plist,
 			);
 			target = A10000000000000000000035 /* NatsumiWidgets */;
+		};
+		A1000000000000000000001A /* Exceptions for "NatsumiPhone" folder in "NatsumiPhone" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				NatsumiPhone.entitlements,
+			);
+			target = A10000000000000000000033 /* NatsumiPhone */;
+		};
+		A1000000000000000000001B /* Exceptions for "NatsumiNotifications" folder in "NatsumiNotifications" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				NatsumiNotifications.entitlements,
+			);
+			target = A10000000000000000000036 /* NatsumiNotifications */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -129,6 +157,9 @@
 		};
 		A10000000000000000000013 /* NatsumiPhone */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A1000000000000000000001A /* Exceptions for "NatsumiPhone" folder in "NatsumiPhone" target */,
+			);
 			path = NatsumiPhone;
 			sourceTree = "<group>";
 		};
@@ -153,6 +184,14 @@
 		A10000000000000000000017 /* NatsumiLaunch */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = NatsumiLaunch;
+			sourceTree = "<group>";
+		};
+		A1000000000000000000001C /* NatsumiNotifications */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A1000000000000000000001B /* Exceptions for "NatsumiNotifications" folder in "NatsumiNotifications" target */,
+			);
+			path = NatsumiNotifications;
 			sourceTree = "<group>";
 		};
 		A10000000000000000000019 /* NatsumiPush */ = {
@@ -208,6 +247,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A100000000000000000000B1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -223,7 +269,9 @@
 				A10000000000000000000016 /* NatsumiWidgets */,
 				A10000000000000000000017 /* NatsumiLaunch */,
 				A10000000000000000000019 /* NatsumiPush */,
+				A1000000000000000000001C /* NatsumiNotifications */,
 				A10000000000000000000023 /* Avatars */,
+				A10000000000000000000028 /* icons */,
 				A10000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -237,6 +285,7 @@
 				A10000000000000000000024 /* NatsumiPhone.app */,
 				A10000000000000000000025 /* NatsumiPhoneUITests.xctest */,
 				A10000000000000000000026 /* NatsumiWidgets.appex */,
+				A10000000000000000000027 /* NatsumiNotifications.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -324,6 +373,7 @@
 			dependencies = (
 				A10000000000000000000062 /* PBXTargetDependency */,
 				A10000000000000000000064 /* PBXTargetDependency */,
+				A10000000000000000000065 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A10000000000000000000013 /* NatsumiPhone */,
@@ -377,6 +427,27 @@
 			productReference = A10000000000000000000026 /* NatsumiWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		A10000000000000000000036 /* NatsumiNotifications */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000077 /* Build configuration list for PBXNativeTarget "NatsumiNotifications" */;
+			buildPhases = (
+				A100000000000000000000B0 /* Sources */,
+				A100000000000000000000B1 /* Frameworks */,
+				A100000000000000000000B2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A1000000000000000000001C /* NatsumiNotifications */,
+				A10000000000000000000019 /* NatsumiPush */,
+			);
+			name = NatsumiNotifications;
+			productName = NatsumiNotifications;
+			productReference = A10000000000000000000027 /* NatsumiNotifications.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -407,6 +478,7 @@
 				A10000000000000000000033 /* NatsumiPhone */,
 				A10000000000000000000034 /* NatsumiPhoneUITests */,
 				A10000000000000000000035 /* NatsumiWidgets */,
+				A10000000000000000000036 /* NatsumiNotifications */,
 			);
 		};
 /* End PBXProject section */
@@ -456,6 +528,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A100000000000000000000B2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000059 /* icons in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -501,6 +581,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A100000000000000000000B0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -528,6 +615,11 @@
 			isa = PBXTargetDependency;
 			target = A10000000000000000000035 /* NatsumiWidgets */;
 			targetProxy = A10000000000000000000094 /* PBXContainerItemProxy */;
+		};
+		A10000000000000000000065 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A10000000000000000000036 /* NatsumiNotifications */;
+			targetProxy = A10000000000000000000095 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -714,10 +806,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				CODE_SIGN_ENTITLEMENTS = NatsumiPhone/NatsumiPhone.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
 				"CODE_SIGN_STYLE[sdk=iphoneos*]" = Automatic;
 				DEVELOPMENT_TEAM = R849P56TAV;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NatsumiPhone/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = natsumi;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -741,10 +835,12 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				CODE_SIGN_ENTITLEMENTS = NatsumiPhone/NatsumiPhone.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
 				"CODE_SIGN_STYLE[sdk=iphoneos*]" = Automatic;
 				DEVELOPMENT_TEAM = R849P56TAV;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NatsumiPhone/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = natsumi;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -855,6 +951,58 @@
 			};
 			name = Release;
 		};
+		A1000000000000000000008E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NatsumiNotifications/NatsumiNotifications.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
+				"CODE_SIGN_STYLE[sdk=iphoneos*]" = Automatic;
+				DEVELOPMENT_TEAM = R849P56TAV;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NatsumiNotifications/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = natsumi;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.yuanying.natsumi.phone.notifications;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A1000000000000000000008F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NatsumiNotifications/NatsumiNotifications.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Development";
+				"CODE_SIGN_STYLE[sdk=iphoneos*]" = Automatic;
+				DEVELOPMENT_TEAM = R849P56TAV;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NatsumiNotifications/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = natsumi;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.yuanying.natsumi.phone.notifications;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -917,6 +1065,15 @@
 			buildConfigurations = (
 				A1000000000000000000008C /* Debug */,
 				A1000000000000000000008D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000000000000000000077 /* Build configuration list for PBXNativeTarget "NatsumiNotifications" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000000000000000000008E /* Debug */,
+				A1000000000000000000008F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

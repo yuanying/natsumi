@@ -237,7 +237,7 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml -f compose.apns.exam
 ```
 
 - 送り先（`api.sandbox.push.apple.com` か `api.push.apple.com`）は、iPhone が登録するときの `environment` で決まります。
-  Debug で build したアプリは sandbox、配布したものは production です。
+  開発用に署名したアプリ（Xcode から入れたもの）は sandbox、配布したものは production です。
 - 送れなかった通知は、メモリの中で数回だけ送り直します。サーバーを再起動すると送り直しの予定は消えます。
   返事と知らせそのものは会話に残っているので、アプリを開けば読めます。
 - 送るのは、その iPhone のセッションが生きている間だけです。セッションは最後に使ってから 30 日で切れ、接続するたびに延びるので
@@ -421,15 +421,17 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
 
 実機に入れるときは、iOS のときだけ自動署名になるようにしてあるので、次の手順で Xcode にチームを選ばせます。
 
-1. Xcode の Settings… > Accounts に Apple ID を足します（有料の Developer Program は要りません）。
-2. `mac/Natsumi.xcodeproj` を開き、ターゲット `NatsumiPhone`・`NatsumiWidgets`・`NatsumiCore` の Signing & Capabilities で Team を選びます。
-   `NatsumiWidgets` はアプリに埋め込むウィジェットの拡張、`NatsumiCore` は埋め込む framework なので、こちらにも要ります。
-   Team を選ぶと `DEVELOPMENT_TEAM` がプロジェクトのファイルに書かれます。
-3. Bundle Identifier（`io.github.yuanying.natsumi.phone` と拡張の `io.github.yuanying.natsumi.phone.widgets`）がほかの人に
+1. Xcode の Settings… > Accounts に Apple ID を足します。通知（Push Notifications）の entitlement があるので、
+   有料の Apple Developer Program のチームが要ります。
+2. `mac/Natsumi.xcodeproj` を開き、ターゲット `NatsumiPhone`・`NatsumiWidgets`・`NatsumiNotifications`・`NatsumiCore` の
+   Signing & Capabilities で Team を選びます。`NatsumiWidgets` と `NatsumiNotifications` はアプリに埋め込む拡張、
+   `NatsumiCore` は埋め込む framework なので、こちらにも要ります。Team を選ぶと `DEVELOPMENT_TEAM` がプロジェクトのファイルに書かれます。
+3. Bundle Identifier（`io.github.yuanying.natsumi.phone` と、拡張の `….phone.widgets`・`….phone.notifications`）がほかの人に
    取られていると断られます。その場合は自分のものに変えます。拡張のものはアプリのものの後ろに続けます。
+   Keychain の共有グループ（`io.github.yuanying.natsumi.shared`。アプリと `NatsumiNotifications` の entitlements と Info.plist にあります）も、
+   同じく自分のものに変えます。
 4. iPhone を USB でつなぎ、iPhone 側で「このコンピュータを信頼」を選び、Xcode の実行先に選んで ⌘R で入れます。
 5. 初回は iPhone の 設定 > 一般 > VPN とデバイス管理 で、自分の Apple ID の開発者を信頼します。
-   無料の Apple ID で署名したアプリは 7 日で期限が切れるので、切れたらもう一度 ⌘R で入れ直します。
 
 実機は Mac の `localhost` に届かないので、偽のサーバーではなく本物のサーバー（https）につなぎます。
 - 起動するとログインの画面が出ます。サーバーの URL を入れて「GitHub でログイン」を押します。セッションのトークンは Keychain にだけ保存されます。
@@ -441,6 +443,12 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
   履歴で見えた返事は既読に、見えた知らせは確認済みになります。
 - 設定には、サーバー・接続の状態・この端末の ID と、ログアウトがあります。
 - アプリが裏に回ると接続を切り、前に戻ると続きから同期し直します。
+- 裏にいる間の返事と知らせは、通知で届きます（[ADR 0029](docs/adr/0029-push-notifications-on-the-iphone.md)。サーバーの設定は上の「iPhone への通知」）。
+  ログインすると通知を許可するか尋ねられます。本文はこの iPhone の鍵で暗号化されて届き、アプリの拡張 `NatsumiNotifications` が開いて、
+  セリフと気持ちの顔を出します。開けなかったときは「返事があります」「知らせがあります」とだけ出ます。
+  バッジは未読の返事と未確認の知らせの数で、Mac で読んだ分の通知は消えます（iOS が間引くと、次にアプリを開いたときに消えます）。
+  送り先（sandbox か production か）は、アプリの署名の provisioning profile から決まります。
+- シミュレータでも登録までは動きますが、`xcrun simctl push` は拡張を通らないので、本文を開くところは実機で確かめます。
 - ロック画面からも開けます。ロック画面を長押しして「カスタマイズ」を選び、下の隅のボタンを「なつみを開く」に替えるか、
   時計の下のウィジェットに「なつみ」を足します。同じボタンはコントロールセンターとアクションボタンにも置けます。
   どちらもアプリを開くだけで、ロック画面に会話は出ません。

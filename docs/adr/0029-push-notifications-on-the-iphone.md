@@ -1,7 +1,7 @@
 # 0029. iPhone に通知を届ける
 
 - Date: 2026-09-23
-- Status: Accepted
+- Status: Accepted（iPhone 側の実装で決めた細部を末尾に追記）
 
 ## Context
 
@@ -135,3 +135,17 @@ natsumi の返事にも知らせにも気づけない。ADR 0028 は、裏にい
 - **セッションの期限**: 4 の「セッションが失効したら送らない」は、期限切れも含む。セッションは最後に使ってから 30 日で切れ、
   接続するたびに延びる（[ADR 0030](0030-a-session-that-lasts-while-it-is-used.md)）。30 日以内に一度でも iPhone のアプリを開いて
   接続すれば通知は止まらない。30 日まったく開かないと止まり、次に開いてログインし直すと戻る。
+
+## 追記: iPhone の実装で決めた細部（2026-09-23）
+
+- **Extension**: Notification Service Extension は `NatsumiNotifications`。`NatsumiCore` を link せず、payload の読み方と復号と鍵の保存だけを
+  `NatsumiPush/` にまとめて、`NatsumiCore` と Extension の両方で build する。
+- **鍵の共有**: アプリの keychain-access-groups は、アプリ自身のグループを先頭に、共有グループ `io.github.yuanying.natsumi.shared` を 2 番目に置く。
+  セッションのトークンは今までどおりアプリ自身のグループに残り、共有グループには通知の鍵だけを明示して置く。Extension は共有グループだけを持つ。
+  鍵はロック中にも開けるよう、最初のロック解除の後に読めるものにする（この端末だけ）。
+- **environment**: Debug かどうかではなく、署名の provisioning profile の `aps-environment` で決める。Xcode から入れたものは Release でも
+  development になるためである。profile の無いもの（App Store）は production、シミュレータは sandbox とする。
+- **許可**: ログインしているときだけ、通知の許可と device token を求める。許可が無くても token は求め、登録とバッジの片づけに使う。
+- **気持ちの顔**: `icons/` の WebP は通知に添えられないので、Extension が PNG に書き出して添える。気持ちの無い古いセリフには neutral の顔を添える。
+- **片づけ**: 同期している間は、未読の返事と未確認の知らせの ID に無い通知を消し、バッジをその数にする。background push では、
+  `position` が `readThroughPosition` 以下の返事と、確認した知らせを消す。
