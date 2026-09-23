@@ -453,6 +453,58 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
   時計の下のウィジェットに「なつみ」を足します。同じボタンはコントロールセンターとアクションボタンにも置けます。
   どちらもアプリを開くだけで、ロック画面に会話は出ません。
 
+### TestFlight で配る
+
+USB で入れたアプリは、開発用の署名の期限が切れるたびに入れ直しが要ります。GitHub Actions でビルドして TestFlight に上げると、
+iPhone の TestFlight アプリが新しいビルドを自動で入れます（[ADR 0031](docs/adr/0031-the-iphone-app-through-testflight.md)）。
+ワークフローは [.github/workflows/iphone-testflight.yml](.github/workflows/iphone-testflight.yml) です。
+
+最初に一度だけ、次を用意します。
+
+1. **App Store Connect にアプリを作る。** アプリ > ＋ > 新規 App で、プラットフォームは iOS、バンドル ID は
+   `io.github.yuanying.natsumi.phone`、SKU は好きな文字列にします。バンドル ID は Xcode の自動署名で登録済みのものが選べます。
+   名前は App Store 全体で重複できないので、取られていたら別の名前にします（iPhone のホーム画面の名前は `natsumi` のままです）。
+2. **App Store Connect の API キーを作る。** ユーザとアクセス > 統合 > App Store Connect API > チームキーで、アクセスを **Admin** にして
+   鍵を作ります。クラウドで管理される配布用の証明書を使うのに Admin が要ります。.p8 はダウンロードできるのが 1 度だけです。
+   キー ID と、ページの上にある Issuer ID を控えます。
+3. **開発用の証明書を .p12 に書き出す。** Mac のキーチェーンアクセスで、自分の「Apple Development: …」の証明書を秘密鍵ごと選び、
+   パスワードを付けて .p12 に書き出します。archive の署名に使います（これがないと、ワークフローは走るたびに開発用の証明書を
+   新しく作ってしまい、上限に達して止まります）。証明書は 1 年で切れるので、切れたら書き出し直して Secrets を差し替えます。
+   開発用の provisioning profile には登録済みの端末が要ります。USB でアプリを入れた iPhone が登録されていれば足ります。
+4. **GitHub の Secrets に登録する。** リポジトリの Settings > Secrets and variables > Actions に、次の 5 つを足します。
+   .p8 と .p12 は base64 にします（例: `base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy`）。
+
+   | 名前 | 中身 |
+   |---|---|
+   | `ASC_KEY_ID` | API キーのキー ID |
+   | `ASC_ISSUER_ID` | API キーの Issuer ID |
+   | `ASC_KEY_P8` | .p8 を base64 にしたもの |
+   | `APPLE_DEVELOPMENT_P12` | 開発用の証明書の .p12 を base64 にしたもの |
+   | `APPLE_DEVELOPMENT_P12_PASSWORD` | .p12 に付けたパスワード |
+
+5. **自分を内部テスターにする。** App Store Connect のアプリ > TestFlight > 内部テストでグループを作り、自分を足します。
+   ビルドを自動で配る設定にしておくと、上がるたびに届きます。
+6. **iPhone に TestFlight アプリを入れる。** App Store から入れ、届いた招待を受けます。TestFlight アプリの設定で自動アップデートを有効にします。
+
+ワークフローは次のときに走ります。
+
+- 手動: Actions > iPhone TestFlight > Run workflow。
+- main への push: `mac/` のうち iPhone のアプリに入るものが変わったとき。Mac だけのコード・テスト・文書の変更では走りません。
+- 定期: 毎月 1 日。TestFlight のビルドは 90 日で使えなくなるので、変更がなくても作り直します。
+- pull request では走りません。public のリポジトリなので、fork からの PR に署名の Secrets を渡さないためです。
+
+- ビルド番号はワークフローの run の番号、版は `1.0` です（ワークフローの `MARKETING_VERSION`）。同じ run を再実行すると
+  ビルド番号が重なって断られるので、作り直すときは新しく走らせます。
+- Xcode は `xcode-27` のイメージ（2026-09 時点で preview）の Xcode 27.0 を使います。
+- 上がったビルドは、App Store Connect の処理が終わってから TestFlight に出ます。輸出規制の質問は Info.plist の
+  `ITSAppUsesNonExemptEncryption`（`NO`。OS の暗号を標準の方式で使うだけのため）で済ませているので、毎回答える必要はありません。
+- TestFlight のビルドは配布用に署名されるので、通知は production の APNs に登録されます。サーバーは登録の `environment` で
+  送り先を選ぶので（上の「iPhone に通知を送る」）、サーバーの設定を変える必要はありません。APNs の鍵は sandbox と production の両方に使えます。
+- USB で入れたアプリと同じ bundle ID なので、後から入れた方に置き換わります。
+- **定期実行が止まることがあります。** public のリポジトリでは、60 日間リポジトリに動き（コミットなど）がないと、GitHub が定期実行の
+  ワークフローを止め、メールで知らせます。止まったら Actions の画面でワークフローを有効にし直すか、手動で走らせてください。
+  最後に上がったビルドは、上がってから 90 日は使えます。
+
 ### 偽のサーバーで確かめる
 
 GitHub もモデルも使わずに画面を確かめるための、偽のサーバーがあります。`http://localhost:8787` で待ち受け、
