@@ -3,21 +3,39 @@ import SwiftUI
 
 @main
 struct NatsumiPhoneApp: App {
-    /// The only thing the app holds (ADR 0028).
-    @State private var root: PhoneRootComponent
+    /// Holds the root, since what iOS says about notifications arrives at the app delegate.
+    @UIApplicationDelegateAdaptor private var delegate: PhoneAppDelegate
     @Environment(\.scenePhase) private var scenePhase
-
-    init() {
-        let root = PhoneRootComponent()
-        root.launch()
-        _root = State(initialValue: root)
-    }
 
     var body: some Scene {
         WindowGroup {
-            ScreenView(model: root.model)
+            ScreenView(model: delegate.root.model)
         }
-        .onChange(of: scenePhase) { _, phase in root.scenePhaseChanged(phase) }
+        .onChange(of: scenePhase) { _, phase in delegate.root.scenePhaseChanged(phase) }
+    }
+}
+
+/// The only thing that holds the root (ADR 0028). It passes on what iOS says about notifications (ADR 0029).
+@MainActor
+final class PhoneAppDelegate: NSObject, UIApplicationDelegate {
+    let root: PhoneRootComponent = {
+        let root = PhoneRootComponent()
+        root.launch()
+        return root
+    }()
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        root.deviceTokenReceived(deviceToken)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        // Without a token there is nothing to register; the app works as before, and the next launch asks again.
+    }
+
+    func application(
+        _ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]
+    ) async -> UIBackgroundFetchResult {
+        await root.remoteNotificationReceived(userInfo) ? .newData : .noData
     }
 }
 

@@ -23,6 +23,10 @@ public enum PhoneEvent: Equatable, Sendable {
     case becameActive
     /// The app went behind others, where iOS will soon stop it.
     case enteredBackground
+    /// iOS gave a device token, and the key to seal notifications to is at hand (ADR 0029).
+    case pushRegistrationReady(PushRegistration)
+    /// A silent push said something was read or checked, most likely on another device.
+    case backgroundPushReceived(BackgroundPush)
 
     // MARK: The login screen
 
@@ -77,6 +81,13 @@ public enum PhoneEffect: Equatable, Sendable {
     case logout
     /// Read the avatar bundled with the app and answer with `.avatarLoaded`.
     case loadAvatar
+
+    // MARK: Notifications (ADR 0029)
+
+    /// Ask to show notifications and for a device token; the token comes back as `.pushRegistrationReady`.
+    case registerForNotifications
+    /// Set the badge and take away the delivered notifications of what was read or checked.
+    case tidyNotifications(PushTidy)
 }
 
 /// The iPhone's tree.

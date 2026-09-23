@@ -1,5 +1,6 @@
 import NatsumiCore
 import SwiftUI
+import UserNotifications
 
 /// The root of the iPhone's tree, and the only thing outside it may hold (ADR 0028).
 ///
@@ -24,6 +25,9 @@ final class PhoneRootComponent: PhoneComponent {
     private var socket: WebSocketClient?
     private var socketID: UUID?
     private var reconnectTask: Task<Void, Never>?
+    /// The last tidying of the notifications, which a silent push waits for before iOS suspends the app again.
+    private var tidyTask: Task<Void, Never>?
+    private let pushKeys = PushKeyStore(accessGroup: PushKeyStore.sharedGroup())
 
     init() {
         super.init(name: "root")
@@ -54,6 +58,50 @@ final class PhoneRootComponent: PhoneComponent {
         case .active: deliver(.becameActive)
         case .background: deliver(.enteredBackground)
         default: break
+        }
+    }
+
+    // MARK: - Notifications (ADR 0029)
+
+    /// iOS gave a device token. With this iPhone's key it becomes the registration the server is sent.
+    func deviceTokenReceived(_ token: Data) {
+        guard let key = try? pushKeys.loadOrCreate() else { return }
+        #if targetEnvironment(simulator)
+        // The simulator has no profile; its tokens are the development APNs'.
+        let environment = PushEnvironment.sandbox
+        #else
+        let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision").flatMap { try? Data(contentsOf: $0) }
+        let environment = PushEnvironment(provisioningProfile: profile)
+        #endif
+        deliver(.pushRegistrationReady(PushRegistration(deviceToken: token, publicKey: key.publicKey, environment: environment)))
+    }
+
+    /// A silent push arrived. It is done with once the notifications are tidied.
+    func remoteNotificationReceived(_ userInfo: [AnyHashable: Any]) async -> Bool {
+        guard let push = BackgroundPush(userInfo: userInfo) else { return false }
+        deliver(.backgroundPushReceived(push))
+        await tidyTask?.value
+        return true
+    }
+
+    private func registerForNotifications() {
+        Task {
+            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
+            // A token is asked for even when alerts were refused: the badge and the tidying still use it.
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+    }
+
+    private func tidy(_ tidy: PushTidy) {
+        let previous = tidyTask
+        tidyTask = Task {
+            await previous?.value
+            let center = UNUserNotificationCenter.current()
+            let gone = await center.deliveredNotifications().filter {
+                AlertPush(userInfo: $0.request.content.userInfo).map(tidy.removes) ?? false
+            }
+            center.removeDeliveredNotifications(withIdentifiers: gone.map(\.request.identifier))
+            try? await center.setBadgeCount(tidy.badge)
         }
     }
 
@@ -110,6 +158,10 @@ final class PhoneRootComponent: PhoneComponent {
             account.serverAddress = address
         case .logout:
             logout()
+        case .registerForNotifications:
+            registerForNotifications()
+        case .tidyNotifications(let value):
+            tidy(value)
         case .loadAvatar:
             let bundled = Bundle.main.resourceURL?.appendingPathComponent("Avatars/natsumi", isDirectory: true)
             deliver(.avatarLoaded(AvatarLoader.resolve(candidates: bundled.map { [$0] } ?? [])))

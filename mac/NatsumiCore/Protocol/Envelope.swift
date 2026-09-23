@@ -133,6 +133,8 @@ public enum ClientCommand: Equatable, Sendable {
     case conversationSend(text: String)
     case conversationRead(throughMessageId: String)
     case notificationAck(notificationId: String)
+    /// Where to send this iPhone's notifications, and the key to seal them to (ADR 0029).
+    case pushRegister(PushRegistration)
 }
 
 /// One command to the server.
@@ -167,6 +169,11 @@ public struct ClientEnvelope: Equatable, Sendable {
         case .notificationAck(let notificationId):
             object["type"] = "notification.ack"
             object["payload"] = ["notificationId": notificationId]
+        case .pushRegister(let registration):
+            object["type"] = "push.register"
+            object["payload"] = [
+                "token": registration.token, "publicKey": registration.publicKey, "environment": registration.environment.rawValue,
+            ]
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }

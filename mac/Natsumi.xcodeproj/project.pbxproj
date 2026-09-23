@@ -155,6 +155,11 @@
 			path = NatsumiLaunch;
 			sourceTree = "<group>";
 		};
+		A10000000000000000000019 /* NatsumiPush */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = NatsumiPush;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -217,6 +222,7 @@
 				A10000000000000000000015 /* NatsumiPhoneUITests */,
 				A10000000000000000000016 /* NatsumiWidgets */,
 				A10000000000000000000017 /* NatsumiLaunch */,
+				A10000000000000000000019 /* NatsumiPush */,
 				A10000000000000000000023 /* Avatars */,
 				A10000000000000000000003 /* Products */,
 			);
@@ -275,6 +281,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				A10000000000000000000011 /* NatsumiCore */,
+				A10000000000000000000019 /* NatsumiPush */,
 			);
 			name = NatsumiCore;
 			productName = NatsumiCore;

@@ -96,7 +96,7 @@ struct PhoneMediatorTests {
         #expect(mediator.handle(.loginSubmitted(server: Self.server)).isEmpty)
 
         #expect(mediator.handle(.loginFinished(.succeeded)) == [.disconnect, .resumeSession])
-        #expect(mediator.handle(.sessionResumed(hasSession: true, deviceId: nil)) == [.connect])
+        #expect(mediator.handle(.sessionResumed(hasSession: true, deviceId: nil)) == [.registerForNotifications, .connect])
         #expect(main(mediator)?.status == PhoneStatusProps(text: "接続中…", tone: .waiting, action: nil))
     }
 
