@@ -21,13 +21,14 @@ enum Fixture {
 
     static func message(
         _ id: String, role: String = "natsumi", kind: String = "reply", text: String = "こんにちは",
-        eventId: String? = nil, replyTo: String? = nil
+        eventId: String? = nil, replyTo: String? = nil, expression: String? = nil
     ) -> [String: Any] {
         var payload: [String: Any] = [
             "messageId": id, "role": role, "kind": kind, "text": text, "createdAt": "2026-01-01T00:00:00.000Z",
         ]
         if let eventId { payload["eventId"] = eventId }
         if let replyTo { payload["replyTo"] = replyTo }
+        if let expression { payload["expression"] = expression }
         return payload
     }
 

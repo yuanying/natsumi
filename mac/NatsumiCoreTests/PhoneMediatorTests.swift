@@ -261,4 +261,25 @@ struct PhoneMediatorTests {
         let mediator = synced(expression: "happy")
         #expect(main(mediator)?.character == PhoneCharacterProps(avatar: .placeholder, expression: .happy))
     }
+
+    @Test("話しかけている間の顔は、横に出ているセリフに込めた気持ちで描く")
+    func composingFaceWearsTheLinesFeeling() {
+        var mediator = synced(
+            messages: [Fixture.message("r1", text: "架空の返事", expression: "laughing")], expression: "neutral", unread: 1)
+        // Standing, she wears the server's face; the feeling of the line is separate from it (ADR 0026).
+        #expect(main(mediator)?.character.expression == .neutral)
+        _ = mediator.handle(.inputFocusChanged(true))
+        #expect(main(mediator)?.character.expression == .laughing)
+
+        // Once the reply is read, there is no line beside her, and she wears the server's face again.
+        _ = mediator.handle(.balloonCloseTapped)
+        #expect(main(mediator)?.character.expression == .neutral)
+    }
+
+    @Test("話しかけている間でも、気持ちの分からないセリフの横では、サーバーの表情で描く")
+    func composingFaceWithoutAFeeling() {
+        var mediator = synced(messages: [Fixture.message("r1", text: "架空の返事")], expression: "sleepy", unread: 1)
+        _ = mediator.handle(.inputFocusChanged(true))
+        #expect(main(mediator)?.character.expression == .sleepy)
+    }
 }

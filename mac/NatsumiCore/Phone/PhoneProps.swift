@@ -194,9 +194,18 @@ public enum PhoneProps {
             status: status(state.status),
             notices: state.isComposing ? nil : notices(conversation),
             balloon: balloon(conversation, time: time),
-            character: PhoneCharacterProps(avatar: state.avatar, expression: conversation.expression),
+            character: PhoneCharacterProps(avatar: state.avatar, expression: face(conversation, isComposing: state.isComposing)),
             outgoing: outgoing(conversation, isComposing: state.isComposing), isComposing: state.isComposing,
             page: page(state, time: time))))
+    }
+
+    /// Standing, she wears the face the server gives her. While the owner writes she is a face beside her reply, so
+    /// she wears the feeling she put into that line (ADR 0026), when it is known.
+    static func face(_ conversation: ConversationState, isComposing: Bool) -> Expression {
+        guard isComposing, let feeling = UIProps.shownReply(conversation, readingHistory: false)?.expression else {
+            return conversation.expression
+        }
+        return feeling
     }
 
     /// What is over the input field. While the owner is writing, the message just sent is there with 「受付中…」 under
