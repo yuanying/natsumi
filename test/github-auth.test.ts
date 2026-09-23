@@ -18,7 +18,7 @@ function assertNoLeaks(f: Fixture, extra: string[] = [], from = 0) {
   }
 }
 
-test('the allowed account logs in with state and PKCE and receives a short-lived session', () => withFixture(async f => {
+test('the allowed account logs in with state and PKCE and receives a session that lasts thirty days from its use', () => withFixture(async f => {
   const { verifier, appState, authorize } = await beginLogin(f);
   const q = authorize.searchParams;
   assert.equal(q.get('client_id'), 'Iv1.fixtureclient');
@@ -38,7 +38,7 @@ test('the allowed account logs in with state and PKCE and receives a short-lived
   const body = session.json() as { token: string; expiresAt: string };
   assert.ok(body.token.length >= 43);
   const lifetime = Date.parse(body.expiresAt) - f.clock.now;
-  assert.ok(lifetime > 0 && lifetime <= 24 * 60 * MINUTE);
+  assert.equal(lifetime, 30 * 24 * 60 * MINUTE);
   assert.ok(!f.logs.join('\n').includes(body.token), 'the session token is never logged');
   assertNoLeaks(f);
 }));

@@ -2,8 +2,13 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { isoAt as iso } from './nightly.ts';
 
-/** Client sessions are short-lived; when one ends the client logs in through GitHub again (ADR 0006). */
-export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+/**
+ * A client session ends this long after it was last used; when one ends the client logs in through GitHub again
+ * (ADR 0006, made sliding by ADR 0030).
+ */
+export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** A use within this long of the last renewal writes nothing: the end would move by less than this. */
+export const SESSION_RENEW_INTERVAL_MS = 60 * 60 * 1000;
 
 export interface IssuedSession { sessionId: string; token: string; expiresAt: string }
 export interface VerifiedSession { sessionId: string; githubUserId: number; expiresAt: string }
@@ -43,6 +48,21 @@ export class SessionStore {
       .get(hashToken(token)) as Row | undefined;
     if (!row || row.revoked_at !== null || row.github_user_id !== allowedUserId || Date.parse(row.expires_at) <= this.now()) return undefined;
     return { sessionId: row.session_id, githubUserId: row.github_user_id, expiresAt: row.expires_at };
+  }
+
+  /**
+   * Records a use of a live session: its end moves to SESSION_TTL_MS from now, unless it was already moved within
+   * SESSION_RENEW_INTERVAL_MS, in which case nothing is written. Returns the session's end either way, or undefined
+   * when the session is unknown, revoked or expired, which are never brought back.
+   */
+  renew(sessionId: string): string | undefined {
+    const now = this.now();
+    this.db.prepare('UPDATE client_sessions SET expires_at = ? WHERE session_id = ? AND revoked_at IS NULL AND expires_at > ? AND expires_at <= ?')
+      .run(iso(now + SESSION_TTL_MS), sessionId, iso(now), iso(now + SESSION_TTL_MS - SESSION_RENEW_INTERVAL_MS));
+    const row = this.db.prepare('SELECT expires_at, revoked_at FROM client_sessions WHERE session_id = ?').get(sessionId) as
+      Pick<Row, 'expires_at' | 'revoked_at'> | undefined;
+    if (!row || row.revoked_at !== null || Date.parse(row.expires_at) <= now) return undefined;
+    return row.expires_at;
   }
 
   /** True when a live session was revoked by this call. */

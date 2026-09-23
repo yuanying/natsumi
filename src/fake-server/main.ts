@@ -70,6 +70,11 @@ function broadcast(type: string, payload: unknown, requestId?: string, moment = 
   for (const socket of sockets) socket.send(text);
 }
 
+/** Like the real server, every use moves the session's end thirty days out (ADR 0030). */
+function sessionEnd(): string {
+  return new Date(Date.now() + 30 * 24 * 3600_000).toISOString();
+}
+
 function unreadReplies(): number {
   const read = readThrough === null ? -1 : messages.findIndex((m) => m.messageId === readThrough);
   return messages.slice(read + 1).filter((m) => m.kind === 'reply').length;
@@ -82,6 +87,7 @@ function answer(envelope: ClientEnvelope): void {
       broadcast('session.snapshot', {
         deviceId: 'device-fake', messages, pendingEvents: [], avatar: { expression },
         readThroughMessageId: readThrough, unreadReplyCount: unreadReplies(), unacknowledgedNotificationIds: unacknowledged,
+        sessionExpiresAt: sessionEnd(),
       }, requestId);
       return;
     case 'conversation.read':
@@ -131,8 +137,7 @@ const server = http.createServer((request, response) => {
     const state = encodeURIComponent(url.searchParams.get('state') ?? '');
     response.writeHead(302, { Location: `natsumi://oauth/callback?code=fake-code&state=${state}` }).end();
   } else if (url.pathname === '/auth/session' && request.method === 'POST') {
-    const expiresAt = new Date(Date.now() + 12 * 3600_000).toISOString();
-    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ token: 'fake-token', expiresAt }));
+    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ token: 'fake-token', expiresAt: sessionEnd() }));
   } else if (url.pathname === '/auth/logout' && request.method === 'POST') {
     response.writeHead(204).end();
   } else {

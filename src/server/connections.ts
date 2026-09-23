@@ -21,7 +21,8 @@ const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversati
 
 interface Connection {
   session: VerifiedSession;
-  expiresAt: number;
+  /** The session's end as this connection last heard it; renewals move it (ADR 0030). */
+  expiresAt: string;
   /** Answers sent before `session.sync` binds the connection to a device stream. */
   local: EventStream;
   deliver: (text: string) => void;
@@ -60,8 +61,10 @@ export interface HubLoop {
 
 export interface ConnectionHubOptions {
   publicOrigin: string;
-  /** The live session presented by an upgrade request, or undefined. */
+  /** The live session presented by an upgrade request, or undefined. Its use is already recorded. */
   authenticate: (request: IncomingMessage) => VerifiedSession | undefined;
+  /** Records a use of a live session and returns its end, or undefined once it is revoked or expired. */
+  renew: (sessionId: string) => string | undefined;
   now: () => number;
   db: DatabaseSync;
   loop: HubLoop;
@@ -112,10 +115,19 @@ export class ConnectionHub {
     for (const [ws, connection] of this.connections) if (connection.session.sessionId === sessionId) ws.close(1008, 'session ended');
   }
 
-  /** Closes connections whose session has expired. Called periodically and before every command. */
+  /**
+   * Called periodically. A connection still open is its session in use, so the session is renewed and the client
+   * hears its new end without a number of its own (ADR 0030). A session found revoked or already past its end
+   * closes the connection instead.
+   */
   expireSessions(): void {
-    const now = this.options.now();
-    for (const [ws, connection] of this.connections) if (connection.expiresAt <= now) ws.close(1008, 'session ended');
+    for (const [ws, connection] of this.connections) {
+      const expiresAt = this.options.renew(connection.session.sessionId);
+      if (expiresAt === undefined) { ws.close(1008, 'session ended'); continue; }
+      if (expiresAt === connection.expiresAt) continue;
+      connection.expiresAt = expiresAt;
+      (connection.stream ?? connection.local).publishEphemeral('session.renewed', { expiresAt });
+    }
   }
 
   close(): Promise<void> {
@@ -132,7 +144,7 @@ export class ConnectionHub {
     };
     const local = new EventStream(this.epoch, 0);
     local.sink = deliver;
-    const connection: Connection = { session, expiresAt: Date.parse(session.expiresAt), local, deliver };
+    const connection: Connection = { session, expiresAt: session.expiresAt, local, deliver };
     this.connections.set(ws, connection);
     ws.on('close', () => {
       this.connections.delete(ws);
@@ -144,7 +156,7 @@ export class ConnectionHub {
   }
 
   private receive(ws: WebSocket, connection: Connection, data: RawData, isBinary: boolean) {
-    if (connection.expiresAt <= this.options.now()) { ws.close(1008, 'session ended'); return; }
+    if (Date.parse(connection.expiresAt) <= this.options.now()) { ws.close(1008, 'session ended'); return; }
     const out = () => connection.stream ?? connection.local;
     let envelope: unknown;
     try { if (!isBinary) envelope = JSON.parse(String(data)); } catch { /* handled below */ }
@@ -211,8 +223,10 @@ export class ConnectionHub {
     stream.sink = connection.deliver;
 
     const { loop } = this.options;
+    // Every answer to a sync tells the client when its session ends now, as renewed by this connection (ADR 0030).
+    const sessionExpiresAt = connection.expiresAt;
     if (loop.unavailable) {
-      stream.publish('service.unavailable', { code: loop.unavailable, deviceId }, requestId);
+      stream.publish('service.unavailable', { code: loop.unavailable, deviceId, sessionExpiresAt }, requestId);
       return;
     }
     const resume = isObject(payload.resume) ? payload.resume : undefined;
@@ -220,13 +234,13 @@ export class ConnectionHub {
       const missed = stream.replayAfter(resume.seq);
       if (missed) {
         for (const text of missed) connection.deliver(text);
-        stream.publish('command.accepted', { deviceId, mode: 'resume' }, requestId);
+        stream.publish('command.accepted', { deviceId, mode: 'resume', sessionExpiresAt }, requestId);
         return;
       }
     }
     // A different epoch or stream, a gap, or events already gone from the buffer: start over from a snapshot.
     // Its own seq is the barrier; events numbered after it apply on top.
-    stream.publish('session.snapshot', { deviceId, ...loop.snapshot() }, requestId);
+    stream.publish('session.snapshot', { deviceId, ...loop.snapshot(), sessionExpiresAt }, requestId);
   }
 
   private send(stream: EventStream, deviceId: string, payload: Payload, requestId: string) {
