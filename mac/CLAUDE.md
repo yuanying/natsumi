@@ -108,6 +108,8 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `NatsumiCore/Phone/` | iPhone の `PhoneEvent`・`PhoneEffect`・`PhoneState`・`PhoneMediator`・`PhoneProps` |
 | `NatsumiPhone/Components/` | iPhone の Root（`PhoneRootComponent`）と各画面のコンポーネント、Props の受け渡しの箱（`ScreenModel`） |
 | `NatsumiPhone/Views/` | iPhone の SwiftUI の Passive View と `Comic` の見た目 |
+| `NatsumiWidgets/` | iPhone のウィジェットの拡張。ロック画面からアプリを開くボタンと丸いウィジェット（ADR 0028） |
+| `NatsumiLaunch/` | iPhone のアプリと `NatsumiWidgets` の両方に入る、アプリを開く App Intent（`OpenNatsumiIntent`） |
 | `NatsumiPhoneUITests/` | 偽のサーバー（`npm run fake-server`）を相手に画面を辿って撮る UI テスト。関門ではない |
 
 名前の付け方は、パネルのコンポーネントが `<名前>Component`、その View が `<名前>View`、

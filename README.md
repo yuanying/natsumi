@@ -377,10 +377,11 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
 実機に入れるときは、iOS のときだけ自動署名になるようにしてあるので、次の手順で Xcode にチームを選ばせます。
 
 1. Xcode の Settings… > Accounts に Apple ID を足します（有料の Developer Program は要りません）。
-2. `mac/Natsumi.xcodeproj` を開き、ターゲット `NatsumiPhone` と `NatsumiCore` の Signing & Capabilities で Team を選びます。
-   `NatsumiCore` はアプリに埋め込む framework なので、こちらにも要ります。Team を選ぶと `DEVELOPMENT_TEAM` が
-   プロジェクトのファイルに書かれます。
-3. Bundle Identifier（`io.github.yuanying.natsumi.phone`）がほかの人に取られていると断られます。その場合は自分のものに変えます。
+2. `mac/Natsumi.xcodeproj` を開き、ターゲット `NatsumiPhone`・`NatsumiWidgets`・`NatsumiCore` の Signing & Capabilities で Team を選びます。
+   `NatsumiWidgets` はアプリに埋め込むウィジェットの拡張、`NatsumiCore` は埋め込む framework なので、こちらにも要ります。
+   Team を選ぶと `DEVELOPMENT_TEAM` がプロジェクトのファイルに書かれます。
+3. Bundle Identifier（`io.github.yuanying.natsumi.phone` と拡張の `io.github.yuanying.natsumi.phone.widgets`）がほかの人に
+   取られていると断られます。その場合は自分のものに変えます。拡張のものはアプリのものの後ろに続けます。
 4. iPhone を USB でつなぎ、iPhone 側で「このコンピュータを信頼」を選び、Xcode の実行先に選んで ⌘R で入れます。
 5. 初回は iPhone の 設定 > 一般 > VPN とデバイス管理 で、自分の Apple ID の開発者を信頼します。
    無料の Apple ID で署名したアプリは 7 日で期限が切れるので、切れたらもう一度 ⌘R で入れ直します。
@@ -395,6 +396,9 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
   履歴で見えた返事は既読に、見えた知らせは確認済みになります。
 - 設定には、サーバー・接続の状態・この端末の ID と、ログアウトがあります。
 - アプリが裏に回ると接続を切り、前に戻ると続きから同期し直します。
+- ロック画面からも開けます。ロック画面を長押しして「カスタマイズ」を選び、下の隅のボタンを「なつみを開く」に替えるか、
+  時計の下のウィジェットに「なつみ」を足します。同じボタンはコントロールセンターとアクションボタンにも置けます。
+  どちらもアプリを開くだけで、ロック画面に会話は出ません。
 
 ### 偽のサーバーで確かめる
 
