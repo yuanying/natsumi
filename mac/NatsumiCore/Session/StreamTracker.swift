@@ -33,6 +33,9 @@ public struct StreamTracker: Equatable, Sendable {
             guard let current = position, current.epoch == at.epoch, current.streamId == at.streamId else { return .ignore }
             return .apply
         }
+        // The session's new expiry takes no number either (ADR 0030). It belongs to the connection, not to a stream,
+        // so it applies wherever it arrives, before the sync too.
+        if case .sessionRenewed = envelope.event { return .apply }
         if let current = position, current.epoch == at.epoch, current.streamId == at.streamId {
             if at.seq <= current.seq { return .ignore }
             if at.seq != current.seq + 1 { return .resync }

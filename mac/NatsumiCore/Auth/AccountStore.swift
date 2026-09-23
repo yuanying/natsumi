@@ -105,6 +105,15 @@ public final class AccountStore: @unchecked Sendable {
         return grant
     }
 
+    /// Moves the saved session's expiry later, keeping its token (ADR 0030). An earlier time is an old answer
+    /// arriving late and is dropped; with no session saved there is nothing to extend.
+    public func extendSession(until expiresAt: Date) {
+        guard let data = try? secrets.read(account: Self.sessionAccount),
+              let grant = try? JSONDecoder().decode(SessionGrant.self, from: data), expiresAt > grant.expiresAt
+        else { return }
+        try? saveSession(SessionGrant(token: grant.token, expiresAt: expiresAt))
+    }
+
     public func clearSession() {
         try? secrets.delete(account: Self.sessionAccount)
     }

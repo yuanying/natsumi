@@ -18,6 +18,8 @@ public enum SessionEffect: Equatable, Sendable {
     case saveDeviceId(String)
     case requireLogin
     case scheduleReconnect(after: TimeInterval)
+    /// Keep the saved session until this time, if that is later than what is saved (ADR 0030).
+    case extendSession(until: Date)
 }
 
 public enum SessionPhase: Equatable, Sendable {
@@ -138,12 +140,13 @@ public struct SessionMachine {
             break
         }
         guard let event = envelope.event else { return [] }
+        if case .sessionRenewed(let expiresAt) = event { return [.extendSession(until: expiresAt)] }
 
         guard isSyncAnswer else {
             conversation.apply(event, requestId: envelope.requestId)
             return []
         }
-        var effects: [SessionEffect] = []
+        var effects: [SessionEffect] = envelope.sessionExpiresAt.map { [.extendSession(until: $0)] } ?? []
         switch event {
         case .snapshot(let snapshot):
             syncRequestId = nil
