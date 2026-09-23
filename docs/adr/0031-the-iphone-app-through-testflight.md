@@ -1,7 +1,7 @@
 # 0031. iPhone のアプリを GitHub Actions でビルドし、TestFlight で配る
 
 - Date: 2026-09-23
-- Status: Proposed（ワークフローは Secrets が登録されるまで走らせていない。最初の実行で確かめる）
+- Status: Accepted（最初の実行の結果と、開発版と TestFlight 版を共存させないことを末尾に追記）
 
 ## Context
 
@@ -84,4 +84,15 @@ iPhone の TestFlight アプリが新しいビルドを自動で入れるので�
   有効にし直すか、手動で走らせる。自動で防ぐ仕組み（空のコミットなど）は入れない。
 - `xcode-27` のイメージは preview であり、待ち時間が長くなることがある。Xcode 27 が一般のイメージ（`macos-27` など）に入ったら、
   そちらに移す。
-- ワークフローはまだ一度も走らせていない。archive の署名、export の署名、アップロードの権限は、最初の実行で確かめる。
+
+## 追記: 最初の実行の結果（2026-09-23）
+
+- 本人が Secrets の 5 つを登録したあと手動で走らせた [run 35832113315](https://github.com/yuanying/natsumi/actions/runs/35832113315)
+  （run 番号 2）が、約 9 分で成功した。
+- Xcode 27.0（`xcode-27` のイメージ。実体は `Xcode_27_Release_Candidate.app`）で archive と export が通り、
+  1.0 (2) を App Store Connect にアップロードした。開発用の .p12 による archive の署名、クラウドの配布用証明書による
+  export の署名、API キーでのアップロードが、この ADR の形のまま通ることを確かめた。
+- APNs の鍵の環境は Sandbox & Production である（本人が確かめた）。TestFlight 版（production）にも、サーバーの設定を
+  変えずに送れる条件はそろっている。実機に通知が届くことはまだ確かめていない。
+- 開発版と TestFlight 版は bundle ID が同じで、共存しない。共存させる仕組み（別の bundle ID など）は作らない。
+  開発中に実機で確かめるときだけ Xcode から上書きし、終わったら TestFlight から入れ直す（本人の決定）。
