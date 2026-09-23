@@ -6,6 +6,13 @@ export interface Migration {
   version: number;
   name: string;
   sql: string;
+  /**
+   * Runs the migration with foreign keys off, for one that rebuilds a table other tables point at: SQLite can only
+   * drop a CHECK by making the table anew, and with foreign keys on, dropping the old one breaks every reference to
+   * it. The switch cannot be made inside a transaction, so it is made around it, and the references are checked
+   * before the commit instead: a migration that leaves one dangling is rolled back like any other failure.
+   */
+  foreignKeysOff?: boolean;
 }
 
 export class MigrationError extends Error {
@@ -45,9 +52,14 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[]): { a
   const doneVersions = new Set(done.map(row => row.version));
   for (const migration of migrations) {
     if (doneVersions.has(migration.version)) continue;
+    const foreignKeys = (db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys;
+    if (migration.foreignKeysOff) db.exec('PRAGMA foreign_keys = OFF');
     db.exec('BEGIN IMMEDIATE');
     try {
       db.exec(migration.sql);
+      if (migration.foreignKeysOff && db.prepare('PRAGMA foreign_key_check').all().length > 0) {
+        throw new Error('it leaves a foreign key reference without its row');
+      }
       db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
         .run(migration.version, migration.name, isoAt(Date.now()));
       db.exec('COMMIT');
@@ -55,6 +67,8 @@ export function migrate(db: DatabaseSync, migrations: readonly Migration[]): { a
       if (db.isTransaction) db.exec('ROLLBACK');
       throw new MigrationError(`migration ${migration.version} (${migration.name}) failed: ${error instanceof Error ? error.message : error}`,
         migration.version);
+    } finally {
+      if (migration.foreignKeysOff) db.exec(`PRAGMA foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
     }
     applied.push(migration.version);
   }

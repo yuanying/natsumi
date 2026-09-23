@@ -209,3 +209,81 @@ test('schema 10 adds one push registration per device, one device per token, and
   assert.throws(() => insert.run('device-2', 'bb', new Uint8Array(33), 'sandbox'), /constraint/i);
   assert.throws(() => insert.run('device-missing', 'cc', key, 'sandbox'), /constraint/i);
 }));
+
+/**
+ * A migration that rebuilds a table other tables point at runs with foreign keys off, as SQLite's own procedure for
+ * changing a table says, and is still refused if it leaves a reference dangling. Either way foreign keys are back on.
+ */
+test('a migration run with foreign keys off is checked before it commits, and foreign keys are on again after', () => withDb(db => {
+  const parent: Migration = { version: 1, name: 'parent', sql: `
+    CREATE TABLE p (id TEXT PRIMARY KEY, n INTEGER CHECK (n > 0)) STRICT;
+    CREATE TABLE c (id TEXT PRIMARY KEY, p_id TEXT REFERENCES p (id)) STRICT;
+    INSERT INTO p VALUES ('p1', 1); INSERT INTO c VALUES ('c1', 'p1');` };
+  migrate(db, [parent]);
+  const dangling: Migration = { version: 2, name: 'dangling', foreignKeysOff: true, sql: `
+    CREATE TABLE p_new (id TEXT PRIMARY KEY, n INTEGER) STRICT;
+    DROP TABLE p;
+    ALTER TABLE p_new RENAME TO p;` };
+  assert.throws(() => migrate(db, [parent, dangling]),
+    (error: unknown) => error instanceof MigrationError && error.version === 2 && /foreign key/.test(error.message));
+  assert.equal(db.prepare('PRAGMA foreign_keys').get()?.foreign_keys, 1);
+  assert.deepEqual(plainRows(db.prepare('SELECT * FROM p').all()), [{ id: 'p1', n: 1 }]);
+
+  const rebuild: Migration = { version: 2, name: 'rebuild', foreignKeysOff: true, sql: `
+    CREATE TABLE p_new (id TEXT PRIMARY KEY, n INTEGER) STRICT;
+    INSERT INTO p_new SELECT id, n FROM p;
+    DROP TABLE p;
+    ALTER TABLE p_new RENAME TO p;` };
+  assert.deepEqual(migrate(db, [parent, rebuild]).applied, [2]);
+  assert.equal(db.prepare('PRAGMA foreign_keys').get()?.foreign_keys, 1);
+  db.prepare('INSERT INTO p VALUES (?, ?)').run('p2', -1);
+  assert.throws(() => db.prepare('INSERT INTO c VALUES (?, ?)').run('c2', 'missing'), /constraint/i);
+}));
+
+/**
+ * Schema 11 lets natsumi talk without an owner message to answer (ADR 0032). A reply that answers waiting messages
+ * still names the newest of them, at most one such reply per event; a reply that answers none names no event. The
+ * table is rebuilt to lose the CHECK that required one, and every row and every reference to it is kept.
+ */
+test('schema 11 keeps the conversation and its references, and lets a reply name no event', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 10));
+  const insert = db.prepare(`INSERT INTO conversation_messages
+    (message_id, position, role, kind, text, event_id, request_id, device_id, expression, created_at)
+    VALUES (?, ?, ?, ?, 'x', ?, ?, ?, ?, 'x')`);
+  insert.run('message-1', 1, 'owner', 'message', 'event-1', 'request-1', 'device-1', null);
+  insert.run('message-2', 2, 'natsumi', 'reply', 'event-1', null, null, 'happy');
+  insert.run('message-3', 3, 'natsumi', 'notice', null, null, null, null);
+  db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
+    VALUES ('event-1', 'mac-message', 'message-1', 'replied', 'x', 'x')`).run();
+  db.prepare(`INSERT INTO read_cursor (owner, message_id, device_id, updated_at) VALUES (1, 'message-2', NULL, 'x')`).run();
+  db.prepare(`INSERT INTO notice_acknowledgements (message_id, device_id, acknowledged_at) VALUES ('message-3', NULL, 'x')`).run();
+  // Before: a reply has to name the event it answers.
+  assert.throws(() => insert.run('message-9', 9, 'natsumi', 'reply', null, null, null, null), /constraint/i);
+
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 11)).applied, [11]);
+
+  assert.equal(db.prepare('PRAGMA foreign_keys').get()?.foreign_keys, 1);
+  assert.deepEqual(plainRows(db.prepare('PRAGMA foreign_key_check').all()), []);
+  assert.deepEqual(plainRows(db.prepare(`SELECT message_id, position, role, kind, event_id, request_id, expression
+    FROM conversation_messages ORDER BY position`).all()), [
+    { message_id: 'message-1', position: 1, role: 'owner', kind: 'message', event_id: 'event-1', request_id: 'request-1', expression: null },
+    { message_id: 'message-2', position: 2, role: 'natsumi', kind: 'reply', event_id: 'event-1', request_id: null, expression: 'happy' },
+    { message_id: 'message-3', position: 3, role: 'natsumi', kind: 'notice', event_id: null, request_id: null, expression: null },
+  ]);
+  // A reply that answers no waiting message names no event, as many times as she speaks.
+  insert.run('message-4', 4, 'natsumi', 'reply', null, null, null, 'neutral');
+  insert.run('message-5', 5, 'natsumi', 'reply', null, null, null, 'neutral');
+  // The reply that answers a message is still one per event.
+  assert.throws(() => insert.run('message-6', 6, 'natsumi', 'reply', 'event-1', null, null, null), /constraint/i);
+  // What held before still holds.
+  assert.throws(() => insert.run('message-7', 4, 'natsumi', 'notice', null, null, null, null), /constraint/i, 'position is unique');
+  assert.throws(() => insert.run('message-8', 8, 'owner', 'message', 'event-8', 'request-1', 'device-1', null), /constraint/i);
+  assert.throws(() => insert.run('message-10', 10, 'owner', 'message', 'event-10', 'request-10', 'device-1', 'happy'), /constraint/i);
+  assert.throws(() => insert.run('message-11', 11, 'natsumi', 'message', 'event-11', 'request-11', 'device-1', null), /constraint/i);
+  // And the tables that point at the conversation still point at it.
+  assert.throws(() => db.prepare(`UPDATE read_cursor SET message_id = 'message-missing'`).run(), /constraint/i);
+  assert.throws(() => db.prepare(`INSERT INTO notice_acknowledgements (message_id, acknowledged_at) VALUES ('message-missing', 'x')`).run(),
+    /constraint/i);
+  assert.throws(() => db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
+    VALUES ('event-x', 'mac-message', 'message-missing', 'queued', 'x', 'x')`).run(), /constraint/i);
+}));

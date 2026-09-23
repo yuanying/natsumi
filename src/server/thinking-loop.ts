@@ -70,7 +70,7 @@ export interface ShownMessage {
   createdAt: string;
   /** An owner message's event. */
   eventId?: string;
-  /** The event a reply answers. */
+  /** The event of the newest owner message a reply answered. Absent on a reply that answered none (ADR 0032). */
   replyTo?: string;
   /** The events a notice is about. */
   about?: string[];
@@ -828,31 +828,33 @@ export class ThinkingLoop {
   }
 
   /**
-   * A reply answers every owner message of the turn that has none yet, however many were steered in (ADR 0024). It
-   * is recorded against the newest of them, which is where the owner's side of the conversation stands, and the older
-   * ones are marked replied in the same transaction, so a restart before the turn ends answers none of them again:
-   * the record says replied, and only messages still being processed are closed on a start.
+   * A line natsumi says to the owner. She may say as many as she has something to say, also in a turn no owner
+   * message is waiting in (ADR 0032); only the nightly review is closed to them, like notices.
+   *
+   * The first reply after owner messages arrive answers every one of them the turn has shown her, however many were
+   * steered in (ADR 0024). It is recorded against the newest of them, which is where the owner's side of the
+   * conversation stands, and the older ones are marked replied in the same transaction, so a restart before the turn
+   * ends answers none of them again: the record says replied, and only messages still being processed are closed on
+   * a start. A reply with nothing waiting answers nothing and names no event.
    */
   private reply(text: string, expression: Expression): ToolOutcome {
-    const open = [...this.handling.values()].filter(handling => handling.messageId !== undefined && handling.shown && !handling.replied);
-    const target = open.at(-1);
-    if (!target) {
-      const answered = [...this.handling.values()].some(handling => handling.messageId !== undefined && handling.shown);
-      return { ok: false, text: answered
-        ? '送信していません。届いている本人のメッセージには、もう返事を送りました。付け足したいことがあれば notify_owner で送ってください。'
-        : '送信していません。いま返事を待っている本人のメッセージはありません。本人に伝えたいことがあれば notify_owner で送ってください。' };
+    if (this.turn?.kind === 'review') {
+      return { ok: false, text: '送信していません。夜の振り返りの間は、本人に話しかけません。明日に伝えたいことは write_handoff_note に書いてください。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
+    const open = [...this.handling.values()].filter(handling => handling.messageId !== undefined && handling.shown && !handling.replied);
+    const target = open.at(-1);
     const row = this.store.transaction(() => {
-      const inserted = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId: target.eventId, expression });
+      const inserted = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId: target?.eventId, expression });
       for (const handling of open) this.store.setEventState(handling.eventId, 'replied');
       return inserted;
     });
     for (const handling of open) handling.replied = true;
     this.emit('conversation.message', shown(row));
-    return { ok: true, text: '本人の Mac に返事を送りました。この返事は確定し、ここまでに届いた本人のメッセージには返事を済ませました。'
-      + 'ほかにやることがなければ、ツールを呼ばずに終えてください。' };
+    return { ok: true, text: '本人の Mac にセリフを送りました。このセリフは確定しました。'
+      + (target ? 'ここまでに届いた本人のメッセージには返事を済ませました。' : '')
+      + '続けて話してもかまいませんが、同じことを繰り返さないでください。ほかにやることがなければ、ツールを呼ばずに終えてください。' };
   }
 
   private notify(text: string, expression: Expression): ToolOutcome {
@@ -1030,7 +1032,7 @@ function shown(row: MessageRow): ShownMessage {
   const base = { messageId: row.message_id, role: row.role, kind: row.kind, text: row.text, createdAt: row.created_at,
     ...(row.expression === null ? {} : { expression: row.expression }) };
   if (row.kind === 'message') return { ...base, eventId: row.event_id! };
-  if (row.kind === 'reply') return { ...base, replyTo: row.event_id! };
+  if (row.kind === 'reply') return row.event_id === null ? base : { ...base, replyTo: row.event_id };
   const about = row.about_event_ids ? JSON.parse(row.about_event_ids) as string[] : [];
   return about.length > 0 ? { ...base, about } : base;
 }

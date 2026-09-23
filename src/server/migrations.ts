@@ -263,4 +263,42 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 11,
+    name: 'replies-without-an-event',
+    // The table is made anew, and loop_events, read_cursor and notice_acknowledgements point at it.
+    foreignKeysOff: true,
+    sql: `
+      -- natsumi may speak to the owner as often as she has something to say, also when no owner message waits for an
+      -- answer (ADR 0032). The reply that answers waiting messages still names the newest of them, and there is still
+      -- at most one such reply per event: that is what keeps a message from being answered twice across a restart.
+      -- Every other reply names no event. SQLite drops the CHECK that required one only by rebuilding the table; the
+      -- rest of it, and every row, stays as it was.
+      CREATE TABLE conversation_messages_new (
+        message_id TEXT PRIMARY KEY,
+        position INTEGER NOT NULL UNIQUE,
+        role TEXT NOT NULL CHECK (role IN ('owner', 'natsumi')),
+        kind TEXT NOT NULL CHECK (kind IN ('message', 'reply', 'notice')),
+        text TEXT NOT NULL,
+        -- An owner message: its event. A reply: the event of the newest message it answered, if it answered any.
+        event_id TEXT,
+        -- A notice: the JSON array of events it is about, if any.
+        about_event_ids TEXT,
+        request_id TEXT UNIQUE,
+        device_id TEXT,
+        created_at TEXT NOT NULL,
+        expression TEXT CHECK (expression IS NULL OR kind <> 'message'),
+        CHECK ((kind = 'message') = (role = 'owner')),
+        CHECK (kind <> 'message' OR (event_id IS NOT NULL AND request_id IS NOT NULL AND device_id IS NOT NULL))
+      ) STRICT;
+      INSERT INTO conversation_messages_new (message_id, position, role, kind, text, event_id, about_event_ids,
+        request_id, device_id, created_at, expression)
+        SELECT message_id, position, role, kind, text, event_id, about_event_ids,
+          request_id, device_id, created_at, expression FROM conversation_messages;
+      DROP TABLE conversation_messages;
+      ALTER TABLE conversation_messages_new RENAME TO conversation_messages;
+      -- One reply that answers an event, even across restarts. The replies that answer none are not in the index.
+      CREATE UNIQUE INDEX conversation_messages_one_reply ON conversation_messages (event_id) WHERE kind = 'reply';
+    `,
+  },
 ];
