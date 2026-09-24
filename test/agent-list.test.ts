@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { A2ACallError, type A2AClient, type CardSummary } from '../src/server/a2a-client.ts';
-import { AGENT_LIST_FILE, MAX_CARD_DESCRIPTION_CHARS, writeAgentList } from '../src/server/agent-list.ts';
+import { AGENT_LIST_DIRECTORY, AGENT_LIST_FILE, MAX_CARD_DESCRIPTION_CHARS, writeAgentList } from '../src/server/agent-list.ts';
+import { initializeDataDirectory } from '../src/server/data-directory.ts';
+import { SHARED_DIRECTORY_MODE } from '../src/server/permissions.ts';
 import type { A2AConfig } from '../src/server/config.ts';
 
 const NOW = Date.parse('2026-09-24T03:00:00Z');
@@ -97,4 +99,16 @@ test('the list is written again from scratch on every start', async t => {
   const text = await readFile(join(dir, AGENT_LIST_FILE), 'utf8');
   assert.match(text, /After/);
   assert.equal(text.includes('Before'), false);
+});
+
+// ADR 0033: the workspace may run as another UID in the shared group, and only reads the list.
+test('the list is readable by the shared group and by nobody else, and takes the group of its shared directory', async t => {
+  const root = await directory(t);
+  await initializeDataDirectory(root);
+  const dir = join(root, AGENT_LIST_DIRECTORY);
+  assert.equal((await stat(dir)).mode & 0o7777, SHARED_DIRECTORY_MODE);
+  await writeAgentList({ directory: dir, client: undefined, now: NOW, timeZone: 'UTC', config: undefined });
+  const file = await stat(join(dir, AGENT_LIST_FILE));
+  assert.equal(file.mode & 0o777, 0o640);
+  assert.equal(file.gid, (await stat(dir)).gid);
 });

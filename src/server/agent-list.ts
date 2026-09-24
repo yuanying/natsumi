@@ -41,7 +41,7 @@ export async function writeAgentList(options: {
   ];
   if (fetched.length === 0) lines.push('', '頼める相手はいません。');
   for (const { name, card } of fetched) lines.push('', `## ${name}`, '', ...(card ? describe(card) : UNREACHABLE));
-  // Group-readable: on Kubernetes the workspace runs as another user of the shared group (ADR 0033).
+  // Group-readable and no more: the workspace may run as another user of the shared group, and only reads it (ADR 0033).
   await writeFileAtomically(join(options.directory, AGENT_LIST_FILE), `${lines.join('\n')}\n`, 0o640);
   return { listed: fetched.filter(entry => entry.card).map(entry => entry.name),
     unreachable: fetched.filter(entry => !entry.card).map(entry => entry.name) };
