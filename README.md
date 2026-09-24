@@ -40,6 +40,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `publicOrigin`: クライアントが使う origin（例: `https://natsumi.example.net:8443`）。https に限ります。
    - `listen`: 待ち受けアドレス・ポート・TLS。`"host": "::"` で IPv4 と IPv6 の両方で待ち受けます。
      `tls` には証明書と鍵のファイル、または Let's Encrypt から自動取得する `acme` を指定します。
+     Kubernetes の Ingress のように手前のプロキシで TLS を終端するときは、`"tls": false` と `"behindProxy": true` を指定します。
    - `github`: OAuth App の client ID、client secret の参照（`clientSecretEnv` か `clientSecretFile`）、callback URL、
      許可するアカウントの数値 ID（`allowedUserId`）。
    - `loop`（省略可）: 本人のタイムゾーン `timeZone`（例: `Asia/Tokyo`、既定 `UTC`）、夜の切り替えの時刻 `nightlyRotationAt`
@@ -153,14 +154,19 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
 
 ### TLS を設定する
 
-TLS はサーバー自身で終端します（[ADR 0006](docs/adr/0006-github-login-and-transport.md)）。
+Docker で動かすときは、TLS はサーバー自身で終端します（[ADR 0006](docs/adr/0006-github-login-and-transport.md)）。
+Ingress の後ろに置くときは、TLS は Ingress で終端し、サーバーは平文で待ち受けます（[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）。
 
 - `publicOrigin` のホスト名に対する証明書と秘密鍵を PEM で用意し、`listen.tls.certFile` / `keyFile` に指定します。
   中間証明書がある場合は `certFile` にサーバー証明書に続けて連結します。
 - Mac からの接続では、Mac が信頼する証明書（公的な CA が発行したもの、または Mac に登録した私的な CA のもの）を使います。
 - ファイルで渡した証明書を更新したら、サーバーを再起動します。
-- 同じホストのリバースプロキシで TLS を終端する場合に限り、`"host": "127.0.0.1"`（または `"::1"`）と `"tls": false` を指定できます。
-  loopback 以外のアドレスで `tls: false` を指定すると起動を拒否します。
+- 同じホストのリバースプロキシで TLS を終端する場合は、`"host": "127.0.0.1"`（または `"::1"`）と `"tls": false` を指定できます。
+- Ingress の後ろに置く場合は、`"tls": false` に `"behindProxy": true` を足すと、loopback 以外のアドレス（例: `"::"`）でも平文で待ち受けます。
+  Ingress のコントローラは Pod の IP につなぐので、loopback では届かないためです。平文になるのは Ingress から Pod までの区間です。
+  `publicOrigin` は、クライアントから見た https の origin のままにします。
+- `behindProxy` を付けずに loopback 以外のアドレスで `tls: false` を指定すると、起動を拒否します。
+  `behindProxy` は `tls: false` のときだけ指定できます。
 
 ### Let's Encrypt で証明書を自動取得する
 
@@ -292,8 +298,20 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   `TZ` はサーバーがコマンドごとに `loop.timeZone` を送ります（`NATSUMI_TIME_ZONE` は runner 側の既定値です）。
 - 大きさ: `/memory`・`/work`・`/home/natsumi` の合計が `loop.workspaceSizeWarnBytes`（既定 1 GiB）を超えると、
   次のターンで natsumi に内訳つきで知らせます。強制はしないので、片づけないままだといつかはディスクが埋まります。
-- UID: これらのファイルは所有者だけが読めるので、`natsumi-workspace` は natsumi と同じ UID で動かします（既定は 1000）。
+- UID: Docker の構成では、`natsumi-workspace` は natsumi と同じ UID で動かします（既定は 1000）。
   natsumi を別の UID で動かすときは、`NATSUMI_WORKSPACE_UID` に同じ値を入れます。
+- 別の UID で動かす場合（Kubernetes の構成、[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）は、サーバーと作業環境
+  （と ssh でログインするユーザー）を共有のグループに入れ、そのグループで `/memory`・`/work`・`/home/natsumi` を読み書きします。
+  - サーバーと runner は umask 007 で動きます。新しいファイルはグループが読み書きでき、グループ以外には見えません。
+    ssh でログインするユーザーも umask 007 にしてください。
+  - サーバーは data directory の `memory/`・`work/`・`home/` を、setgid 付きの 2770 で作ります。
+    中に作られるファイルとディレクトリは、誰が作っても共有のグループになります。
+  - サーバーだけが使うもの（`.natsumi/` の SQLite と証明書、Pi の状態領域）は 0700 のディレクトリに置かれ、グループからも見えません。
+  - サーバーの git は、持ち主の違う記憶のリポジトリを `safe.directory` で扱い、そのままコミットします。
+  - 既にあるディレクトリの持ち主と権限は変えません。既存のデータを移すときは、3 つの場所の中身のグループを共有のグループにし、
+    グループの書き込みと、ディレクトリの setgid を付けてください。umask か setgid が外れると、サーバーが記憶をコミットできなくなります。
+  - runner は `-socket` のディレクトリが無ければ作ります。持ち主の違う volume（Pod の `emptyDir` など）では、
+    その下のサブディレクトリをソケットの置き場に指定します（例: `/run/natsumi-workspace/runner/runner.sock`）。
 - 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/` を作るので、`natsumi-workspace` は
   natsumi が healthy になってから起動します。
 - 閉じ込めの確認: [scripts/check-workspace-sandbox.sh](scripts/check-workspace-sandbox.sh) が、使い捨ての project で
@@ -330,6 +348,13 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 - 証明書とアカウント鍵は `natsumi-data` volume の `.natsumi/acme/` に入ります。volume ごとバックアップしてください。
 - `natsumi-net` を再作成すると、natsumi も再起動します。
 - 名前空間にはトークンのアドレスのほかに自動設定のアドレスが残ることがあり、外向きの通信の送信元はそちらになり得ます。
+
+### 公開の image
+
+版の tag（`v0.x.y`）を push すると、GitHub Actions（[.github/workflows/images.yml](.github/workflows/images.yml)）が
+テストを通したうえで、`ghcr.io/yuanying/natsumi`（サーバー）と `ghcr.io/yuanying/natsumi-workspace`（作業環境）を
+amd64 でビルドして push します（[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）。image の tag は版の tag そのものです。
+`latest` は付けません。動かす版は、環境の設定の側で固定します。
 
 ## Mac アプリ
 

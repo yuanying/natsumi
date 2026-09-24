@@ -260,10 +260,24 @@ func closeAll(files ...*os.File) {
 	}
 }
 
+// SharedUmask is the umask of every command, the server's own (ADR 0033). The workspace may run as a UID other than
+// the server's and share a group with it, so what a command makes is the group's to read and write, and nobody
+// else's. The shared places are setgid directories, which keep new entries in that group.
+const SharedUmask = 0o007
+
+// UseSharedUmask gives the runner, and so every command it starts, the shared umask. It returns the previous one.
+func UseSharedUmask() int {
+	return syscall.Umask(SharedUmask)
+}
+
 // Listen takes over the socket path, then makes the socket connectable by its peer and its directory read-only, so a
-// command running as the same user cannot remove or replace the socket.
+// command running as the same user cannot remove or replace the socket. A missing directory is made, so the socket
+// can sit in one of the runner's own on a volume it does not own, such as a Pod's memory-backed emptyDir (ADR 0033).
 func Listen(path string) (net.Listener, error) {
 	directory := filepath.Dir(path)
+	if err := os.Mkdir(directory, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
 	if err := os.Chmod(directory, 0o755); err != nil {
 		return nil, err
 	}
