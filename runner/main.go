@@ -50,6 +50,7 @@ func serve(args []string) {
 		fail("natsumi-workspace-runner: -response-limit and -max-output must be positive")
 	}
 
+	UseSharedUmask()
 	listener, err := Listen(*socket)
 	if err != nil {
 		fail(fmt.Sprintf("natsumi-workspace-runner: cannot listen: %v", err))

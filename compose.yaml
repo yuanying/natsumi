@@ -54,7 +54,7 @@ services:
     image: natsumi-workspace:local
     init: true
     restart: unless-stopped
-    # Must be the UID natsumi runs as: the data directory is readable by its owner only.
+    # The UID natsumi runs as. Another UID works only in a group shared with natsumi (ADR 0033); this layout keeps one.
     user: "${NATSUMI_WORKSPACE_UID:-1000}:${NATSUMI_WORKSPACE_UID:-1000}"
     network_mode: none
     read_only: true

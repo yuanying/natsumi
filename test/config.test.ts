@@ -245,6 +245,24 @@ test('plaintext listening is refused unless the host is loopback', () => {
   rejects({ ...base(), listen: { ...listen(), tls: { ...tls(), certFile: 'cert.pem' } } }, 'listen.tls.certFile');
 });
 
+test('plaintext beyond loopback is accepted only when behindProxy says TLS ends in front of the server (ADR 0033)', () => {
+  for (const host of ['::', '0.0.0.0', '192.0.2.10']) {
+    assert.deepEqual(parseConfig({ ...base(), listen: { host, port: 8080, tls: false, behindProxy: true } }).listen,
+      { host, port: 8080, tls: false, behindProxy: true });
+  }
+  // Loopback does not need it, and may still say it.
+  assert.deepEqual(parseConfig({ ...base(), listen: { host: '127.0.0.1', port: 8080, tls: false, behindProxy: true } }).listen,
+    { host: '127.0.0.1', port: 8080, tls: false, behindProxy: true });
+  // false is the same as leaving it out: the ADR 0006 refusal stands.
+  rejects({ ...base(), listen: { host: '::', port: 8080, tls: false, behindProxy: false } }, 'listen.tls', /loopback/);
+  assert.deepEqual(parseConfig({ ...base(), listen: { host: '::1', port: 8080, tls: false, behindProxy: false } }).listen,
+    { host: '::1', port: 8080, tls: false });
+  rejects({ ...base(), listen: { host: '::', port: 8080, tls: false, behindProxy: 'yes' } }, 'listen.behindProxy', /true or false/);
+  // The server terminating TLS itself and a proxy terminating it in front cannot both be meant.
+  rejects({ ...base(), listen: { ...listen(), behindProxy: true } }, 'listen.behindProxy', /tls: false/);
+  rejects({ ...base(), listen: { ...acmeListen(), behindProxy: true } }, 'listen.behindProxy', /tls: false/);
+});
+
 const acmeListen = (acme: unknown = {}) => ({ host: '::', port: 443, tls: { acme } });
 
 test('ACME can be chosen instead of certificate files, defaulting to Let\'s Encrypt production on port 80', () => {
