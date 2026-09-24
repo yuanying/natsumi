@@ -52,8 +52,9 @@ test('an unrelated package or a private git repository is an acceptable data dir
 
 test('initialization creates the private layout with minimal permissions', () => withRoot(async root => {
   await initializeDataDirectory(root);
-  // memory/, and the two places the workspace container mounts as /work and /home/natsumi (ADR 0019).
-  for (const dir of ['memory', 'work', 'home', '.natsumi']) {
+  // memory/, and the two places the workspace container mounts as /work and /home/natsumi (ADR 0019), and the list of
+  // agents it sees read-only as /manual/agents (ADR 0036).
+  for (const dir of ['memory', 'work', 'home', 'agents', '.natsumi']) {
     const info = await stat(join(root, dir));
     assert.ok(info.isDirectory());
     assert.equal(info.mode & 0o777, 0o700, dir);
