@@ -1,7 +1,7 @@
 # 0025. 外のエージェントと A2A で話す
 
 - Date: 2026-09-22
-- Status: Accepted
+- Status: Accepted（返事の受け取り方・頼むツールの名前と引数・前のやり取りに続ける指定は [ADR 0035](0035-asking-outside-agents-and-hearing-back.md) で決定、移行後の projected token は [ADR 0033](0033-running-on-kubernetes.md) で具体化）
 
 ## Context
 
