@@ -1,0 +1,19 @@
+# The token natsumi calls outside agents with (ADR 0025, ADR 0035). Only for a server with `a2a` in its config:
+# without the token file this override stops compose, so the default compose.yaml does not mount it.
+#
+#   docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
+#   docker compose -f compose.yaml -f compose.ipv6.example.yaml -f compose.a2a.example.yaml up -d
+#
+# List it after compose.ipv6.example.yaml, which replaces the secrets; this file then adds the token to them.
+# The config points at the mount with "a2a": { ..., "tokenFile": "/run/secrets/natsumi_a2a_token" }.
+# The server reads the file on every call, so a renewed token takes effect without a restart. The mount follows the
+# file it was made on: write the new token into that same file rather than replacing it with another one.
+# Only natsumi gets it; natsumi-workspace never sees the token (ADR 0033).
+services:
+  natsumi:
+    secrets:
+      - natsumi_a2a_token
+
+secrets:
+  natsumi_a2a_token:
+    file: ${NATSUMI_A2A_TOKEN_FILE:-./secrets/a2a-token}

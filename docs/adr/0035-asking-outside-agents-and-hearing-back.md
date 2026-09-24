@@ -1,7 +1,7 @@
 # 0035. 外のエージェントに頼むツールと、返事の受け取り方
 
 - Date: 2026-09-24
-- Status: Accepted
+- Status: Accepted（「まだ決めていないこと」の 2 点、頼める相手の名前をどこで知るかと返事を待ち続ける上限は [ADR 0036](0036-a-manual-to-read-and-a-limit-on-waiting.md) で決定）
 
 ## Context
 

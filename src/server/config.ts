@@ -160,6 +160,25 @@ export interface ApnsConfig {
   key: SecretReference;
 }
 
+/** The outside agents natsumi may ask over A2A (ADR 0025, ADR 0035, ADR 0036). Without it `ask_agent` refuses. */
+export interface A2AConfig {
+  /** The caller's token: a projected ServiceAccount token on Kubernetes, a file put in place by hand elsewhere. Read afresh for every call. */
+  tokenFile: string;
+  /** How often a task still waiting for an answer is fetched again. */
+  pollIntervalSeconds: number;
+  /** How long a task may go unanswered before natsumi is told the server gave up on it. */
+  giveUpAfterHours: number;
+  /** Name → where the agent answers. natsumi only ever sees the names. */
+  agents: Record<string, { url: string }>;
+}
+
+export const DEFAULT_A2A_POLL_INTERVAL_SECONDS = 15;
+export const DEFAULT_A2A_GIVE_UP_AFTER_HOURS = 24;
+/** Under this the server would ask the agents more often than any answer could change. */
+const MIN_A2A_POLL_INTERVAL_SECONDS = 5;
+/** An agent's name as natsumi writes it in `ask_agent`: short, lower case, no spaces. */
+const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -168,6 +187,7 @@ export interface ServerConfig {
   github: GitHubConfig;
   loop: LoopConfig;
   apns?: ApnsConfig;
+  a2a?: A2AConfig;
 }
 
 export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
@@ -185,6 +205,7 @@ const SECTIONS = {
   github: parseGitHub,
   loop: parseLoop,
   apns: parseApns,
+  a2a: parseA2A,
 } satisfies { [K in keyof ServerConfig]: Section<ServerConfig[K]> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -218,6 +239,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     github: SECTIONS.github(required(root, 'github', ''), 'github'),
     loop: SECTIONS.loop(root.loop ?? {}, 'loop'),
     ...(root.apns === undefined ? {} : { apns: SECTIONS.apns(root.apns, 'apns') }),
+    ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
   };
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
@@ -391,6 +413,40 @@ function parseApns(value: unknown, path: string): ApnsConfig {
   const topic = required(apns, 'topic', path);
   if (typeof topic !== 'string' || !BUNDLE_ID.test(topic)) throw new ConfigError(`${path}.topic`, 'must be the app\'s bundle ID');
   return { teamId: apns.teamId as string, keyId: apns.keyId as string, topic, key };
+}
+
+function parseA2A(value: unknown, path: string): A2AConfig {
+  const a2a = object(value, path);
+  onlyKeys(a2a, path, ['tokenFile', 'pollIntervalSeconds', 'giveUpAfterHours', 'agents']);
+  const interval = a2a.pollIntervalSeconds ?? DEFAULT_A2A_POLL_INTERVAL_SECONDS;
+  if (!positiveInteger(interval, MIN_A2A_POLL_INTERVAL_SECONDS)) {
+    throw new ConfigError(`${path}.pollIntervalSeconds`, `must be an integer of at least ${MIN_A2A_POLL_INTERVAL_SECONDS}`);
+  }
+  const giveUp = a2a.giveUpAfterHours ?? DEFAULT_A2A_GIVE_UP_AFTER_HOURS;
+  if (!positiveInteger(giveUp, 1)) throw new ConfigError(`${path}.giveUpAfterHours`, 'must be a positive integer');
+  const agentsPath = `${path}.agents`;
+  const listed = object(required(a2a, 'agents', path), agentsPath);
+  const agents: A2AConfig['agents'] = {};
+  for (const [name, entry] of Object.entries(listed)) {
+    const entryPath = `${agentsPath}.${name}`;
+    if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
+    const agent = object(entry, entryPath);
+    onlyKeys(agent, entryPath, ['url']);
+    // The token rides on every call, so it goes nowhere it could be read on the way.
+    const urlPath = `${entryPath}.url`;
+    const url = parseUrl(required(agent, 'url', entryPath), urlPath);
+    if (url.username || url.password || url.search || url.hash) {
+      throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+    }
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+      throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
+    }
+    agents[name] = { url: url.href };
+  }
+  return {
+    tokenFile: absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`),
+    pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents,
+  };
 }
 
 function parseLoop(value: unknown, path: string): LoopConfig {

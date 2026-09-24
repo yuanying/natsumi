@@ -1,6 +1,8 @@
 import { join, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { SdkA2AClient } from './a2a-client.ts';
+import { AGENT_LIST_DIRECTORY, writeAgentList } from './agent-list.ts';
 import { ApnsClient, parseApnsKey, type ApnsEnvironment } from './apns.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
@@ -47,6 +49,8 @@ export interface StartOptions {
   streamBufferSize?: number;
   /** Replaces the APNs hosts and the waits between tries. Tests point them at a local stand-in. */
   apns?: { origins?: Record<ApnsEnvironment, string>; retryDelaysMs?: number[] };
+  /** Replaces `a2a.pollIntervalSeconds`, whose floor is too long for a test. */
+  a2a?: { pollIntervalMs?: number };
 }
 
 type Address = { host: string; port: number };
@@ -120,13 +124,24 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const { version } = migrate(db, MIGRATIONS);
     await preparePiState(config.pi, { dataDirectory, home: options.home });
 
+    // One client for the loop and the list: the token file is read afresh on every call either makes (ADR 0033).
+    const a2aClient = config.a2a ? new SdkA2AClient({ tokenFile: config.a2a.tokenFile }) : undefined;
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
       db, dataDirectory, sessionDirectory: config.pi.sessionDirectory, agentDirectory: config.pi.agentDirectory,
       target: { provider: config.pi.model.provider, model: config.pi.model.id }, thinking: config.pi.thinking,
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop,
+      ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
     });
+
+    // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the
+    // background: an agent that is down must not hold the server's start.
+    void writeAgentList({ directory: join(dataDirectory, AGENT_LIST_DIRECTORY), config: config.a2a, client: a2aClient,
+      now: now(), timeZone: config.loop.timeZone }).then(
+      ({ listed, unreachable }) => { log(`a2a: wrote the list of agents (${listed.length} listed, ${unreachable.length} out of reach)`); },
+      () => { log('a2a: the list of agents could not be written'); },
+    );
 
     // The nightly switch (ADR 0009), self-checks natsumi booked, pings in quiet moments and expressions
     // returning to neutral (ADR 0014). A night missed while stopped is caught up on the first tick.
@@ -137,6 +152,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         expressionResetMinutes: config.loop.expressionResetMinutes,
       });
       scheduler.start();
+      // The tasks outside agents are working on, fetched now and then on the interval (ADR 0035). The first round
+      // picks up what a previous process was waiting for.
+      if (config.a2a) {
+        const poll = () => { void thinkingLoop.pollAgents().catch(() => { log('a2a: a round of fetching failed'); }); };
+        poll();
+        timers.push(setInterval(poll, options.a2a?.pollIntervalMs ?? config.a2a.pollIntervalSeconds * 1000));
+      }
     }
 
     const sessions = new SessionStore(db, now);

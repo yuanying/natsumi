@@ -1,6 +1,6 @@
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
-import { CANCEL_SELF_CHECK_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION,
+import { ASK_AGENT_DESCRIPTION, CANCEL_SELF_CHECK_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION,
   NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION,
   SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WRITE_CHANGE_NOTE_DESCRIPTION,
   WRITE_HANDOFF_NOTE_DESCRIPTION } from './prompts.ts';
@@ -28,17 +28,19 @@ export interface LoopToolHost {
   scheduleSelfCheck(reason: string, when: { inMinutes?: number; at?: string }): Outcome;
   listSelfChecks(): Outcome;
   cancelSelfCheck(checkId: string): Outcome;
+  /** Always present, whether or not any agent is configured, so the tool list never moves with the config (ADR 0036). */
+  askAgent(agent: string, message: string, goOn: boolean): Outcome;
   /** Present only when the workspace container's runner is configured (ADR 0019). */
   runShell?(command: string): Outcome;
 }
 
 /**
- * The allowlist given to Pi (ADR 0004, ADR 0008, ADR 0009, ADR 0014, ADR 0024). Pi's own read/bash/edit/write stay
+ * The allowlist given to Pi (ADR 0004, ADR 0008, ADR 0009, ADR 0014, ADR 0024, ADR 0035). Pi's own read/bash/edit/write stay
  * disabled: the only shell is `run_shell`, and it runs in the workspace container, never here. There is no tool to
  * end a turn with: a turn ends when natsumi stops without calling one (ADR 0024).
  */
 export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'set_mac_avatar_expression',
-  'write_handoff_note', 'write_change_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check'];
+  'write_handoff_note', 'write_change_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent'];
 /** Added to the allowlist with a runner: the whole of natsumi's workspace, memory included (ADR 0019). */
 export const RUN_SHELL_TOOL_NAME = 'run_shell';
 
@@ -114,6 +116,13 @@ export function createLoopTools(host: LoopToolHost) {
       description: CANCEL_SELF_CHECK_DESCRIPTION,
       parameters: Type.Object({ check_id: Type.String() }),
       execute: async (_id, params) => result(host.cancelSelfCheck(params.check_id)),
+    }),
+    // Last, so that adding it left every definition before it where it was on the prefix.
+    defineTool({
+      name: 'ask_agent', label: 'Ask an outside agent',
+      description: ASK_AGENT_DESCRIPTION,
+      parameters: Type.Object({ agent: Type.String(), message: Type.String(), continue: Type.Boolean() }),
+      execute: async (_id, params) => result(host.askAgent(params.agent, params.message, params.continue)),
     }),
   ];
 }
