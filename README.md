@@ -349,6 +349,13 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 - `natsumi-net` を再作成すると、natsumi も再起動します。
 - 名前空間にはトークンのアドレスのほかに自動設定のアドレスが残ることがあり、外向きの通信の送信元はそちらになり得ます。
 
+### 公開の image
+
+版の tag（`v0.x.y`）を push すると、GitHub Actions（[.github/workflows/images.yml](.github/workflows/images.yml)）が
+テストを通したうえで、`ghcr.io/yuanying/natsumi`（サーバー）と `ghcr.io/yuanying/natsumi-workspace`（作業環境）を
+amd64 でビルドして push します（[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）。image の tag は版の tag そのものです。
+`latest` は付けません。動かす版は、環境の設定の側で固定します。
+
 ## Mac アプリ
 
 `mac/` に Xcode プロジェクトがあります（[ADR 0010](docs/adr/0010-mac-app-structure.md)）。macOS 15 以降と Xcode 27 を使います。
