@@ -87,6 +87,10 @@ public struct UIMediator {
         case .reconnectTimerFired:
             return apply(state.session.reconnectTimerFired())
 
+        case .systemWoke:
+            // Whatever happened to the socket while the Mac slept, a new one catches up from where the stream was.
+            return apply(state.session.reconnectNow())
+
         // MARK: The character and the panels
         case .characterClicked:
             return state.isConversationOpen ? closeConversation() : openConversation()

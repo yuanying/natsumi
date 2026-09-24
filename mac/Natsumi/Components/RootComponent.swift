@@ -138,6 +138,12 @@ final class RootComponent: Component {
                 self.character.dispatch(.screenConfigurationChanged(visible: self.visibleFrame))
             }
         }
+        // The socket may have died while the Mac slept, with no close ever arriving; the mediator starts it over.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.deliver(.systemWoke) }
+        }
     }
 
     /// Everything the tree is touched from outside with.
