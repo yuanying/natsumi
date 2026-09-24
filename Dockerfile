@@ -38,6 +38,10 @@ RUN groupadd --gid 1000 natsumi \
   && chown natsumi:natsumi /work /home/natsumi
 # Outside PATH, so running it by its path gives nothing bash does not already have.
 COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-workspace-runner
+# natsumi's manual (ADR 0036), read-only like the rest of the root. The list of agents the server writes on every
+# start is mounted over /manual/agents.
+COPY manual/ /manual/
+RUN mkdir -p /manual/agents
 USER 1000:1000
 WORKDIR /work
 ENTRYPOINT ["/usr/libexec/natsumi-workspace-runner"]

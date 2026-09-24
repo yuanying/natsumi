@@ -60,6 +60,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      runner の応答を待つ秒数 `shellWaitSeconds`（既定 75 秒。runner 側の応答の上限 60 秒より長くします）、
      永続する書き場所の合計の目安 `workspaceSizeWarnBytes`（既定 1 GiB。超えると次のターンで natsumi に知らせます）。
    - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
+   - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
 4. ビルドして起動します。
 
 ```sh
@@ -68,8 +69,8 @@ node dist/src/server/main.js serve --config config.local.json --data-dir <data d
 ```
 
 `--data-dir` を省略すると起動 cwd を data directory とします。初回起動で `memory/`（記憶のリポジトリ）、
-`work/` と `home/`（作業環境の `/work` と `/home/natsumi`）、`.natsumi/`（状態 DB・ロック・状態ファイル）を
-作ります。既存のファイルは上書きしません。
+`work/` と `home/`（作業環境の `/work` と `/home/natsumi`）、`agents/`（作業環境の `/manual/agents`。頼める相手の一覧）、
+`.natsumi/`（状態 DB・ロック・状態ファイル）を作ります。既存のファイルは上書きしません。
 同じ data directory で 2 つ目のサーバーを起動すると拒否します。異常終了後のロックは OS が解放するため、そのまま再起動できます。
 SIGTERM / SIGINT で停止します。
 
@@ -246,6 +247,53 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml -f compose.apns.exam
 - ログには端末の ID と APNs の応答だけを出し、本文・device token・鍵は出しません。
 - 登録は `.natsumi/state.sqlite` の `push_registrations`（migration 10）に持ちます。
 
+### 外のエージェントに頼む
+
+natsumi は、Wiki の管理人のような外の特化エージェントに `ask_agent` で頼めます
+（[ADR 0025](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[ADR 0035](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、
+[ADR 0036](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)）。相手とは A2A 1.0（JSON-RPC）で話し、公式の SDK
+`@a2a-js/sdk` を使います。設定に `a2a` がなければ、`ask_agent` は頼まずに断ります（ツール自体は常にあります）。
+
+1. 呼び出しの token を用意します。相手が確かめる ServiceAccount の token（audience `a2a`）です。
+   Kubernetes では Pod に差し込まれる projected token のパスを、Docker では手で置いたファイルを使います。
+   Docker では `secrets/a2a-token` などに置き、コンテナのユーザーだけが読めるようにします。`secrets/` は Git の追跡対象外です。
+2. 設定に `a2a` を足します。値は架空の例です。
+
+   ```json
+   "a2a": {
+     "tokenFile": "/run/secrets/natsumi_a2a_token",
+     "agents": {
+       "wiki": { "url": "https://agents.example.net/wiki-keeper/" }
+     }
+   }
+   ```
+
+   | 項目 | 必須 | 既定 | 中身 |
+   | --- | --- | --- | --- |
+   | `a2a.agents.<名前>.url` | 必須 | | 相手の A2A の受け口。https に限ります（loopback だけ http）。名前は英小文字・数字・ハイフンで 32 文字まで。natsumi は名前だけを扱います |
+   | `a2a.tokenFile` | 必須 | | token のファイル（絶対パス）。呼び出しのたびに読み直すので、更新された token は再起動なしで使われます |
+   | `a2a.pollIntervalSeconds` | | 15 | 返事を待っている依頼を取りに行く間隔（秒、5 以上） |
+   | `a2a.giveUpAfterHours` | | 24 | 返事を待ち続ける上限（時間）。最後に送ってからこの時間が過ぎると、待つのをやめて natsumi に知らせます |
+
+3. Compose では override の [compose.a2a.example.yaml](compose.a2a.example.yaml) を足して、token を `/run/secrets/natsumi_a2a_token` にマウントします。
+   既定ではホストの `secrets/a2a-token` を読みます（`NATSUMI_A2A_TOKEN_FILE` で変更できます）。
+   token を更新するときは、同じファイルに中身を書き込みます（別のファイルに置き換えると、マウントが古いほうを指したままになります）。
+
+```sh
+docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
+```
+
+- 頼むと、サーバーは相手に送ってすぐ「頼んだ」とだけ natsumi に返します。返事はサーバーが `a2a.pollIntervalSeconds` ごとに
+  取りに行き、済んだ・できなかった・相手が聞き返している・待つのをやめた、のどれかになったら、相手の名前つきの出来事として
+  natsumi に届けます。依頼の ID は natsumi に見せません。相手の聞き返しには、natsumi が同じ相手との直近のやり取りに続けて答えます。
+- 待っている依頼と、相手ごとの直近のやり取りは `.natsumi/state.sqlite`（migration 12）に残るので、再起動しても取りに行き直します。
+  返事の本文は、natsumi に渡すまでだけそこに置き、渡したら消します（以後は Pi の session にあります）。
+- 相手とのやり取りは Mac の会話には出ません。本人に伝えることは natsumi が返事や知らせで伝えます。
+- 頼める相手の一覧は、サーバーが起動のたびに各相手の Agent Card（token は付けずに取ります）から data directory の
+  `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
+  取れなかった相手は「今は取れない」と書きます。URL と token は書きません。相手の説明が変わったら、再起動で反映します。
+- token は natsumi のコンテナにだけマウントし、作業環境には見せません。ログには相手の名前と失敗の種類だけを出し、頼んだ文面や返事は出しません。
+
 ### natsumi の作業環境（natsumi-workspace）
 
 natsumi は `run_shell` でコマンドを動かします。コマンドは natsumi の中ではなく、閉じ込めたコンテナ
@@ -271,11 +319,16 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   | `/home/natsumi` | する | しない | natsumi のホーム。`natsumi-data` の `home/` |
   | `/tmp` | しない | — | 128 MB の tmpfs。コンテナの再起動で消えます |
 
+  ほかに、読むだけの場所が 2 つあります（[ADR 0036](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)）。
+  `/manual` は natsumi 向けのマニュアル（リポジトリの [manual/](manual/) を image に焼いたもの）で、
+  `/manual/agents` は natsumi が起動のたびに書き出す、頼める相手の一覧（`natsumi-data` の `agents/`、読み取り専用）です。
+  system prompt には「やり方が分からないときは `/manual/INDEX.md` を読む」の 1 文だけがあり、使い方の説明はマニュアルの側に足します。
+
   `/work` と `/home/natsumi` はサーバーが見ません。ターンの終わりの検査もコミットも掛からず、
   git の差分でも見られません。中を見るときはオーナーが自分でコンテナに入ります。
 - 閉じ込め
   - ネットワークはありません（`network_mode: none`）。
-  - `natsumi-data` の上の 3 つだけをマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
+  - `natsumi-data` の上の 3 つと、読み取り専用の `agents/` だけをマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
   - 非 root で動き、全 capability を外し、`no-new-privileges` を付けます。
   - `/tmp` には `noexec` を付けますが、**境界としては数えません。** インタプリタがある以上、
     `python3 /tmp/x.py` は止まりません。
@@ -294,7 +347,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   次のターンで natsumi に内訳つきで知らせます。強制はしないので、片づけないままだといつかはディスクが埋まります。
 - UID: これらのファイルは所有者だけが読めるので、`natsumi-workspace` は natsumi と同じ UID で動かします（既定は 1000）。
   natsumi を別の UID で動かすときは、`NATSUMI_WORKSPACE_UID` に同じ値を入れます。
-- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/` を作るので、`natsumi-workspace` は
+- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/`・`agents/` を作るので、`natsumi-workspace` は
   natsumi が healthy になってから起動します。
 - 閉じ込めの確認: [scripts/check-workspace-sandbox.sh](scripts/check-workspace-sandbox.sh) が、使い捨ての project で
   2 つのコンテナを起動し、コンテナの形（ネットワーク、マウント、権限、資源の上限、見えない秘密、環境変数）と、

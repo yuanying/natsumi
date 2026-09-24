@@ -104,12 +104,20 @@ services:
         volume:
           subpath: home
           nocopy: true
+      # Who she can ask, written by natsumi on every start (ADR 0036). Read-only: the manual is for reading.
+      - type: volume
+        source: natsumi-data
+        target: /manual/agents
+        read_only: true
+        volume:
+          subpath: agents
+          nocopy: true
       - type: volume
         source: natsumi-workspace-socket
         target: /run/natsumi-workspace
         volume:
           nocopy: true
-    # natsumi creates memory/, work/ and home/ in the data directory on its first start.
+    # natsumi creates memory/, work/, home/ and agents/ in the data directory on its first start.
     depends_on:
       natsumi:
         condition: service_healthy
