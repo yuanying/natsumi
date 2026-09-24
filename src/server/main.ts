@@ -19,7 +19,8 @@ try {
     });
     // Pi reads its state area from here; the personal default under the home directory is never used.
     process.env.PI_CODING_AGENT_DIR = server.config.pi.agentDirectory;
-    const scheme = server.config.listen.tls ? 'https' : 'http (loopback only)';
+    const { tls, behindProxy } = server.config.listen;
+    const scheme = tls ? 'https' : behindProxy ? 'http (TLS ends at the proxy in front)' : 'http (loopback only)';
     if (server.challengeAddress) {
       const { host, port } = server.challengeAddress;
       process.stdout.write(`natsumi: answering ACME challenges on ${host} port ${port} over http (challenges and redirects only)\n`);

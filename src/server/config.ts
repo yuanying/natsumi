@@ -59,8 +59,13 @@ export interface AcmeConfig {
 export interface ListenConfig {
   host: string;
   port: number;
-  /** `false` (plaintext) is accepted only on a loopback host, for a reverse proxy on the same host (ADR 0006). */
+  /**
+   * `false` (plaintext) is accepted on a loopback host, for a reverse proxy on the same host (ADR 0006), and beyond
+   * loopback only with `behindProxy` (ADR 0033).
+   */
   tls: TlsConfig | { acme: AcmeConfig } | false;
+  /** TLS ends at a proxy in front, such as a Kubernetes Ingress, so plaintext may listen beyond loopback (ADR 0033). */
+  behindProxy?: true;
 }
 
 /** A secret named by environment variable or read from a secret mount; never the value itself. */
@@ -284,7 +289,7 @@ function parsePublicOrigin(value: unknown, path: string): string {
 
 function parseListen(value: unknown, path: string): ListenConfig {
   const listen = object(value, path);
-  onlyKeys(listen, path, ['host', 'port', 'tls']);
+  onlyKeys(listen, path, ['host', 'port', 'tls', 'behindProxy']);
   const host = nonEmptyString(required(listen, 'host', path), `${path}.host`);
   if (host !== 'localhost' && isIP(host) === 0) throw new ConfigError(`${path}.host`, 'must be an IP address or localhost');
   const port = required(listen, 'port', path);
@@ -293,10 +298,18 @@ function parseListen(value: unknown, path: string): ListenConfig {
   }
   const tlsPath = `${path}.tls`;
   const tls = required(listen, 'tls', path);
+  const behindProxy = listen.behindProxy ?? false;
+  if (typeof behindProxy !== 'boolean') throw new ConfigError(`${path}.behindProxy`, 'must be true or false');
+  if (behindProxy && tls !== false) {
+    throw new ConfigError(`${path}.behindProxy`, 'is for tls: false; the server does not terminate TLS behind a proxy');
+  }
   if (tls === false) {
-    // Plaintext is never exposed beyond this host: the only exception is loopback behind a local TLS proxy.
-    if (!isLoopbackHost(host)) throw new ConfigError(tlsPath, 'plaintext is accepted only on a loopback host; set certFile and keyFile');
-    return { host, port, tls: false };
+    // Plaintext is not exposed by accident: beyond loopback it takes behindProxy, which says a proxy in front
+    // terminates TLS and only the stretch from that proxy to here is plaintext (ADR 0033).
+    if (!behindProxy && !isLoopbackHost(host)) {
+      throw new ConfigError(tlsPath, 'plaintext is accepted only on a loopback host, or with behindProxy; set certFile and keyFile');
+    }
+    return { host, port, tls: false, ...(behindProxy ? { behindProxy: true as const } : {}) };
   }
   if (typeof tls !== 'object' || tls === null || Array.isArray(tls)) {
     throw new ConfigError(tlsPath, 'must be { certFile, keyFile }, { acme }, or false on a loopback host');

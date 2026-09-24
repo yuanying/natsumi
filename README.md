@@ -40,6 +40,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `publicOrigin`: クライアントが使う origin（例: `https://natsumi.example.net:8443`）。https に限ります。
    - `listen`: 待ち受けアドレス・ポート・TLS。`"host": "::"` で IPv4 と IPv6 の両方で待ち受けます。
      `tls` には証明書と鍵のファイル、または Let's Encrypt から自動取得する `acme` を指定します。
+     Kubernetes の Ingress のように手前のプロキシで TLS を終端するときは、`"tls": false` と `"behindProxy": true` を指定します。
    - `github`: OAuth App の client ID、client secret の参照（`clientSecretEnv` か `clientSecretFile`）、callback URL、
      許可するアカウントの数値 ID（`allowedUserId`）。
    - `loop`（省略可）: 本人のタイムゾーン `timeZone`（例: `Asia/Tokyo`、既定 `UTC`）、夜の切り替えの時刻 `nightlyRotationAt`
@@ -153,14 +154,19 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
 
 ### TLS を設定する
 
-TLS はサーバー自身で終端します（[ADR 0006](docs/adr/0006-github-login-and-transport.md)）。
+Docker で動かすときは、TLS はサーバー自身で終端します（[ADR 0006](docs/adr/0006-github-login-and-transport.md)）。
+Ingress の後ろに置くときは、TLS は Ingress で終端し、サーバーは平文で待ち受けます（[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）。
 
 - `publicOrigin` のホスト名に対する証明書と秘密鍵を PEM で用意し、`listen.tls.certFile` / `keyFile` に指定します。
   中間証明書がある場合は `certFile` にサーバー証明書に続けて連結します。
 - Mac からの接続では、Mac が信頼する証明書（公的な CA が発行したもの、または Mac に登録した私的な CA のもの）を使います。
 - ファイルで渡した証明書を更新したら、サーバーを再起動します。
-- 同じホストのリバースプロキシで TLS を終端する場合に限り、`"host": "127.0.0.1"`（または `"::1"`）と `"tls": false` を指定できます。
-  loopback 以外のアドレスで `tls: false` を指定すると起動を拒否します。
+- 同じホストのリバースプロキシで TLS を終端する場合は、`"host": "127.0.0.1"`（または `"::1"`）と `"tls": false` を指定できます。
+- Ingress の後ろに置く場合は、`"tls": false` に `"behindProxy": true` を足すと、loopback 以外のアドレス（例: `"::"`）でも平文で待ち受けます。
+  Ingress のコントローラは Pod の IP につなぐので、loopback では届かないためです。平文になるのは Ingress から Pod までの区間です。
+  `publicOrigin` は、クライアントから見た https の origin のままにします。
+- `behindProxy` を付けずに loopback 以外のアドレスで `tls: false` を指定すると、起動を拒否します。
+  `behindProxy` は `tls: false` のときだけ指定できます。
 
 ### Let's Encrypt で証明書を自動取得する
 
