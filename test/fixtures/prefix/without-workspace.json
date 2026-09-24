@@ -227,6 +227,29 @@
           }
         }
       }
+    },
+    {
+      "name": "ask_agent",
+      "description": "外のエージェント（Wiki の管理人のように、決まった仕事を受け持つ別のエージェント）に頼みごとをする。agent には相手の名前、message には頼む文面を書く。頼める相手の名前とできることは /manual/agents/INDEX.md にある。continue を true にすると、その相手との直近のやり取りに続けて送り、相手は前の文脈を覚えている。相手の聞き返しに答えるときも true にする。false なら新しいやり取りとして始める。\nこの道具は頼んだことだけを返す。返事は後で agent_reply の出来事として、相手の名前（agent）と status を付けて届く。status は completed（済んだ。text が答え）、failed（できなかった）、input_required（相手が聞き返している。text が質問）、gave_up（待っても返事が来ないので、サーバーが待つのをやめた）のどれか。\n返事を待たずに、ほかのことをしてよい。相手とのやり取りは本人には見えないので、本人に伝えたいことは reply_to_mac か notify_owner で伝える。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "agent",
+          "message",
+          "continue"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "continue": {
+            "type": "boolean"
+          }
+        }
+      }
     }
   ]
 }

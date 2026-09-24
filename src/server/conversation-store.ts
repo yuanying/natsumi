@@ -4,7 +4,7 @@ import type { Expression } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
 
 /** The kinds of event the loop takes. The column is free text in SQLite; these are the only values written. */
-export type EventKind = 'mac-message' | 'nightly-review' | 'ping' | 'self-check';
+export type EventKind = 'mac-message' | 'nightly-review' | 'ping' | 'self-check' | 'agent-reply';
 
 /** How far an event got. Mirrors the CHECK on `loop_events.state`. */
 export type EventState = 'queued' | 'processing' | 'replied' | 'no-reply' | 'failed';

@@ -301,4 +301,44 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE UNIQUE INDEX conversation_messages_one_reply ON conversation_messages (event_id) WHERE kind = 'reply';
     `,
   },
+  {
+    version: 12,
+    name: 'outside-agents',
+    sql: `
+      -- The latest exchange with each outside agent (ADR 0035). ask_agent with continue goes on with it, so natsumi
+      -- never sees or copies its ID. task_id is the task last sent in it: continue answers it when it asked a
+      -- question, and waits while it runs. An agent that answered with a message alone leaves no task.
+      CREATE TABLE agent_contexts (
+        agent TEXT PRIMARY KEY,
+        context_id TEXT NOT NULL,
+        task_id TEXT,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      -- Tasks natsumi started, and how far each got. A waiting task is fetched until it settles or the wait runs out;
+      -- one asking a question waits for her answer and is not fetched. sent_at is the last message sent to it: the
+      -- wait limit counts from there (ADR 0036). A restart fetches the waiting ones again.
+      CREATE TABLE agent_tasks (
+        agent TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        context_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('waiting', 'input-required', 'completed', 'failed', 'gave-up')),
+        sent_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (agent, task_id)
+      ) STRICT;
+      CREATE INDEX agent_tasks_by_state ON agent_tasks (state, sent_at);
+
+      -- What an agent answered, as the agent-reply event that carries it. It is natsumi's to read and never part of
+      -- the conversation shown to the owner (ADR 0025).
+      CREATE TABLE agent_replies (
+        event_id TEXT PRIMARY KEY REFERENCES loop_events (event_id),
+        agent TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'input-required', 'gave-up')),
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];
