@@ -8,7 +8,8 @@
   [ADR 0017](0017-streaming-the-line-she-is-thinking.md) で改訂。
   入力欄と履歴を 1 つのタイトルバーのあるウインドウにし、入力欄を一列から外すこと・ほかのアプリのクリックで
   閉じないこと・つまみを廃止することは [ADR 0021](0021-the-input-and-the-history-in-one-window.md) で置き換え。
-  返事の束（古い順・重ねる縁・「あと N 件」）は、最後の返事 1 件を出す形に [ADR 0022](0022-only-her-last-line-in-the-balloon.md) で置き換え）
+  返事の束（古い順・重ねる縁・「あと N 件」）は、最後の返事 1 件を出す形に [ADR 0022](0022-only-her-last-line-in-the-balloon.md) で置き換え。
+  スリープから起きたときのつなぎ直しと、開いている接続の ping は [ADR 0037](0037-catching-up-after-sleep-and-pinging-the-socket.md) で追加）
 
 ## Context
 

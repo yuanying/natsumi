@@ -609,6 +609,27 @@ struct UIMediatorTests {
         #expect(mediator.handle(.reconnectTimerFired) == [.connect])
     }
 
+    @Test("スリープから起きたら、接続を捨ててつなぎ直し、続きから同期する。送りかけのメッセージは残る")
+    func wakeResyncs() {
+        var mediator = synced()
+        _ = mediator.handle(.inputSubmitted("架空のメッセージ"))
+        #expect(mediator.handle(.systemWoke) == [.disconnect, .connect])
+        #expect(props(mediator).character.disconnectedHelp == ConnectionStatus.connecting.text)
+        let sync = try! #require(sent(mediator.handle(.socketOpened)).first)
+        guard case .sessionSync(let resume) = sync.command else { Issue.record("同期を頼んでいない"); return }
+        #expect(resume != nil)
+        #expect(mediator.state.conversation.outbox.map(\.text) == ["架空のメッセージ"])
+    }
+
+    @Test("再接続を待っている間に起きたら、待たずにつなぎ直す。ログインしていなければ何もしない")
+    func wakeSkipsTheReconnectWait() {
+        var mediator = synced()
+        _ = mediator.handle(.socketClosed(.network))
+        #expect(mediator.handle(.systemWoke) == [.disconnect, .connect])
+        var loggedOut = launched(hasSession: false)
+        #expect(loggedOut.handle(.systemWoke).isEmpty)
+    }
+
     @Test("終了は、終了の指示だけを出す")
     func quit() {
         var mediator = launched()

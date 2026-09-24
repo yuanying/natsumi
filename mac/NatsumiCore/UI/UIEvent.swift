@@ -53,6 +53,8 @@ public enum UIEvent: Equatable, Sendable {
     case socketReceived(Data)
     case socketClosed(CloseReason)
     case reconnectTimerFired
+    /// The Mac woke from sleep. The socket may have died while it slept without a close ever arriving.
+    case systemWoke
 
     // MARK: The character
 
