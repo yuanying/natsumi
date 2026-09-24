@@ -480,8 +480,11 @@ test('the server commits memory that git sees as owned by another user (ADR 0033
     const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
     await mkdir(bin);
     await writeFile(join(bin, 'git'), `#!/bin/sh\nGIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec ${real} "$@"\n`, { mode: 0o755 });
-    execFileSync(real, ['-C', f.directory, 'init', '-q', '-b', 'main']);
-    assert.throws(() => execFileSync(join(bin, 'git'), ['-C', f.directory, 'status'], { stdio: 'pipe' }), /dubious ownership/);
+    // Like the server, read no system or global config: a machine that trusts every directory (safe.directory=*,
+    // as CI runners do) would otherwise hide the refusal this test needs.
+    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+    execFileSync(real, ['-C', f.directory, 'init', '-q', '-b', 'main'], { env });
+    assert.throws(() => execFileSync(join(bin, 'git'), ['-C', f.directory, 'status'], { stdio: 'pipe', env }), /dubious ownership/);
 
     process.env.PATH = `${bin}:${path}`;
     await f.repository.initialize(undefined);
