@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -341,4 +342,48 @@ func TestCheckSucceedsOnlyWhileTheRunnerAnswers(t *testing.T) {
 func quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// The workspace may run as a UID other than the server's, sharing a group with it (ADR 0033): what a command makes
+// in /memory, /work and /home/natsumi must be writable by that group, and by nobody else.
+func TestCommandsMakeFilesForTheSharedGroup(t *testing.T) {
+	previous := UseSharedUmask()
+	t.Cleanup(func() { syscall.Umask(previous) })
+	l := limits(t)
+	result := (&Server{Limits: l}).Run("umask; mkdir made; : > made/file", "")
+	if result.ExitCode == nil || *result.ExitCode != 0 || result.Stdout != "0007\n" {
+		t.Fatalf("result: %+v", result)
+	}
+	for name, want := range map[string]os.FileMode{"made": 0o770, "made/file": 0o660} {
+		info, err := os.Stat(filepath.Join(l.Dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("%s mode %o, want %o", name, info.Mode().Perm(), want)
+		}
+	}
+}
+
+// In a Pod the socket lives on a volume the runner does not own, so it cannot change that directory's mode. It
+// makes a directory of its own for the socket instead, when the configured one is not there yet.
+func TestListenMakesAMissingSocketDirectory(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "runner")
+	t.Cleanup(func() { _ = os.Chmod(directory, 0o755) })
+	path := filepath.Join(directory, "runner.sock")
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	info, err := os.Stat(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o555 {
+		t.Fatalf("socket directory mode %o, want 555", info.Mode().Perm())
+	}
+	if socket, err := os.Stat(path); err != nil || socket.Mode()&os.ModeSocket == 0 {
+		t.Fatalf("socket: %v", err)
+	}
 }

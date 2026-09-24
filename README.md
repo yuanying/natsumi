@@ -298,8 +298,20 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   `TZ` はサーバーがコマンドごとに `loop.timeZone` を送ります（`NATSUMI_TIME_ZONE` は runner 側の既定値です）。
 - 大きさ: `/memory`・`/work`・`/home/natsumi` の合計が `loop.workspaceSizeWarnBytes`（既定 1 GiB）を超えると、
   次のターンで natsumi に内訳つきで知らせます。強制はしないので、片づけないままだといつかはディスクが埋まります。
-- UID: これらのファイルは所有者だけが読めるので、`natsumi-workspace` は natsumi と同じ UID で動かします（既定は 1000）。
+- UID: Docker の構成では、`natsumi-workspace` は natsumi と同じ UID で動かします（既定は 1000）。
   natsumi を別の UID で動かすときは、`NATSUMI_WORKSPACE_UID` に同じ値を入れます。
+- 別の UID で動かす場合（Kubernetes の構成、[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）は、サーバーと作業環境
+  （と ssh でログインするユーザー）を共有のグループに入れ、そのグループで `/memory`・`/work`・`/home/natsumi` を読み書きします。
+  - サーバーと runner は umask 007 で動きます。新しいファイルはグループが読み書きでき、グループ以外には見えません。
+    ssh でログインするユーザーも umask 007 にしてください。
+  - サーバーは data directory の `memory/`・`work/`・`home/` を、setgid 付きの 2770 で作ります。
+    中に作られるファイルとディレクトリは、誰が作っても共有のグループになります。
+  - サーバーだけが使うもの（`.natsumi/` の SQLite と証明書、Pi の状態領域）は 0700 のディレクトリに置かれ、グループからも見えません。
+  - サーバーの git は、持ち主の違う記憶のリポジトリを `safe.directory` で扱い、そのままコミットします。
+  - 既にあるディレクトリの持ち主と権限は変えません。既存のデータを移すときは、3 つの場所の中身のグループを共有のグループにし、
+    グループの書き込みと、ディレクトリの setgid を付けてください。umask か setgid が外れると、サーバーが記憶をコミットできなくなります。
+  - runner は `-socket` のディレクトリが無ければ作ります。持ち主の違う volume（Pod の `emptyDir` など）では、
+    その下のサブディレクトリをソケットの置き場に指定します（例: `/run/natsumi-workspace/runner/runner.sock`）。
 - 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/` を作るので、`natsumi-workspace` は
   natsumi が healthy になってから起動します。
 - 閉じ込めの確認: [scripts/check-workspace-sandbox.sh](scripts/check-workspace-sandbox.sh) が、使い捨ての project で

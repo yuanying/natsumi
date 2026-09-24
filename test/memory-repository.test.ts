@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { ALWAYS_FILE, HANDOFF_FILE, MemoryRepository, PERSONALITY_FILE, revertNotice } from '../src/server/memory-repository.ts';
+import { SERVER_UMASK } from '../src/server/permissions.ts';
 
 // Fictional memories only.
 const PASSPHRASE = 'SYNTHETIC-HERON-208';
@@ -443,4 +444,56 @@ test('the handoff may be written on an ordinary day, unlike the two files that r
     assert.deepEqual(outcome.reverted.map(file => file.path), [ALWAYS_FILE]);
     assert.match(await f.read(HANDOFF_FILE), /昼間に書き直した/);
   } finally { await f.cleanup(); }
+});
+
+test('under the server umask, memory is shared with the group the workspace writes through (ADR 0033)', async () => {
+  const f = await setup();
+  const previous = process.umask(SERVER_UMASK);
+  try {
+    // A repository placed with loop.memoryRepository, made by the repository itself.
+    const directory = join(f.root, 'elsewhere', 'memory');
+    const repository = new MemoryRepository({ directory, dataDirectory: f.data });
+    await repository.initialize(undefined);
+    assert.equal((await stat(directory)).mode & 0o7777, 0o2770);
+    for (const name of [ALWAYS_FILE, HANDOFF_FILE, PERSONALITY_FILE]) {
+      assert.equal((await stat(join(directory, name))).mode & 0o777, 0o660, name);
+    }
+    // What git puts back is written the same way.
+    await rm(join(directory, ALWAYS_FILE));
+    await repository.commit({ event: 'mac_message' });
+    assert.equal((await stat(join(directory, ALWAYS_FILE))).mode & 0o777, 0o660);
+    await repository.writeHandoff('あしたの自分へ');
+    assert.equal((await stat(join(directory, HANDOFF_FILE))).mode & 0o777, 0o660);
+  } finally {
+    process.umask(previous);
+    await f.cleanup();
+  }
+});
+
+test('the server commits memory that git sees as owned by another user (ADR 0033)', async () => {
+  const f = await setup();
+  const bin = join(f.root, 'bin');
+  const path = process.env.PATH;
+  try {
+    // The workspace runs as another UID, so the working tree is not the server's. git's own test switch makes it
+    // treat every repository that way, which is what ownership checks see once the UIDs differ.
+    const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    await mkdir(bin);
+    await writeFile(join(bin, 'git'), `#!/bin/sh\nGIT_TEST_ASSUME_DIFFERENT_OWNER=1 exec ${real} "$@"\n`, { mode: 0o755 });
+    execFileSync(real, ['-C', f.directory, 'init', '-q', '-b', 'main']);
+    assert.throws(() => execFileSync(join(bin, 'git'), ['-C', f.directory, 'status'], { stdio: 'pipe' }), /dubious ownership/);
+
+    process.env.PATH = `${bin}:${path}`;
+    await f.repository.initialize(undefined);
+    await f.write('予定.md', '# 予定\n\n- 2026-09-24: 歯医者は金曜\n');
+    const outcome = await f.repository.commit({ event: 'mac_message' });
+    process.env.PATH = path;
+
+    assert.equal(outcome.committed, true);
+    assert.equal(f.commits(), 2);
+    assert.equal(f.clean(), true);
+  } finally {
+    process.env.PATH = path;
+    await f.cleanup();
+  }
 });

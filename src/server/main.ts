@@ -1,10 +1,12 @@
 import { homedir } from 'node:os';
 import { parseCli, UsageError } from './cli.ts';
 import { resolveDataDirectory } from './data-directory.ts';
+import { SERVER_UMASK } from './permissions.ts';
 import { startServer } from './server.ts';
 import { checkHealth, readStatus } from './status.ts';
 
-process.umask(0o077);
+// The workspace may run as another UID in a shared group (ADR 0033); see permissions.ts for what stays private.
+process.umask(SERVER_UMASK);
 
 try {
   const cli = parseCli(process.argv.slice(2));

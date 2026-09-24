@@ -1,7 +1,8 @@
-import { copyFile, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runGit } from './git.ts';
 import { findControlStrings, findForeignScript, hasControlCharacters } from './output-checks.ts';
+import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
 
 /**
  * Memory as a git repository (ADR 0018): everything natsumi is made of — her memories, the always-memory, her
@@ -111,7 +112,7 @@ export class MemoryRepository {
    * and the first session after the upgrade would begin from nothing. A handoff somebody has written is left alone.
    */
   async initialize(handoff?: string): Promise<void> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await makeSharedDirectory(this.directory, { recursive: true });
     const fresh = !(await this.isRepository());
     if (fresh) await runGit(this.directory, ['init', '-b', 'main']);
     const placed = await this.placeFixedFiles(handoff);
@@ -168,7 +169,7 @@ export class MemoryRepository {
    * back out of the working tree. Unlike `always.md` and `personality.md` it may be written on any day.
    */
   async writeHandoff(text: string): Promise<void> {
-    await writeFile(join(this.directory, HANDOFF_FILE), handoffText(text) ?? HANDOFF_TEMPLATE, { mode: 0o600 });
+    await writeFile(join(this.directory, HANDOFF_FILE), handoffText(text) ?? HANDOFF_TEMPLATE, { mode: SHARED_FILE_MODE });
   }
 
   /** The commit the working tree was last brought level with: what a switch records as the handoff it started from. */
@@ -187,20 +188,20 @@ export class MemoryRepository {
     if (!(await this.exists(PERSONALITY_FILE))) {
       const previous = join(this.options.dataDirectory, PERSONALITY_FILE);
       const moved = await this.move(previous, join(this.directory, PERSONALITY_FILE));
-      if (!moved) await writeFile(join(this.directory, PERSONALITY_FILE), PERSONALITY_TEMPLATE, { mode: 0o600 });
+      if (!moved) await writeFile(join(this.directory, PERSONALITY_FILE), PERSONALITY_TEMPLATE, { mode: SHARED_FILE_MODE });
       placed.push(PERSONALITY_FILE);
     }
     if (!(await this.exists(ALWAYS_FILE))) {
-      await writeFile(join(this.directory, ALWAYS_FILE), ALWAYS_TEMPLATE, { mode: 0o600 });
+      await writeFile(join(this.directory, ALWAYS_FILE), ALWAYS_TEMPLATE, { mode: SHARED_FILE_MODE });
       placed.push(ALWAYS_FILE);
     }
     if (!(await this.exists(HANDOFF_FILE))) {
-      await writeFile(join(this.directory, HANDOFF_FILE), handoffText(handoff) ?? HANDOFF_TEMPLATE, { mode: 0o600 });
+      await writeFile(join(this.directory, HANDOFF_FILE), handoffText(handoff) ?? HANDOFF_TEMPLATE, { mode: SHARED_FILE_MODE });
       placed.push(HANDOFF_FILE);
     } else {
       const text = handoffText(handoff);
       if (text && (await this.readOrEmpty(HANDOFF_FILE)) === HANDOFF_TEMPLATE) {
-        await writeFile(join(this.directory, HANDOFF_FILE), text, { mode: 0o600 });
+        await writeFile(join(this.directory, HANDOFF_FILE), text, { mode: SHARED_FILE_MODE });
         placed.push(HANDOFF_FILE);
       }
     }
