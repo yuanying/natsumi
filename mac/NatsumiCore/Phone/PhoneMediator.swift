@@ -166,6 +166,10 @@ public struct PhoneMediator {
             closePage()
             return []
 
+        case .linkTapped(let url):
+            // As on the Mac: the browser opens and nothing is read (ADR 0038).
+            return TextLinks.canOpen(url) ? [.openLink(url)] : []
+
         case .historyRowVisibilityChanged(let id, let isVisible):
             guard state.isReadingHistory else { return [] }
             if isVisible {

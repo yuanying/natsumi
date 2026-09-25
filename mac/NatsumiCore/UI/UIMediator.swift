@@ -244,6 +244,11 @@ public struct UIMediator {
             state.session.dismiss(requestId: requestId)
             return []
 
+        case .linkClicked(let url):
+            // Following a link is not reading: the balloon and the notices stay as they are, and only the browser
+            // opens. The views are given http and https links only; anything else is refused here too (ADR 0038).
+            return TextLinks.canOpen(url) ? [.openLink(url)] : []
+
         case .balloonTextClicked:
             // Opening a reply reads nothing: only the × tells the server anything.
             guard let last = UIProps.unreadReply(state.conversation) else { return [] }
