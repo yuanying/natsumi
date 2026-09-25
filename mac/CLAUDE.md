@@ -48,6 +48,8 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
   設定の文字の欄（保存のボタンで初めて確定するもの）だけである。
 - Props は値型で `Equatable` にし、**`UIProps` の純粋関数だけが作る。** 導出は `NatsumiCore` に置き、テストする。
   Root は Props が変わったときだけ描き直す。この比較が、描画→計測→描画の堂々巡りを止めている。
+  Mediator が `mayHaveChangedProps` で「変わりえない」と言うイベント（履歴の行が見えただけ）では、Root は導出そのものを飛ばす
+  （ADR 0015 の追記）。
 
 ## 3. Chain of Responsibility
 
