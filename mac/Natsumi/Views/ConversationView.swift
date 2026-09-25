@@ -202,9 +202,12 @@ private struct MessageRow: View {
         .foregroundStyle(props.isOwner ? Color.primary : Comic.ink)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        // The room the tail takes, on the side it points to.
+        .padding(props.isOwner ? .trailing : .leading, HistoryBubbleShape.tailWidth)
         .background {
-            // natsumi's words look like her balloons: paper or yellow with the ink outline.
-            let shape = RoundedRectangle(cornerRadius: Comic.radius(1))
+            // natsumi's words look like her balloons: paper or yellow with the ink outline, and a tail at her face.
+            // The owner's point the other way (ADR 0027).
+            let shape = HistoryBubbleShape(side: props.isOwner ? .trailing : .leading, radius: Comic.radius(1))
             if props.isOwner {
                 shape.fill(Color.accentColor.opacity(0.2))
             } else {
@@ -265,7 +268,9 @@ private struct OutgoingRow: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.trailing, HistoryBubbleShape.tailWidth)
+                    .background(
+                        Color.accentColor.opacity(0.1), in: HistoryBubbleShape(side: .trailing, radius: 10))
                 if let failure = props.failure {
                     HStack(spacing: 4) {
                         Text(failure).font(.caption2).foregroundStyle(.red)
@@ -276,5 +281,42 @@ private struct OutgoingRow: View {
                 }
             }
         }
+    }
+}
+
+/// A bubble of the history with its tail near the bottom, pointing sideways: at her face for her words, out to the
+/// owner's side for theirs. The box and the tail are one outline, as the balloons on the desktop are.
+private struct HistoryBubbleShape: Shape {
+    enum Side {
+        case leading
+        case trailing
+    }
+
+    /// How far the tail stands out from the box.
+    static let tailWidth: CGFloat = 7
+    /// How high its root is on the box's side.
+    static let tailRoot: CGFloat = 10
+
+    var side: Side
+    var radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var box = rect
+        box.size.width -= Self.tailWidth
+        if side == .leading { box.origin.x += Self.tailWidth }
+        let radius = min(radius, box.height / 2, box.width / 2)
+        // The root sits above the bottom corner's curve, and the tip a little lower than the root, as a comic
+        // balloon's does. A bubble too short for that keeps the tail at its middle.
+        let rootBottom = max(box.maxY - radius, box.midY + Self.tailRoot / 2)
+        let rootTop = max(rootBottom - Self.tailRoot, box.minY)
+        let tip = CGPoint(x: side == .leading ? rect.minX : rect.maxX, y: min(rootBottom + 2, box.maxY))
+        // One point inside the box, so that the union has no seam along the root.
+        let edge = side == .leading ? box.minX + 1 : box.maxX - 1
+        var tail = Path()
+        tail.move(to: CGPoint(x: edge, y: rootTop))
+        tail.addLine(to: tip)
+        tail.addLine(to: CGPoint(x: edge, y: rootBottom))
+        tail.closeSubpath()
+        return Path(roundedRect: box, cornerRadius: radius).union(tail)
     }
 }
