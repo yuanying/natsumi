@@ -97,6 +97,7 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `NatsumiCore/UI/Props.swift` | `RootProps` と各パネルの Props、`ColumnPlacement`、`UIProps` の導出 |
 | `NatsumiCore/UI/Stacks.swift` | 束の数え方（`NoticeStack`・`BalloonText`・`CharacterBadge`） |
 | `NatsumiCore/UI/HistoryReading.swift` | 会話のウインドウで見えた返事のどこまでを既読にするか（`HistoryReading`） |
+| `NatsumiCore/UI/TextLinks.swift` | 本文の中の URL をリンクにする分け方（`TextLinks`・`TextRun`）（ADR 0038） |
 | `NatsumiCore/UI/MessageTime.swift` | 履歴の行に添える時刻の書き方（`MessageTime`）。今と暦は Root が渡す |
 | `NatsumiCore/UI/StageProps.swift` | 舞台の描画パラメータ（`StageProps`・`StageTransition`）と舞台の座標への変換 |
 | `NatsumiCore/Keyboard/` | どこからでも会話のウインドウを出すショートカット（`HotKey`） |
@@ -104,7 +105,7 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `Natsumi/Components/` | Root と各部品のコンポーネント、`OverlayPanel` と hosting view、キャラクターのマウスの受け口（`CharacterMouseArea`） |
 | `Natsumi/Views/` | SwiftUI の Passive View、舞台（`StageView`）、`Comic` の見た目 |
 | `Natsumi/Adapters/` | Mac だけの OS に触る部分（グローバルなショートカットの登録） |
-| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン） |
+| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン）と、本文のリンクの描き方（`LinkedText`） |
 | `NatsumiCore/Phone/` | iPhone の `PhoneEvent`・`PhoneEffect`・`PhoneState`・`PhoneMediator`・`PhoneProps` |
 | `NatsumiPhone/Components/` | iPhone の Root（`PhoneRootComponent`）と各画面のコンポーネント、Props の受け渡しの箱（`ScreenModel`） |
 | `NatsumiPhone/Views/` | iPhone の SwiftUI の Passive View と `Comic` の見た目 |

@@ -49,5 +49,7 @@ public enum UIEffect: Equatable, Sendable {
     case registerHotKey(HotKey?)
     case showSettings
     case hideSettings
+    /// Open a link in the default browser (ADR 0038).
+    case openLink(URL)
     case terminate
 }

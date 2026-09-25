@@ -54,6 +54,8 @@ public enum PhoneEvent: Equatable, Sendable {
 
     /// A row of the history came into sight or went out of it.
     case historyRowVisibilityChanged(messageId: String, isVisible: Bool)
+    /// A URL in what she or the owner wrote, in the balloon or the history (ADR 0038).
+    case linkTapped(URL)
     case logoutRequested
 }
 
@@ -81,6 +83,8 @@ public enum PhoneEffect: Equatable, Sendable {
     case logout
     /// Read the avatar bundled with the app and answer with `.avatarLoaded`.
     case loadAvatar
+    /// Open a link in the default browser (ADR 0038).
+    case openLink(URL)
 
     // MARK: Notifications (ADR 0029)
 

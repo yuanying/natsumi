@@ -59,6 +59,7 @@ struct HistoryView: View {
         .navigationTitle("会話")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Comic.page, for: .navigationBar)
+        .opensLinks(through: sinks.historyRows, as: PhoneEvent.linkTapped)
     }
 }
 
@@ -80,7 +81,7 @@ struct HistoryRowView: View {
                         if props.isNotice {
                             Text("お知らせ").font(Comic.font(11, bold: true))
                         }
-                        Text(props.text)
+                        Text(AttributedString(runs: props.runs))
                             .font(Comic.font(15))
                             .lineSpacing(6)
                             .textSelection(.enabled)
@@ -101,7 +102,7 @@ struct HistoryRowView: View {
             }
         } else {
             VStack(alignment: .trailing, spacing: 4) {
-                OwnerBubble(text: props.text)
+                OwnerBubble(runs: props.runs)
                 if let time = props.time { caption(time) }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -127,10 +128,10 @@ struct HistoryRowView: View {
 
 /// What the owner said, in ink on the right.
 struct OwnerBubble: View {
-    let text: String
+    let runs: [TextRun]
 
     var body: some View {
-        Text(text)
+        Text(AttributedString(runs: runs))
             .font(Comic.font(15))
             .lineSpacing(6)
             .foregroundStyle(Comic.paper)
@@ -153,7 +154,7 @@ struct OutgoingRowView: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            OwnerBubble(text: props.text)
+            OwnerBubble(runs: props.runs)
             if let failure = props.failure {
                 HStack(spacing: 4) {
                     Text(failure)

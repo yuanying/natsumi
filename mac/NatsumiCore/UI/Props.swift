@@ -91,6 +91,8 @@ public struct CharacterProps: Equatable, Sendable {
 /// natsumi's last reply, in the balloon while it is unread (ADR 0022).
 public struct ReplyProps: Equatable, Sendable {
     public var text: String
+    /// `text` with its URLs as links (ADR 0038).
+    public var runs: [TextRun]
     public var lineLimit: Int
     /// The owner opened this one, so `text` is the whole reply.
     public var isExpanded: Bool
@@ -104,10 +106,11 @@ public struct ReplyProps: Equatable, Sendable {
     public var thinking: ThinkingProps?
 
     public init(
-        text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, unread: Int, help: String,
-        thinking: ThinkingProps? = nil
+        text: String, runs: [TextRun]? = nil, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool,
+        unread: Int, help: String, thinking: ThinkingProps? = nil
     ) {
         self.text = text
+        self.runs = runs ?? TextLinks.runs(in: text)
         self.lineLimit = lineLimit
         self.isExpanded = isExpanded
         self.showsHistoryLink = showsHistoryLink
@@ -178,6 +181,8 @@ public struct BalloonProps: Equatable, Sendable {
 
 public struct NoticeBundleProps: Equatable, Sendable {
     public var text: String
+    /// `text` with its URLs as links (ADR 0038).
+    public var runs: [TextRun]
     public var lineLimit: Int
     /// The owner opened this card, so `text` is the whole notice.
     public var isExpanded: Bool
@@ -195,11 +200,12 @@ public struct NoticeBundleProps: Equatable, Sendable {
     public var panelHeight: CGFloat?
 
     public init(
-        text: String, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool, more: Int, help: String,
-        closeHelp: String, edges: Int, edgesUpward: Bool, width: CGFloat, textScale: Double,
+        text: String, runs: [TextRun]? = nil, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool,
+        more: Int, help: String, closeHelp: String, edges: Int, edgesUpward: Bool, width: CGFloat, textScale: Double,
         panelHeight: CGFloat? = nil
     ) {
         self.text = text
+        self.runs = runs ?? TextLinks.runs(in: text)
         self.lineLimit = lineLimit
         self.isExpanded = isExpanded
         self.showsHistoryLink = showsHistoryLink
@@ -245,6 +251,8 @@ public struct FaceProps: Equatable, Sendable {
 public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var messageId: String
     public var text: String
+    /// `text` with its URLs as links (ADR 0038).
+    public var runs: [TextRun]
     /// When it was said, small beside the row. nil when the server's timestamp cannot be read.
     public var time: String?
     public var isOwner: Bool
@@ -260,6 +268,7 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     ) {
         self.messageId = messageId
         self.text = text
+        self.runs = TextLinks.runs(in: text)
         self.time = time
         self.isOwner = isOwner
         self.isNotice = isNotice
@@ -273,12 +282,15 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
 public struct OutgoingRowProps: Equatable, Sendable, Identifiable {
     public var requestId: String
     public var text: String
+    /// `text` with its URLs as links (ADR 0038).
+    public var runs: [TextRun]
     /// nil while it is only waiting to be accepted.
     public var failure: String?
 
     public init(requestId: String, text: String, failure: String?) {
         self.requestId = requestId
         self.text = text
+        self.runs = TextLinks.runs(in: text)
         self.failure = failure
     }
 
@@ -527,7 +539,7 @@ public enum UIProps {
         let isExpanded = expanded == .reply(last.messageId)
         let shown = card(last.text, isExpanded: isExpanded, budget: placement.budget)
         let reply = ReplyProps(
-            text: shown.text, lineLimit: shown.lineLimit, isExpanded: isExpanded,
+            text: shown.text, runs: TextLinks.runs(in: shown.text, isCut: shown.isCut), lineLimit: shown.lineLimit, isExpanded: isExpanded,
             showsHistoryLink: shown.showsHistoryLink, unread: conversation.unreadReplyCount,
             help: isExpanded ? "クリックで畳む" : "クリックで全文を出す", thinking: thinking)
         return props(
@@ -537,20 +549,21 @@ public enum UIProps {
 
     /// What a card puts on the screen: the preview, or the whole text when the owner opened it, and whether the
     /// history still has more of it than is shown.
+    /// `isCut` says the preview was cut short of the text, so a URL at its end may not be whole.
     static func card(_ text: String, isExpanded: Bool, budget: StackBudget) -> (
-        text: String, lineLimit: Int, showsHistoryLink: Bool
+        text: String, isCut: Bool, lineLimit: Int, showsHistoryLink: Bool
     ) {
         guard isExpanded else {
             let preview = BalloonText.preview(text)
             let lines = min(budget.lines, BalloonText.maxLines)
-            return (preview.text, lines, preview.isTruncated || lines < BalloonText.maxLines)
+            return (preview.text, preview.isTruncated, lines, preview.isTruncated || lines < BalloonText.maxLines)
         }
         let whole = BalloonText.whole(text)
         let lines = budget.lines
         // The column gave less than the whole allowance, or the text is written in more lines than that: what is
         // left over is only in the history.
         let cut = lines < BalloonText.expandedMaxLines || BalloonText.lineCount(whole) > lines
-        return (whole, lines, cut)
+        return (whole, false, lines, cut)
     }
 
     public static func notices(
@@ -559,6 +572,7 @@ public enum UIProps {
     ) -> NoticeBundleProps? {
         guard !hidden, let stack = noticeStack(conversation) else { return nil }
         let text: String
+        let runs: [TextRun]
         let lineLimit: Int
         let showsHistoryLink: Bool
         let isExpanded: Bool
@@ -569,6 +583,7 @@ public enum UIProps {
             isExpanded = expanded == .notice(message.messageId)
             let shown = card(message.text, isExpanded: isExpanded, budget: placement.budget)
             text = shown.text
+            runs = TextLinks.runs(in: shown.text, isCut: shown.isCut)
             lineLimit = shown.lineLimit
             showsHistoryLink = shown.showsHistoryLink
             help = isExpanded ? "クリックで畳む" : "クリックで全文を出す"
@@ -577,13 +592,14 @@ public enum UIProps {
             // Their text is older than the history, so there is nothing to open and nowhere to send the owner.
             isExpanded = false
             text = "前の知らせが \(ids.count) 件あります（本文は履歴より前のため出せません）"
+            runs = [.plain(text)]
             lineLimit = min(placement.budget.lines, BalloonText.maxLines)
             showsHistoryLink = false
             help = "クリックでまとめて確かめる"
             closeHelp = stack.more > 0 ? "まとめて確認して次へ" : "まとめて確認して閉じる"
         }
         return NoticeBundleProps(
-            text: text, lineLimit: lineLimit, isExpanded: isExpanded, showsHistoryLink: showsHistoryLink,
+            text: text, runs: runs, lineLimit: lineLimit, isExpanded: isExpanded, showsHistoryLink: showsHistoryLink,
             more: stack.more, help: help, closeHelp: closeHelp,
             edges: min(stack.behind, placement.budget.behind), edgesUpward: placement.tail == .down,
             width: isExpanded ? placement.expandedWidth : placement.width, textScale: scale.textScale,

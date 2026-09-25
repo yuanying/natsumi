@@ -57,19 +57,16 @@ struct BalloonView: View {
             ThinkingLine(props: thinking, scale: scale)
         case .reply(let reply):
             VStack(alignment: .leading, spacing: 4 * scale) {
-                Button { text(.balloonTextClicked) } label: {
-                    Text(reply.text)
-                        .font(Comic.font(14 * scale))
-                        .lineSpacing(3 * scale)
-                        .foregroundStyle(Comic.ink)
-                        .lineLimit(reply.lineLimit)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(reply.help)
+                // Not a Button: a button's label takes every click, and a link in the text has to get its own. The
+                // text view follows a click on a link; a click anywhere else on the text is the balloon's, as it
+                // always was (ADR 0038).
+                LinkedText(
+                    runs: reply.runs, font: Comic.nsFont(14 * scale), lineSpacing: 3 * scale,
+                    lineLimit: reply.lineLimit, click: .balloonTextClicked, fillsWidth: true, sink: text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isButton)
+                    .help(reply.help)
                 // She is still at it after saying this: what she is thinking goes under what she said, in grey and
                 // one line high, so the reply stays in front (ADR 0025).
                 if let thinking = reply.thinking {
