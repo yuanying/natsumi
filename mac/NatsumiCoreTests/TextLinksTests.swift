@@ -79,6 +79,16 @@ struct TextLinksTests {
     @Test("大文字で書かれたスキームもリンクにし、書かれたとおりに出す")
     func upperCaseScheme() {
         #expect(TextLinks.runs(in: "HTTPS://Example.com/A") == [link("HTTPS://Example.com/A")])
+        #expect(TextLinks.runs(in: "見て hTtP://example.com") == [.plain("見て "), link("hTtP://example.com")])
+    }
+
+    @Test("URL でない http の綴りや全角の ｈｔｔｐ があっても、その後ろの URL を見つける")
+    func lookalikesBeforeAURL() {
+        #expect(TextLinks.runs(in: "httpd と http:だけ と ｈｔｔｐｓ://example.com と https://example.org") == [
+            .plain("httpd と http:だけ と ｈｔｔｐｓ://example.com と "), link("https://example.org"),
+        ])
+        #expect(TextLinks.runs(in: "末尾が h") == [.plain("末尾が h")])
+        #expect(TextLinks.runs(in: "末尾が htt") == [.plain("末尾が htt")])
     }
 
     @Test("途中で切った本文では、切れ目まで続く URL はリンクにしない")
