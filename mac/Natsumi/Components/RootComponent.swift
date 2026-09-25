@@ -196,6 +196,7 @@ final class RootComponent: Component {
         defer { draining = false }
         repeat {
             var afterDrawing: [UIEffect] = []
+            var mayHaveChangedProps = false
             while !pending.isEmpty {
                 for effect in mediator.handle(pending.removeFirst()) {
                     switch effect {
@@ -203,8 +204,11 @@ final class RootComponent: Component {
                     default: perform(effect)
                     }
                 }
+                mayHaveChangedProps = mayHaveChangedProps || mediator.mayHaveChangedProps
             }
-            refresh()
+            // A row of the history coming into or going out of sight, many times a second while it is scrolled,
+            // leaves the props as they are unless it reads a reply; deriving them for it is what made scrolling stutter.
+            if mayHaveChangedProps { refresh() }
             for effect in afterDrawing { perform(effect) }
         } while !pending.isEmpty
     }

@@ -13,7 +13,7 @@ public struct MessageTime: Equatable, Sendable {
     }
 
     /// The labels of the history's dates, in time order; nil where the server's timestamp could not be read. The
-    /// history is derived again whenever the rows in sight change, so the calendar is asked once a day, not once a
+    /// history is derived again at every event that may change it, so the calendar is asked once a day, not once a
     /// row: within a day, the time is how far the date is from its start.
     public func labels(_ dates: [Date?]) -> [String?] {
         let today = calendar.dateInterval(of: .day, for: now)

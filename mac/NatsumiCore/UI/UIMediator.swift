@@ -16,10 +16,22 @@ public struct UIMediator {
         self.state = UIState(session: SessionMachine(deviceId: nil, makeRequestId: makeRequestId))
     }
 
+    /// Whether the last event may have changed what the props are derived from. A row coming into or going out of
+    /// sight changes only which rows are in sight, which nothing is drawn from, unless it reads a reply. While the
+    /// history is scrolled that happens many times a second, and the root need not derive the props again for it.
+    public private(set) var mayHaveChangedProps = true
+
     public mutating func handle(_ event: UIEvent) -> [UIEffect] {
+        let conversation = state.conversation
         let effects = decide(event)
         settle()
-        return effects + readSeenReplies()
+        let all = effects + readSeenReplies()
+        if case .historyRowVisibilityChanged = event {
+            mayHaveChangedProps = state.conversation != conversation
+        } else {
+            mayHaveChangedProps = true
+        }
+        return all
     }
 
     // MARK: - Deciding

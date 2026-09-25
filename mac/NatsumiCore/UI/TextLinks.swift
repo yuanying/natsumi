@@ -25,6 +25,9 @@ public enum TextLinks {
     /// The text in runs, in order; joined they are the text again. `isCut` says the text was cut short at its end, as
     /// a card's preview is: a URL that runs into the cut is not whole, so it is left as words.
     public static func runs(in text: String, isCut: Bool = false) -> [TextRun] {
+        // The history is derived again at every event that may change it, every row of it. Most messages have no URL,
+        // and they are passed over without the scan.
+        guard mayHaveScheme(text) else { return text.isEmpty ? [] : [.plain(text)] }
         var runs: [TextRun] = []
         var plainStart = text.startIndex
         var index = text.startIndex
@@ -53,6 +56,7 @@ public enum TextLinks {
 
     /// The URL that starts at `start`, if one does.
     private static func url(in text: String, at start: String.Index) -> (url: URL, end: String.Index)? {
+        guard text[start] == "h" || text[start] == "H" else { return nil }
         let head = text[start...].prefix(8).lowercased()
         guard let scheme = schemes.first(where: { head.hasPrefix($0) }) else { return nil }
         // The scheme starts a word: "xhttps://" is not a URL, but "詳しくはhttps://" is.
@@ -68,6 +72,22 @@ public enum TextLinks {
               let url = URL(string: String(text[start..<end])), url.host?.isEmpty == false, canOpen(url)
         else { return nil }
         return (url, end)
+    }
+
+    /// Whether "http" is written somewhere in the text, in any case: looked for in its bytes, where it is quick.
+    private static func mayHaveScheme(_ text: String) -> Bool {
+        var text = text
+        return text.withUTF8 { bytes in
+            guard bytes.count >= 4 else { return false }
+            // `| 0x20` lowers an ASCII letter; the bytes of other characters are all above ASCII and match nothing.
+            for index in 0...(bytes.count - 4) where bytes[index] | 0x20 == UInt8(ascii: "h") {
+                if bytes[index + 1] | 0x20 == UInt8(ascii: "t"), bytes[index + 2] | 0x20 == UInt8(ascii: "t"),
+                   bytes[index + 3] | 0x20 == UInt8(ascii: "p") {
+                    return true
+                }
+            }
+            return false
+        }
     }
 
     private static func isURLCharacter(_ character: Character) -> Bool {
