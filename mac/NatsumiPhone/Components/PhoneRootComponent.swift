@@ -162,6 +162,8 @@ final class PhoneRootComponent: PhoneComponent {
             registerForNotifications()
         case .tidyNotifications(let value):
             tidy(value)
+        case .openLink(let url):
+            UIApplication.shared.open(url)
         case .loadAvatar:
             let bundled = Bundle.main.resourceURL?.appendingPathComponent("Avatars/natsumi", isDirectory: true)
             deliver(.avatarLoaded(AvatarLoader.resolve(candidates: bundled.map { [$0] } ?? [])))

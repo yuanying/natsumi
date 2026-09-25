@@ -125,7 +125,7 @@ private struct HistoryList: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(props.rows) { row in
-                        MessageRow(props: row, avatar: props.avatar)
+                        MessageRow(props: row, avatar: props.avatar, send: send)
                             // What the owner has in sight is what they have read, while the window is theirs
                             // (ADR 0022). Half a row showing counts as seeing it.
                             .onScrollVisibilityChange(threshold: 0.5) { isVisible in
@@ -133,7 +133,7 @@ private struct HistoryList: View {
                             }
                     }
                     ForEach(props.outgoing) { item in
-                        OutgoingRow(props: item) { send(.outgoingDismissed(requestId: item.requestId)) }
+                        OutgoingRow(props: item, send: send) { send(.outgoingDismissed(requestId: item.requestId)) }
                     }
                     if props.isThinking {
                         HStack(spacing: 6) {
@@ -157,6 +157,7 @@ private struct HistoryList: View {
 private struct MessageRow: View {
     let props: HistoryRowProps
     let avatar: AvatarArt
+    let send: EventSink
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
@@ -193,7 +194,10 @@ private struct MessageRow: View {
                 }
                 .foregroundStyle(Comic.ink)
             }
-            Text(props.text).font(Comic.font(13)).lineSpacing(3).textSelection(.enabled)
+            LinkedText(
+                runs: props.runs, font: Comic.nsFont(13), color: props.isOwner ? .labelColor : .black, lineSpacing: 3,
+                isSelectable: true, sink: send)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .foregroundStyle(props.isOwner ? Color.primary : Comic.ink)
         .padding(.horizontal, 12)
@@ -248,13 +252,17 @@ private struct FaceView: View {
 
 private struct OutgoingRow: View {
     let props: OutgoingRowProps
+    let send: EventSink
     let dismiss: () -> Void
 
     var body: some View {
         HStack {
             Spacer(minLength: 40)
             VStack(alignment: .trailing, spacing: 2) {
-                Text(props.text)
+                LinkedText(
+                    runs: props.runs, font: .systemFont(ofSize: NSFont.systemFontSize), color: .labelColor,
+                    isSelectable: true, sink: send)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))

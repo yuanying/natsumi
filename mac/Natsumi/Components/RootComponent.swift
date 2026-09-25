@@ -538,6 +538,8 @@ final class RootComponent: Component {
             showSettings()
         case .hideSettings:
             settings.panel.orderOut(nil)
+        case .openLink(let url):
+            NSWorkspace.shared.open(url)
         case .terminate:
             NSApp.terminate(nil)
         }
