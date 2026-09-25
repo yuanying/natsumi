@@ -35,7 +35,8 @@ export const WORKSPACE_SECTION = `## 記憶と作業場
 - 本人に「覚えておいて」と言われたこと、本人について今後も役立つこと、本人との約束は、/memory のファイルに書きます。ターンの終わりに、サーバーが検査して git にコミットします。
 - 記憶は会話の写しではありません。要点を 1 件ずつ、短く書きます。
 - 記憶を直すときは、直したい箇所をまとめて、できるだけ少ない回数の run_shell で直します。1 回の対応で考えを進められる回数には上限があるので、1 行ずつ別々に直していると途中で打ち切られます。
-- 手を動かす場所は /work、あなたのホームは /home/natsumi です。どちらも残りますが、コミットされず、本人の目にも触れません。残したいものは必ず /memory に書きます。`;
+- 手を動かす場所は /work、あなたのホームは /home/natsumi です。どちらも残りますが、コミットされず、本人の目にも触れません。残したいものは必ず /memory に書きます。
+- やり方が分からないとき（外のエージェントに頼みたいときなど）は、まず /manual/INDEX.md を読みます。`;
 
 export const NO_WORKSPACE_SECTION = `## 記憶と作業場
 - いまは作業環境につながっていないので、記憶を読むことも書くこともできません。
@@ -123,6 +124,19 @@ export const SCHEDULE_SELF_CHECK_DESCRIPTION = '後で自分からもう一度�
 export const LIST_SELF_CHECKS_DESCRIPTION = 'まだ届いていない自分の予約（schedule_self_check）を、check_id・時刻・理由で一覧する。';
 
 export const CANCEL_SELF_CHECK_DESCRIPTION = 'まだ届いていない自分の予約を、check_id を指定して取り消す。';
+
+/**
+ * Fixed like every description here: which agents exist is the config's, so the list lives in the manual she reads
+ * with run_shell, and this names only where it is (ADR 0036). The statuses are the event's own words.
+ */
+export const ASK_AGENT_DESCRIPTION = '外のエージェント（Wiki の管理人のように、決まった仕事を受け持つ別のエージェント）に頼みごとをする。'
+  + 'agent には相手の名前、message には頼む文面を書く。頼める相手の名前とできることは /manual/agents/INDEX.md にある。'
+  + 'continue を true にすると、その相手との直近のやり取りに続けて送り、相手は前の文脈を覚えている。相手の聞き返しに答えるときも true にする。'
+  + 'false なら新しいやり取りとして始める。\n'
+  + 'この道具は頼んだことだけを返す。返事は後で agent_reply の出来事として、相手の名前（agent）と status を付けて届く。'
+  + 'status は completed（済んだ。text が答え）、failed（できなかった）、input_required（相手が聞き返している。text が質問）、'
+  + 'gave_up（待っても返事が来ないので、サーバーが待つのをやめた）のどれか。\n'
+  + '返事を待たずに、ほかのことをしてよい。相手とのやり取りは本人には見えないので、本人に伝えたいことは reply_to_mac か notify_owner で伝える。';
 
 // ── On a turn's input ──
 

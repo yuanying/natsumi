@@ -16,10 +16,22 @@ public struct UIMediator {
         self.state = UIState(session: SessionMachine(deviceId: nil, makeRequestId: makeRequestId))
     }
 
+    /// Whether the last event may have changed what the props are derived from. A row coming into or going out of
+    /// sight changes only which rows are in sight, which nothing is drawn from, unless it reads a reply. While the
+    /// history is scrolled that happens many times a second, and the root need not derive the props again for it.
+    public private(set) var mayHaveChangedProps = true
+
     public mutating func handle(_ event: UIEvent) -> [UIEffect] {
+        let conversation = state.conversation
         let effects = decide(event)
         settle()
-        return effects + readSeenReplies()
+        let all = effects + readSeenReplies()
+        if case .historyRowVisibilityChanged = event {
+            mayHaveChangedProps = state.conversation != conversation
+        } else {
+            mayHaveChangedProps = true
+        }
+        return all
     }
 
     // MARK: - Deciding
@@ -86,6 +98,10 @@ public struct UIMediator {
 
         case .reconnectTimerFired:
             return apply(state.session.reconnectTimerFired())
+
+        case .systemWoke:
+            // Whatever happened to the socket while the Mac slept, a new one catches up from where the stream was.
+            return apply(state.session.reconnectNow())
 
         // MARK: The character and the panels
         case .characterClicked:
@@ -239,6 +255,11 @@ public struct UIMediator {
         case .outgoingDismissed(let requestId):
             state.session.dismiss(requestId: requestId)
             return []
+
+        case .linkClicked(let url):
+            // Following a link is not reading: the balloon and the notices stay as they are, and only the browser
+            // opens. The views are given http and https links only; anything else is refused here too (ADR 0038).
+            return TextLinks.canOpen(url) ? [.openLink(url)] : []
 
         case .balloonTextClicked:
             // Opening a reply reads nothing: only the × tells the server anything.

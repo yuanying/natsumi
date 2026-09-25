@@ -90,9 +90,9 @@ host_check "no-new-privileges is set" "$(inspect '{{json .HostConfig.SecurityOpt
 host_check "pids are limited" "$(inspect '{{.HostConfig.PidsLimit}}')" 256
 host_check "memory is limited, with no swap" "$(inspect '{{.HostConfig.Memory}}:{{.HostConfig.MemorySwap}}')" "1073741824:1073741824"
 host_check "cpu is limited" "$(inspect '{{.HostConfig.NanoCpus}}')" 2000000000
-host_check "only the four writable places and the socket are mounted" \
+host_check "only the four writable places, the list of agents and the socket are mounted" \
   "$(inspect '{{range .Mounts}}{{.Destination}}:{{.RW}} {{end}}' | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')" \
-  "/home/natsumi:true /memory/.git:false /memory:true /run/natsumi-workspace:true /work:true "
+  "/home/natsumi:true /manual/agents:false /memory/.git:false /memory:true /run/natsumi-workspace:true /work:true "
 host_check "the container itself is given no environment beyond PATH" \
   "$(inspect '{{range .Config.Env}}{{.}} {{end}}' | tr ' ' '\n' | sed '/^$/d;s/=.*//' | sort | tr '\n' ' ')" "PATH "
 
@@ -120,6 +120,10 @@ check "the history of memory is not writable" 'git -C /memory log --oneline | he
 check "work and home are writable and can run what is put there" \
   'printf "#!/bin/bash\necho from-work\n" > /work/t.sh && chmod +x /work/t.sh && /work/t.sh && echo ok > /home/natsumi/t && cat /home/natsumi/t' \
   'r.exitCode === 0 && r.stdout === "from-work\nok\n"'
+# The manual of ADR 0036: in the image, and the list of agents natsumi wrote on its start, both only for reading.
+check "the manual and the list of agents are readable and not writable" \
+  'head -1 /manual/INDEX.md /manual/agents/INDEX.md; echo x > /manual/x; echo x > /manual/agents/x' \
+  '/# マニュアル/.test(r.stdout) && /# 頼める相手/.test(r.stdout) && (r.stderr.match(/Read-only file system/g) || []).length === 2'
 check "root is not writable" 'echo x > /usr/bin/x; echo x > /x' 'r.exitCode !== 0 && (r.stderr.match(/Read-only file system/g) || []).length === 2'
 check "the socket directory cannot be changed" 'echo x > /run/natsumi-workspace/x; find /run/natsumi-workspace -delete' \
   'r.exitCode !== 0 && /Permission denied/.test(r.stderr)'

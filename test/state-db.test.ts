@@ -81,6 +81,8 @@ test('the schema keeps the conversation shown to the owner and only references t
     const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(c => c.name);
     for (const column of columns) {
       if (table === 'conversation_messages' && column === 'text') continue;
+      // An agent's answer waits here until it is handed to Pi, and is emptied then: the record is the Pi session's.
+      if (table === 'agent_replies' && column === 'text') continue;
       assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response|thinking|tool_calls?)$/i, `${table}.${column}`);
     }
   }
@@ -286,4 +288,31 @@ test('schema 11 keeps the conversation and its references, and lets a reply name
     /constraint/i);
   assert.throws(() => db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
     VALUES ('event-x', 'mac-message', 'message-missing', 'queued', 'x', 'x')`).run(), /constraint/i);
+}));
+
+test('schema 12 adds the outside agents\' exchanges beside what was there, and holds an answer only to its event', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 11));
+  db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
+    VALUES ('event-1', 'ping', NULL, 'no-reply', 'x', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS).applied, [12]);
+  assert.deepEqual(plainRows(db.prepare('SELECT event_id, state FROM loop_events').all()), [{ event_id: 'event-1', state: 'no-reply' }]);
+
+  const task = db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at, updated_at)
+    VALUES ('wiki', ?, 'context-1', ?, 'x', 'x', 'x')`);
+  task.run('task-1', 'waiting');
+  // One row per task of an agent, and only the states the server writes.
+  assert.throws(() => task.run('task-1', 'waiting'), /constraint/i);
+  assert.throws(() => task.run('task-2', 'working'), /constraint/i);
+  const reply = db.prepare(`INSERT INTO agent_replies (event_id, agent, status, text, created_at) VALUES (?, 'wiki', ?, '', 'x')`);
+  reply.run('event-1', 'completed');
+  // An answer belongs to one event that exists.
+  assert.throws(() => reply.run('event-missing', 'completed'), /constraint/i);
+  assert.throws(() => reply.run('event-1', 'failed'), /constraint/i);
+  db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
+    VALUES ('event-2', 'agent-reply', NULL, 'queued', 'x', 'x')`).run();
+  assert.throws(() => reply.run('event-2', 'input_required'), /constraint/i);
+  // One latest exchange per agent.
+  const context = db.prepare(`INSERT INTO agent_contexts (agent, context_id, task_id, updated_at) VALUES ('wiki', ?, NULL, 'x')`);
+  context.run('context-1');
+  assert.throws(() => context.run('context-2'), /constraint/i);
 }));

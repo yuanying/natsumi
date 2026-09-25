@@ -53,6 +53,8 @@ public enum UIEvent: Equatable, Sendable {
     case socketReceived(Data)
     case socketClosed(CloseReason)
     case reconnectTimerFired
+    /// The Mac woke from sleep. The socket may have died while it slept without a close ever arriving.
+    case systemWoke
 
     // MARK: The character
 
@@ -85,6 +87,9 @@ public enum UIEvent: Equatable, Sendable {
 
     /// "続きは履歴で", under a reply or a notice.
     case historyLinkClicked
+
+    /// A URL in what she or the owner wrote, in the balloon, a notice or the history (ADR 0038).
+    case linkClicked(URL)
 
     // MARK: The conversation window
 

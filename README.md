@@ -40,6 +40,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `publicOrigin`: クライアントが使う origin（例: `https://natsumi.example.net:8443`）。https に限ります。
    - `listen`: 待ち受けアドレス・ポート・TLS。`"host": "::"` で IPv4 と IPv6 の両方で待ち受けます。
      `tls` には証明書と鍵のファイル、または Let's Encrypt から自動取得する `acme` を指定します。
+     Kubernetes の Ingress のように手前のプロキシで TLS を終端するときは、`"tls": false` と `"behindProxy": true` を指定します。
    - `github`: OAuth App の client ID、client secret の参照（`clientSecretEnv` か `clientSecretFile`）、callback URL、
      許可するアカウントの数値 ID（`allowedUserId`）。
    - `loop`（省略可）: 本人のタイムゾーン `timeZone`（例: `Asia/Tokyo`、既定 `UTC`）、夜の切り替えの時刻 `nightlyRotationAt`
@@ -60,6 +61,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      runner の応答を待つ秒数 `shellWaitSeconds`（既定 75 秒。runner 側の応答の上限 60 秒より長くします）、
      永続する書き場所の合計の目安 `workspaceSizeWarnBytes`（既定 1 GiB。超えると次のターンで natsumi に知らせます）。
    - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
+   - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
 4. ビルドして起動します。
 
 ```sh
@@ -68,8 +70,8 @@ node dist/src/server/main.js serve --config config.local.json --data-dir <data d
 ```
 
 `--data-dir` を省略すると起動 cwd を data directory とします。初回起動で `memory/`（記憶のリポジトリ）、
-`work/` と `home/`（作業環境の `/work` と `/home/natsumi`）、`.natsumi/`（状態 DB・ロック・状態ファイル）を
-作ります。既存のファイルは上書きしません。
+`work/` と `home/`（作業環境の `/work` と `/home/natsumi`）、`agents/`（作業環境の `/manual/agents`。頼める相手の一覧）、
+`.natsumi/`（状態 DB・ロック・状態ファイル）を作ります。既存のファイルは上書きしません。
 同じ data directory で 2 つ目のサーバーを起動すると拒否します。異常終了後のロックは OS が解放するため、そのまま再起動できます。
 SIGTERM / SIGINT で停止します。
 
@@ -153,14 +155,19 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
 
 ### TLS を設定する
 
-TLS はサーバー自身で終端します（[ADR 0006](docs/adr/0006-github-login-and-transport.md)）。
+Docker で動かすときは、TLS はサーバー自身で終端します（[ADR 0006](docs/adr/0006-github-login-and-transport.md)）。
+Ingress の後ろに置くときは、TLS は Ingress で終端し、サーバーは平文で待ち受けます（[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）。
 
 - `publicOrigin` のホスト名に対する証明書と秘密鍵を PEM で用意し、`listen.tls.certFile` / `keyFile` に指定します。
   中間証明書がある場合は `certFile` にサーバー証明書に続けて連結します。
 - Mac からの接続では、Mac が信頼する証明書（公的な CA が発行したもの、または Mac に登録した私的な CA のもの）を使います。
 - ファイルで渡した証明書を更新したら、サーバーを再起動します。
-- 同じホストのリバースプロキシで TLS を終端する場合に限り、`"host": "127.0.0.1"`（または `"::1"`）と `"tls": false` を指定できます。
-  loopback 以外のアドレスで `tls: false` を指定すると起動を拒否します。
+- 同じホストのリバースプロキシで TLS を終端する場合は、`"host": "127.0.0.1"`（または `"::1"`）と `"tls": false` を指定できます。
+- Ingress の後ろに置く場合は、`"tls": false` に `"behindProxy": true` を足すと、loopback 以外のアドレス（例: `"::"`）でも平文で待ち受けます。
+  Ingress のコントローラは Pod の IP につなぐので、loopback では届かないためです。平文になるのは Ingress から Pod までの区間です。
+  `publicOrigin` は、クライアントから見た https の origin のままにします。
+- `behindProxy` を付けずに loopback 以外のアドレスで `tls: false` を指定すると、起動を拒否します。
+  `behindProxy` は `tls: false` のときだけ指定できます。
 
 ### Let's Encrypt で証明書を自動取得する
 
@@ -246,6 +253,53 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml -f compose.apns.exam
 - ログには端末の ID と APNs の応答だけを出し、本文・device token・鍵は出しません。
 - 登録は `.natsumi/state.sqlite` の `push_registrations`（migration 10）に持ちます。
 
+### 外のエージェントに頼む
+
+natsumi は、Wiki の管理人のような外の特化エージェントに `ask_agent` で頼めます
+（[ADR 0025](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[ADR 0035](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、
+[ADR 0036](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)）。相手とは A2A 1.0（JSON-RPC）で話し、公式の SDK
+`@a2a-js/sdk` を使います。設定に `a2a` がなければ、`ask_agent` は頼まずに断ります（ツール自体は常にあります）。
+
+1. 呼び出しの token を用意します。相手が確かめる ServiceAccount の token（audience `a2a`）です。
+   Kubernetes では Pod に差し込まれる projected token のパスを、Docker では手で置いたファイルを使います。
+   Docker では `secrets/a2a-token` などに置き、コンテナのユーザーだけが読めるようにします。`secrets/` は Git の追跡対象外です。
+2. 設定に `a2a` を足します。値は架空の例です。
+
+   ```json
+   "a2a": {
+     "tokenFile": "/run/secrets/natsumi_a2a_token",
+     "agents": {
+       "wiki": { "url": "https://agents.example.net/wiki-keeper/" }
+     }
+   }
+   ```
+
+   | 項目 | 必須 | 既定 | 中身 |
+   | --- | --- | --- | --- |
+   | `a2a.agents.<名前>.url` | 必須 | | 相手の A2A の受け口。https に限ります（loopback だけ http）。名前は英小文字・数字・ハイフンで 32 文字まで。natsumi は名前だけを扱います |
+   | `a2a.tokenFile` | 必須 | | token のファイル（絶対パス）。呼び出しのたびに読み直すので、更新された token は再起動なしで使われます |
+   | `a2a.pollIntervalSeconds` | | 15 | 返事を待っている依頼を取りに行く間隔（秒、5 以上） |
+   | `a2a.giveUpAfterHours` | | 24 | 返事を待ち続ける上限（時間）。最後に送ってからこの時間が過ぎると、待つのをやめて natsumi に知らせます |
+
+3. Compose では override の [compose.a2a.example.yaml](compose.a2a.example.yaml) を足して、token を `/run/secrets/natsumi_a2a_token` にマウントします。
+   既定ではホストの `secrets/a2a-token` を読みます（`NATSUMI_A2A_TOKEN_FILE` で変更できます）。
+   token を更新するときは、同じファイルに中身を書き込みます（別のファイルに置き換えると、マウントが古いほうを指したままになります）。
+
+```sh
+docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
+```
+
+- 頼むと、サーバーは相手に送ってすぐ「頼んだ」とだけ natsumi に返します。返事はサーバーが `a2a.pollIntervalSeconds` ごとに
+  取りに行き、済んだ・できなかった・相手が聞き返している・待つのをやめた、のどれかになったら、相手の名前つきの出来事として
+  natsumi に届けます。依頼の ID は natsumi に見せません。相手の聞き返しには、natsumi が同じ相手との直近のやり取りに続けて答えます。
+- 待っている依頼と、相手ごとの直近のやり取りは `.natsumi/state.sqlite`（migration 12）に残るので、再起動しても取りに行き直します。
+  返事の本文は、natsumi に渡すまでだけそこに置き、渡したら消します（以後は Pi の session にあります）。
+- 相手とのやり取りは Mac の会話には出ません。本人に伝えることは natsumi が返事や知らせで伝えます。
+- 頼める相手の一覧は、サーバーが起動のたびに各相手の Agent Card（token は付けずに取ります）から data directory の
+  `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
+  取れなかった相手は「今は取れない」と書きます。URL と token は書きません。相手の説明が変わったら、再起動で反映します。
+- token は natsumi のコンテナにだけマウントし、作業環境には見せません。ログには相手の名前と失敗の種類だけを出し、頼んだ文面や返事は出しません。
+
 ### natsumi の作業環境（natsumi-workspace）
 
 natsumi は `run_shell` でコマンドを動かします。コマンドは natsumi の中ではなく、閉じ込めたコンテナ
@@ -271,11 +325,16 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   | `/home/natsumi` | する | しない | natsumi のホーム。`natsumi-data` の `home/` |
   | `/tmp` | しない | — | 128 MB の tmpfs。コンテナの再起動で消えます |
 
+  ほかに、読むだけの場所が 2 つあります（[ADR 0036](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)）。
+  `/manual` は natsumi 向けのマニュアル（リポジトリの [manual/](manual/) を image に焼いたもの）で、
+  `/manual/agents` は natsumi が起動のたびに書き出す、頼める相手の一覧（`natsumi-data` の `agents/`、読み取り専用）です。
+  system prompt には「やり方が分からないときは `/manual/INDEX.md` を読む」の 1 文だけがあり、使い方の説明はマニュアルの側に足します。
+
   `/work` と `/home/natsumi` はサーバーが見ません。ターンの終わりの検査もコミットも掛からず、
   git の差分でも見られません。中を見るときはオーナーが自分でコンテナに入ります。
 - 閉じ込め
   - ネットワークはありません（`network_mode: none`）。
-  - `natsumi-data` の上の 3 つだけをマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
+  - `natsumi-data` の上の 3 つと、読み取り専用の `agents/` だけをマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
   - 非 root で動き、全 capability を外し、`no-new-privileges` を付けます。
   - `/tmp` には `noexec` を付けますが、**境界としては数えません。** インタプリタがある以上、
     `python3 /tmp/x.py` は止まりません。
@@ -292,9 +351,22 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   `TZ` はサーバーがコマンドごとに `loop.timeZone` を送ります（`NATSUMI_TIME_ZONE` は runner 側の既定値です）。
 - 大きさ: `/memory`・`/work`・`/home/natsumi` の合計が `loop.workspaceSizeWarnBytes`（既定 1 GiB）を超えると、
   次のターンで natsumi に内訳つきで知らせます。強制はしないので、片づけないままだといつかはディスクが埋まります。
-- UID: これらのファイルは所有者だけが読めるので、`natsumi-workspace` は natsumi と同じ UID で動かします（既定は 1000）。
+- UID: Docker の構成では、`natsumi-workspace` は natsumi と同じ UID で動かします（既定は 1000）。
   natsumi を別の UID で動かすときは、`NATSUMI_WORKSPACE_UID` に同じ値を入れます。
-- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/` を作るので、`natsumi-workspace` は
+- 別の UID で動かす場合（Kubernetes の構成、[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）は、サーバーと作業環境
+  （と ssh でログインするユーザー）を共有のグループに入れ、そのグループで `/memory`・`/work`・`/home/natsumi` を読み書きします。
+  - サーバーと runner は umask 007 で動きます。新しいファイルはグループが読み書きでき、グループ以外には見えません。
+    ssh でログインするユーザーも umask 007 にしてください。
+  - サーバーは data directory の `memory/`・`work/`・`home/` を、setgid 付きの 2770 で作ります。
+    中に作られるファイルとディレクトリは、誰が作っても共有のグループになります。
+    相手の一覧の `agents/` も同じ作り方で、一覧のファイルはグループが読める 0640 で書きます（作業環境からは読むだけです）。
+  - サーバーだけが使うもの（`.natsumi/` の SQLite と証明書、Pi の状態領域）は 0700 のディレクトリに置かれ、グループからも見えません。
+  - サーバーの git は、持ち主の違う記憶のリポジトリを `safe.directory` で扱い、そのままコミットします。
+  - 既にあるディレクトリの持ち主と権限は変えません。既存のデータを移すときは、3 つの場所の中身のグループを共有のグループにし、
+    グループの書き込みと、ディレクトリの setgid を付けてください。umask か setgid が外れると、サーバーが記憶をコミットできなくなります。
+  - runner は `-socket` のディレクトリが無ければ作ります。持ち主の違う volume（Pod の `emptyDir` など）では、
+    その下のサブディレクトリをソケットの置き場に指定します（例: `/run/natsumi-workspace/runner/runner.sock`）。
+- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/`・`agents/` を作るので、`natsumi-workspace` は
   natsumi が healthy になってから起動します。
 - 閉じ込めの確認: [scripts/check-workspace-sandbox.sh](scripts/check-workspace-sandbox.sh) が、使い捨ての project で
   2 つのコンテナを起動し、コンテナの形（ネットワーク、マウント、権限、資源の上限、見えない秘密、環境変数）と、
@@ -331,6 +403,13 @@ docker compose -f compose.yaml -f compose.ipv6.example.yaml up -d
 - `natsumi-net` を再作成すると、natsumi も再起動します。
 - 名前空間にはトークンのアドレスのほかに自動設定のアドレスが残ることがあり、外向きの通信の送信元はそちらになり得ます。
 
+### 公開の image
+
+版の tag（`v0.x.y`）を push すると、GitHub Actions（[.github/workflows/images.yml](.github/workflows/images.yml)）が
+テストを通したうえで、`ghcr.io/yuanying/natsumi`（サーバー）と `ghcr.io/yuanying/natsumi-workspace`（作業環境）を
+amd64 でビルドして push します（[ADR 0033](docs/adr/0033-running-on-kubernetes.md)）。image の tag は版の tag そのものです。
+`latest` は付けません。動かす版は、環境の設定の側で固定します。
+
 ## Mac アプリ
 
 `mac/` に Xcode プロジェクトがあります（[ADR 0010](docs/adr/0010-mac-app-structure.md)）。macOS 15 以降と Xcode 27 を使います。
@@ -345,6 +424,10 @@ xcodebuild test -project mac/Natsumi.xcodeproj -scheme Natsumi -destination 'pla
   テストは外部ネットワークにもサーバーにも接続しません。Keychain を使うテストがあるため、ログイン中のユーザーの GUI のセッション
   （ターミナル.app など）で実行してください。SSH のセッションからはキーチェーンを開けません。
 - build 結果は `mac/build/`（Git の追跡対象外）にでき、アプリは `mac/build/Build/Products/Debug/Natsumi.app` です。
+- Mac がスリープから起きると、アプリはサーバーにつなぎ直し、寝ている間の会話（iPhone で話した分など）を取り込みます。
+  接続が開いている間は 20 秒ごとに ping を送り、答えが無ければつなぎ直します（[ADR 0037](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)）。
+- 本文の中の `http://`・`https://` の URL は下線付きのリンクになり、クリックすると既定のブラウザで開きます。
+  吹き出しや知らせのリンクを開いても既読にはなりません（[ADR 0038](docs/adr/0038-links-in-what-she-says.md)）。
 
 ### 使い方
 
@@ -442,6 +525,7 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
 - 右上のボタンで会話の履歴と設定を開きます。知らせのカードを押しても履歴が開きます。
   履歴で見えた返事は既読に、見えた知らせは確認済みになります。
 - 設定には、サーバー・接続の状態・この端末の ID と、ログアウトがあります。
+- 吹き出しと履歴の本文の `http://`・`https://` の URL はリンクになり、タップすると既定のブラウザで開きます（[ADR 0038](docs/adr/0038-links-in-what-she-says.md)）。
 - アプリが裏に回ると接続を切り、前に戻ると続きから同期し直します。
 - 裏にいる間の返事と知らせは、通知で届きます（[ADR 0029](docs/adr/0029-push-notifications-on-the-iphone.md)。サーバーの設定は上の「iPhone への通知」）。
   ログインすると通知を許可するか尋ねられます。本文はこの iPhone の鍵で暗号化されて届き、アプリの拡張 `NatsumiNotifications` が開いて、
@@ -533,7 +617,7 @@ TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json)（証明書ファイル）と [ACME の設定例](config.acme.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。

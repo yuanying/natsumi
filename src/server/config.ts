@@ -59,8 +59,13 @@ export interface AcmeConfig {
 export interface ListenConfig {
   host: string;
   port: number;
-  /** `false` (plaintext) is accepted only on a loopback host, for a reverse proxy on the same host (ADR 0006). */
+  /**
+   * `false` (plaintext) is accepted on a loopback host, for a reverse proxy on the same host (ADR 0006), and beyond
+   * loopback only with `behindProxy` (ADR 0033).
+   */
   tls: TlsConfig | { acme: AcmeConfig } | false;
+  /** TLS ends at a proxy in front, such as a Kubernetes Ingress, so plaintext may listen beyond loopback (ADR 0033). */
+  behindProxy?: true;
 }
 
 /** A secret named by environment variable or read from a secret mount; never the value itself. */
@@ -155,6 +160,25 @@ export interface ApnsConfig {
   key: SecretReference;
 }
 
+/** The outside agents natsumi may ask over A2A (ADR 0025, ADR 0035, ADR 0036). Without it `ask_agent` refuses. */
+export interface A2AConfig {
+  /** The caller's token: a projected ServiceAccount token on Kubernetes, a file put in place by hand elsewhere. Read afresh for every call. */
+  tokenFile: string;
+  /** How often a task still waiting for an answer is fetched again. */
+  pollIntervalSeconds: number;
+  /** How long a task may go unanswered before natsumi is told the server gave up on it. */
+  giveUpAfterHours: number;
+  /** Name → where the agent answers. natsumi only ever sees the names. */
+  agents: Record<string, { url: string }>;
+}
+
+export const DEFAULT_A2A_POLL_INTERVAL_SECONDS = 15;
+export const DEFAULT_A2A_GIVE_UP_AFTER_HOURS = 24;
+/** Under this the server would ask the agents more often than any answer could change. */
+const MIN_A2A_POLL_INTERVAL_SECONDS = 5;
+/** An agent's name as natsumi writes it in `ask_agent`: short, lower case, no spaces. */
+const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -163,6 +187,7 @@ export interface ServerConfig {
   github: GitHubConfig;
   loop: LoopConfig;
   apns?: ApnsConfig;
+  a2a?: A2AConfig;
 }
 
 export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
@@ -180,6 +205,7 @@ const SECTIONS = {
   github: parseGitHub,
   loop: parseLoop,
   apns: parseApns,
+  a2a: parseA2A,
 } satisfies { [K in keyof ServerConfig]: Section<ServerConfig[K]> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -213,6 +239,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     github: SECTIONS.github(required(root, 'github', ''), 'github'),
     loop: SECTIONS.loop(root.loop ?? {}, 'loop'),
     ...(root.apns === undefined ? {} : { apns: SECTIONS.apns(root.apns, 'apns') }),
+    ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
   };
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
@@ -284,7 +311,7 @@ function parsePublicOrigin(value: unknown, path: string): string {
 
 function parseListen(value: unknown, path: string): ListenConfig {
   const listen = object(value, path);
-  onlyKeys(listen, path, ['host', 'port', 'tls']);
+  onlyKeys(listen, path, ['host', 'port', 'tls', 'behindProxy']);
   const host = nonEmptyString(required(listen, 'host', path), `${path}.host`);
   if (host !== 'localhost' && isIP(host) === 0) throw new ConfigError(`${path}.host`, 'must be an IP address or localhost');
   const port = required(listen, 'port', path);
@@ -293,10 +320,18 @@ function parseListen(value: unknown, path: string): ListenConfig {
   }
   const tlsPath = `${path}.tls`;
   const tls = required(listen, 'tls', path);
+  const behindProxy = listen.behindProxy ?? false;
+  if (typeof behindProxy !== 'boolean') throw new ConfigError(`${path}.behindProxy`, 'must be true or false');
+  if (behindProxy && tls !== false) {
+    throw new ConfigError(`${path}.behindProxy`, 'is for tls: false; the server does not terminate TLS behind a proxy');
+  }
   if (tls === false) {
-    // Plaintext is never exposed beyond this host: the only exception is loopback behind a local TLS proxy.
-    if (!isLoopbackHost(host)) throw new ConfigError(tlsPath, 'plaintext is accepted only on a loopback host; set certFile and keyFile');
-    return { host, port, tls: false };
+    // Plaintext is not exposed by accident: beyond loopback it takes behindProxy, which says a proxy in front
+    // terminates TLS and only the stretch from that proxy to here is plaintext (ADR 0033).
+    if (!behindProxy && !isLoopbackHost(host)) {
+      throw new ConfigError(tlsPath, 'plaintext is accepted only on a loopback host, or with behindProxy; set certFile and keyFile');
+    }
+    return { host, port, tls: false, ...(behindProxy ? { behindProxy: true as const } : {}) };
   }
   if (typeof tls !== 'object' || tls === null || Array.isArray(tls)) {
     throw new ConfigError(tlsPath, 'must be { certFile, keyFile }, { acme }, or false on a loopback host');
@@ -378,6 +413,40 @@ function parseApns(value: unknown, path: string): ApnsConfig {
   const topic = required(apns, 'topic', path);
   if (typeof topic !== 'string' || !BUNDLE_ID.test(topic)) throw new ConfigError(`${path}.topic`, 'must be the app\'s bundle ID');
   return { teamId: apns.teamId as string, keyId: apns.keyId as string, topic, key };
+}
+
+function parseA2A(value: unknown, path: string): A2AConfig {
+  const a2a = object(value, path);
+  onlyKeys(a2a, path, ['tokenFile', 'pollIntervalSeconds', 'giveUpAfterHours', 'agents']);
+  const interval = a2a.pollIntervalSeconds ?? DEFAULT_A2A_POLL_INTERVAL_SECONDS;
+  if (!positiveInteger(interval, MIN_A2A_POLL_INTERVAL_SECONDS)) {
+    throw new ConfigError(`${path}.pollIntervalSeconds`, `must be an integer of at least ${MIN_A2A_POLL_INTERVAL_SECONDS}`);
+  }
+  const giveUp = a2a.giveUpAfterHours ?? DEFAULT_A2A_GIVE_UP_AFTER_HOURS;
+  if (!positiveInteger(giveUp, 1)) throw new ConfigError(`${path}.giveUpAfterHours`, 'must be a positive integer');
+  const agentsPath = `${path}.agents`;
+  const listed = object(required(a2a, 'agents', path), agentsPath);
+  const agents: A2AConfig['agents'] = {};
+  for (const [name, entry] of Object.entries(listed)) {
+    const entryPath = `${agentsPath}.${name}`;
+    if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
+    const agent = object(entry, entryPath);
+    onlyKeys(agent, entryPath, ['url']);
+    // The token rides on every call, so it goes nowhere it could be read on the way.
+    const urlPath = `${entryPath}.url`;
+    const url = parseUrl(required(agent, 'url', entryPath), urlPath);
+    if (url.username || url.password || url.search || url.hash) {
+      throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+    }
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+      throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
+    }
+    agents[name] = { url: url.href };
+  }
+  return {
+    tokenFile: absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`),
+    pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents,
+  };
 }
 
 function parseLoop(value: unknown, path: string): LoopConfig {

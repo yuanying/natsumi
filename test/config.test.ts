@@ -245,6 +245,24 @@ test('plaintext listening is refused unless the host is loopback', () => {
   rejects({ ...base(), listen: { ...listen(), tls: { ...tls(), certFile: 'cert.pem' } } }, 'listen.tls.certFile');
 });
 
+test('plaintext beyond loopback is accepted only when behindProxy says TLS ends in front of the server (ADR 0033)', () => {
+  for (const host of ['::', '0.0.0.0', '192.0.2.10']) {
+    assert.deepEqual(parseConfig({ ...base(), listen: { host, port: 8080, tls: false, behindProxy: true } }).listen,
+      { host, port: 8080, tls: false, behindProxy: true });
+  }
+  // Loopback does not need it, and may still say it.
+  assert.deepEqual(parseConfig({ ...base(), listen: { host: '127.0.0.1', port: 8080, tls: false, behindProxy: true } }).listen,
+    { host: '127.0.0.1', port: 8080, tls: false, behindProxy: true });
+  // false is the same as leaving it out: the ADR 0006 refusal stands.
+  rejects({ ...base(), listen: { host: '::', port: 8080, tls: false, behindProxy: false } }, 'listen.tls', /loopback/);
+  assert.deepEqual(parseConfig({ ...base(), listen: { host: '::1', port: 8080, tls: false, behindProxy: false } }).listen,
+    { host: '::1', port: 8080, tls: false });
+  rejects({ ...base(), listen: { host: '::', port: 8080, tls: false, behindProxy: 'yes' } }, 'listen.behindProxy', /true or false/);
+  // The server terminating TLS itself and a proxy terminating it in front cannot both be meant.
+  rejects({ ...base(), listen: { ...listen(), behindProxy: true } }, 'listen.behindProxy', /tls: false/);
+  rejects({ ...base(), listen: { ...acmeListen(), behindProxy: true } }, 'listen.behindProxy', /tls: false/);
+});
+
 const acmeListen = (acme: unknown = {}) => ({ host: '::', port: 443, tls: { acme } });
 
 test('ACME can be chosen instead of certificate files, defaulting to Let\'s Encrypt production on port 80', () => {
@@ -387,4 +405,58 @@ test('the APNs key is referenced exactly once, and the IDs and topic are checked
   for (const topic of ['com.example.app', 'net.example.Natsumi-iOS', 'a.b']) assert.equal(parseConfig({ ...base(), apns: { ...apns(), topic } }).apns?.topic, topic);
   rejects({ ...base(), apns: { ...apns(), environment: 'sandbox' } }, 'apns.environment', /unknown/);
   rejects({ ...base(), apns: 'on' }, 'apns', /object/);
+});
+
+const a2a = () => ({
+  tokenFile: '/var/run/secrets/natsumi/a2a-token',
+  agents: { wiki: { url: 'https://agents.example.test/wiki-keeper/' } },
+});
+
+test('asking outside agents is off unless the a2a section is given, with 15 seconds and 24 hours by default (ADR 0035, ADR 0036)', () => {
+  assert.equal('a2a' in parseConfig(base()), false);
+  assert.deepEqual(parseConfig({ ...base(), a2a: a2a() }).a2a, {
+    tokenFile: '/var/run/secrets/natsumi/a2a-token', pollIntervalSeconds: 15, giveUpAfterHours: 24,
+    agents: { wiki: { url: 'https://agents.example.test/wiki-keeper/' } },
+  });
+  const tuned = parseConfig({ ...base(), a2a: { ...a2a(), pollIntervalSeconds: 60, giveUpAfterHours: 72 } }).a2a;
+  assert.equal(tuned?.pollIntervalSeconds, 60);
+  assert.equal(tuned?.giveUpAfterHours, 72);
+  // A section with nobody in it is allowed: the list she reads then says there is nobody to ask.
+  assert.deepEqual(parseConfig({ ...base(), a2a: { ...a2a(), agents: {} } }).a2a?.agents, {});
+});
+
+test('the a2a token is a file, read by path and never written in the config', () => {
+  const { tokenFile: _, ...noToken } = a2a();
+  rejects({ ...base(), a2a: noToken }, 'a2a.tokenFile', /required/);
+  rejects({ ...base(), a2a: { ...a2a(), tokenFile: 'secrets/a2a-token' } }, 'a2a.tokenFile');
+  rejects({ ...base(), a2a: { ...a2a(), token: 'eyJhbGciOi' } }, 'a2a.token', /secrets must not be written/);
+});
+
+test('each agent is a short lower-case name with an https URL of its own', () => {
+  const agents = (value: unknown) => ({ ...base(), a2a: { ...a2a(), agents: value } });
+  for (const name of ['Wiki', 'wiki keeper', '-wiki', 'ウィキ', 'a'.repeat(33)]) {
+    rejects(agents({ [name]: { url: 'https://agents.example.test/' } }), `a2a.agents.${name}`, /name/);
+  }
+  for (const name of ['wiki', 'wiki-keeper', 'search2']) {
+    assert.ok(parseConfig(agents({ [name]: { url: 'https://agents.example.test/' } })).a2a?.agents[name]);
+  }
+  for (const url of ['http://agents.example.test/', 'https://user:pass@agents.example.test/', 'https://agents.example.test/?a=1',
+    'https://agents.example.test/#x', 'agents.example.test', 'ftp://agents.example.test/']) {
+    rejects(agents({ wiki: { url } }), 'a2a.agents.wiki.url');
+  }
+  assert.equal(parseConfig(agents({ wiki: { url: 'http://127.0.0.1:8080/' } })).a2a?.agents.wiki?.url, 'http://127.0.0.1:8080/');
+  rejects(agents({ wiki: {} }), 'a2a.agents.wiki.url', /required/);
+  rejects(agents({ wiki: { url: 'https://agents.example.test/', tokenFile: '/run/other' } }), 'a2a.agents.wiki.tokenFile', /unknown/);
+  rejects(agents([]), 'a2a.agents', /object/);
+  rejects({ ...base(), a2a: { tokenFile: '/run/token' } }, 'a2a.agents', /required/);
+});
+
+test('the polling interval and the wait limit are whole numbers with a floor', () => {
+  for (const pollIntervalSeconds of [0, 4, 7.5, '15']) {
+    rejects({ ...base(), a2a: { ...a2a(), pollIntervalSeconds } }, 'a2a.pollIntervalSeconds');
+  }
+  for (const giveUpAfterHours of [0, -1, 1.5, '24']) {
+    rejects({ ...base(), a2a: { ...a2a(), giveUpAfterHours } }, 'a2a.giveUpAfterHours');
+  }
+  rejects({ ...base(), a2a: { ...a2a(), retries: 3 } }, 'a2a.retries', /unknown/);
 });

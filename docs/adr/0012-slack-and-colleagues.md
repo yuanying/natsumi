@@ -1,7 +1,7 @@
 # 0012. Slack 連携と同僚 AI
 
 - Date: 2026-09-15
-- Status: Accepted（「同僚はサーバーの中」「同僚どうしは直接つながらない」を外に作用する同僚に限る点は [ADR 0025](0025-talking-to-outside-agents-over-a2a.md) で具体化）
+- Status: Accepted（「同僚はサーバーの中」「同僚どうしは直接つながらない」を外に作用する同僚に限る点は [ADR 0025](0025-talking-to-outside-agents-over-a2a.md) で具体化、決まった文面の一次回答・判定のモデル（サブスクリプション経路の GPT から Jev へ）・判定と短い理由をモデルに出させる形（問題点ごとの点数へ）は [ADR 0039](0039-slack-as-files-and-a-scored-dove.md) で置き換え、「読めるのは招待したチャンネルとメンション」は同 ADR で具体化）
 
 ## Context
 

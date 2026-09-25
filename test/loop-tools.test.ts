@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME, type LoopToolHost } from '../src/server/loop-tools.ts';
-import { NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION } from '../src/server/prompts.ts';
+import { ASK_AGENT_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION } from '../src/server/prompts.ts';
 import { MAX_COMMAND_CHARS } from '../src/server/workspace-shell.ts';
 
 const ok = (text: string) => ({ ok: true, text });
@@ -16,6 +16,7 @@ function host(overrides: Partial<LoopToolHost> = {}): LoopToolHost {
     scheduleSelfCheck: () => ok('scheduled'),
     listSelfChecks: () => ok('listed'),
     cancelSelfCheck: () => ok('cancelled'),
+    askAgent: () => ok('asked'),
     ...overrides,
   };
 }
@@ -33,7 +34,7 @@ test('run_shell is registered with a runner, and the old memory tools are regist
     assert.equal(LOOP_TOOL_NAMES.includes(gone), false, gone);
   }
   // Everything else is as ADR 0008 left it, with the night's change note added by ADR 0020.
-  assert.deepEqual([...LOOP_TOOL_NAMES].sort(), ['cancel_self_check', 'list_self_checks', 'notify_owner',
+  assert.deepEqual([...LOOP_TOOL_NAMES].sort(), ['ask_agent', 'cancel_self_check', 'list_self_checks', 'notify_owner',
     'reply_to_mac', 'schedule_self_check', 'set_mac_avatar_expression', 'write_change_note', 'write_handoff_note']);
 });
 
@@ -125,4 +126,22 @@ test('the reply_to_mac and notify_owner descriptions are fixed strings that tell
     assert.match(fixed, /expression/, name);
     assert.match(fixed, /set_mac_avatar_expression/, name);
   }
+});
+
+// ADR 0035 and ADR 0036: one tool for every agent, there with or without any configured, and its words never move.
+test('ask_agent is always registered last, with a fixed description and a required continue', () => {
+  const tools = createLoopTools(host());
+  assert.equal(tools.at(-1)!.name, 'ask_agent');
+  assert.deepEqual(names(host({ runShell: () => ok('ran') })).at(-1), 'ask_agent');
+  const ask = tools.at(-1)!;
+  assert.equal(ask.description, ASK_AGENT_DESCRIPTION);
+  const schema = JSON.parse(JSON.stringify(ask.parameters)) as { properties: Record<string, { type: string }>; required: string[] };
+  assert.deepEqual(Object.fromEntries(Object.entries(schema.properties).map(([name, value]) => [name, value.type])),
+    { agent: 'string', message: 'string', continue: 'boolean' });
+  assert.deepEqual([...schema.required].sort(), ['agent', 'continue', 'message']);
+  // Where the list is, and the statuses the event carries; no agent's name, no number.
+  for (const phrase of ['/manual/agents/INDEX.md', 'agent_reply', 'completed', 'failed', 'input_required', 'gave_up', 'continue']) {
+    assert.ok(ASK_AGENT_DESCRIPTION.includes(phrase), phrase);
+  }
+  assert.equal(/\d/.test(ASK_AGENT_DESCRIPTION), false);
 });

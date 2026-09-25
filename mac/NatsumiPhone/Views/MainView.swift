@@ -260,10 +260,11 @@ struct ReplyBalloonView: View {
         .padding(.top, 6)
         .padding(.bottom, tail == .leading ? 12 : 12 + 9)
         .background { InkedPaper(shape: SpeechBalloonShape(side: tail)) }
+        .opensLinks(through: send, as: PhoneEvent.linkTapped)
     }
 
     private var text: some View {
-        Text(props.text)
+        Text(AttributedString(runs: props.runs))
             .font(Comic.font(16))
             .lineSpacing(8)
             .frame(maxWidth: .infinity, alignment: .leading)

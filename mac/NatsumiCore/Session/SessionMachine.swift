@@ -205,6 +205,19 @@ public struct SessionMachine {
         }
     }
 
+    /// Drops the connection and connects again at once, for when it may have died without a close: the Mac woke from
+    /// sleep. The machine goes on, so the sync resumes from where the stream was and nothing unsent or read is lost.
+    /// A session that ended, was taken over or stopped stays as it is.
+    public mutating func reconnectNow() -> [SessionEffect] {
+        switch phase {
+        case .idle, .loginRequired, .replaced, .stopped: return []
+        case .connecting, .syncing, .ready, .waitingToReconnect, .unavailable: break
+        }
+        syncRequestId = nil
+        phase = .connecting
+        return [.disconnect, .connect]
+    }
+
     public mutating func reconnectTimerFired() -> [SessionEffect] {
         guard phase == .waitingToReconnect else { return [] }
         phase = .connecting

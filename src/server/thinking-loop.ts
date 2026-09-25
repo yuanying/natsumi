@@ -4,9 +4,11 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
-import type { LoopConfig } from './config.ts';
+import { SdkA2AClient, type A2AClient } from './a2a-client.ts';
+import { AgentRequests } from './agent-requests.ts';
+import type { A2AConfig, LoopConfig } from './config.ts';
 import { ConversationStore, type EventKind, type EventState, type MessageRow,
-  type RotationRow } from './conversation-store.ts';
+  type RotationRow, type Transaction } from './conversation-store.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REVIEW_INSTRUCTIONS,
   WORKSPACE_SECTION } from './prompts.ts';
@@ -108,6 +110,10 @@ export interface LoopOptions {
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone.
    */
   loop: LoopConfig;
+  /** The outside agents natsumi may ask (ADR 0035). Without it `ask_agent` is still there, and refuses. */
+  a2a?: A2AConfig;
+  /** Replaces the SDK client built from `a2a`. */
+  a2aClient?: A2AClient;
   notifyLimits?: { perTurn: number; perHour: number };
   now?: () => number;
   log?: (line: string) => void;
@@ -169,6 +175,7 @@ export class ThinkingLoop {
   private compactionRetryAbove: number | undefined;
   private avatar: { expression: Expression; by: 'server' | 'model'; changedAt: number };
   private readonly selfChecks: SelfChecks;
+  private readonly agents: AgentRequests;
   /** When something last arrived or was last handled: the quiet interval before a ping counts from here (ADR 0014). */
   private activityAt: number;
   /** A nightly switch is under way; natsumi sleeps through it. */
@@ -213,6 +220,12 @@ export class ThinkingLoop {
     });
     this.selfChecks = new SelfChecks({ db: options.db, now: this.now, timeZone: loop.timeZone,
       limits: loop.selfCheck, awakeHours: loop.awakeHours });
+    const { a2a } = options;
+    this.agents = new AgentRequests({
+      db: options.db, now: this.now, config: a2a,
+      client: options.a2aClient ?? (a2a ? new SdkA2AClient({ tokenFile: a2a.tokenFile }) : undefined),
+      raise: record => this.raiseAgentReply(record), log: line => this.log(line),
+    });
     this.activityAt = this.now();
     this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };
   }
@@ -365,6 +378,30 @@ export class ThinkingLoop {
     return true;
   }
 
+  /**
+   * Fetches once the tasks outside agents are still working on, and hands natsumi each that settled (ADR 0035).
+   * The server calls it on the interval `a2a.pollIntervalSeconds` sets, and once on a start, which picks up again what
+   * a previous process was waiting for.
+   */
+  pollAgents(): Promise<void> {
+    if (this.unavailable) return Promise.resolve();
+    return this.agents.poll();
+  }
+
+  /**
+   * An agent's answer, as an event of its own. It waits behind whatever is running rather than being steered in:
+   * nobody is waiting on it the way the owner waits on a reply (ADR 0036).
+   */
+  private raiseAgentReply(record: (eventId: string, transaction: Transaction) => void): void {
+    const eventId = this.store.transaction(transaction => {
+      const id = this.store.insertEvent('agent-reply');
+      record(id, transaction);
+      return id;
+    });
+    this.queue.push(eventId);
+    this.pump();
+  }
+
   /** Hands the loop a ping: the "anything you want to do?" of a quiet moment (ADR 0014). */
   ping(): boolean {
     if (!this.quiet) return false;
@@ -392,6 +429,7 @@ export class ThinkingLoop {
   /** Refuses new messages, stops the turn in progress, records its events and releases the Pi session. */
   close(): Promise<void> {
     this.closing ??= (async () => {
+      this.agents.close();
       if (this.running && this.session) {
         this.session.abortCompaction();
         await this.session.abort();
@@ -797,6 +835,7 @@ export class ThinkingLoop {
     }
     const timeZone = this.options.loop.timeZone;
     const raisedAt = Date.parse(row.created_at);
+    if (row.kind === 'agent-reply') return this.agents.takeEventLine(eventId, row.created_at);
     if (row.kind === 'self-check') {
       return { type: 'self_check', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone),
         checks: this.selfChecks.carriedBy(eventId, raisedAt) };
@@ -823,6 +862,7 @@ export class ThinkingLoop {
       scheduleSelfCheck: (reason, when) => this.selfChecks.schedule(reason, when),
       listSelfChecks: () => this.selfChecks.list(),
       cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
+      askAgent: (agent, message, goOn) => this.agents.ask(agent, message, goOn),
       ...(this.shell ? { runShell: (command: string) => this.shell!.run(command) } : {}),
     };
   }

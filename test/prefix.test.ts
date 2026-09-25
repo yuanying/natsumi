@@ -47,6 +47,7 @@ function toolHost(workspace: boolean): LoopToolHost {
     scheduleSelfCheck: () => outcome('scheduled'),
     listSelfChecks: () => outcome('listed'),
     cancelSelfCheck: () => outcome('cancelled'),
+    askAgent: () => outcome('asked'),
     ...(workspace ? { runShell: () => outcome('ran') } : {}),
   };
 }

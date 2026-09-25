@@ -264,6 +264,29 @@ struct UIMediatorTests {
         #expect(props(mediator).balloon == nil)
     }
 
+    @Test("行が見えた・見えなくなっただけでは描くものは変わらず、既読にしたときだけ変わる")
+    func rowsInSightAloneDrawNothing() {
+        var mediator = reading(messages: [Fixture.message("r1"), Fixture.message("r2")], unread: 2, key: false)
+        let before = props(mediator)
+        _ = mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: true))
+        #expect(!mediator.mayHaveChangedProps)
+        #expect(props(mediator) == before)
+        _ = mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: false))
+        #expect(!mediator.mayHaveChangedProps)
+        #expect(props(mediator) == before)
+
+        // Any other event may change them.
+        _ = mediator.handle(.conversationKeyChanged(true))
+        #expect(mediator.mayHaveChangedProps)
+        // A row that reads a reply as it comes into sight changes them.
+        #expect(sent(mediator.handle(.historyRowVisibilityChanged(messageId: "r2", isVisible: true))).count == 1)
+        #expect(mediator.mayHaveChangedProps)
+        #expect(props(mediator) != before)
+        // And one already read does not.
+        _ = mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: true))
+        #expect(!mediator.mayHaveChangedProps)
+    }
+
     @Test("履歴を読んでいる間は、届いた返事を吹き出しに出さない。key でなくなれば出す")
     func noBalloonWhileReading() {
         var mediator = reading(messages: [Fixture.message("r1")], readThrough: "r1", unread: 0)
@@ -607,6 +630,27 @@ struct UIMediatorTests {
         #expect(closed == [.disconnect, .scheduleReconnect(after: 1)])
         #expect(props(mediator).character.disconnectedHelp == ConnectionStatus.reconnecting.text)
         #expect(mediator.handle(.reconnectTimerFired) == [.connect])
+    }
+
+    @Test("スリープから起きたら、接続を捨ててつなぎ直し、続きから同期する。送りかけのメッセージは残る")
+    func wakeResyncs() {
+        var mediator = synced()
+        _ = mediator.handle(.inputSubmitted("架空のメッセージ"))
+        #expect(mediator.handle(.systemWoke) == [.disconnect, .connect])
+        #expect(props(mediator).character.disconnectedHelp == ConnectionStatus.connecting.text)
+        let sync = try! #require(sent(mediator.handle(.socketOpened)).first)
+        guard case .sessionSync(let resume) = sync.command else { Issue.record("同期を頼んでいない"); return }
+        #expect(resume != nil)
+        #expect(mediator.state.conversation.outbox.map(\.text) == ["架空のメッセージ"])
+    }
+
+    @Test("再接続を待っている間に起きたら、待たずにつなぎ直す。ログインしていなければ何もしない")
+    func wakeSkipsTheReconnectWait() {
+        var mediator = synced()
+        _ = mediator.handle(.socketClosed(.network))
+        #expect(mediator.handle(.systemWoke) == [.disconnect, .connect])
+        var loggedOut = launched(hasSession: false)
+        #expect(loggedOut.handle(.systemWoke).isEmpty)
     }
 
     @Test("終了は、終了の指示だけを出す")

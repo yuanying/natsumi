@@ -83,12 +83,15 @@ public struct PhoneReplyProps: Equatable, Sendable {
     /// "なつみ · 9:15".
     public var header: String
     public var text: String
+    /// `text` with its URLs as links (ADR 0038).
+    public var runs: [TextRun]
     /// She is still handling what the owner said: what she is thinking, in one line under the text (ADR 0025).
     public var thinking: ThinkingProps?
 
     public init(header: String, text: String, thinking: ThinkingProps?) {
         self.header = header
         self.text = text
+        self.runs = TextLinks.runs(in: text)
         self.thinking = thinking
     }
 }

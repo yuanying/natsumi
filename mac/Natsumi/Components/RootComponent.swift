@@ -138,6 +138,12 @@ final class RootComponent: Component {
                 self.character.dispatch(.screenConfigurationChanged(visible: self.visibleFrame))
             }
         }
+        // The socket may have died while the Mac slept, with no close ever arriving; the mediator starts it over.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.deliver(.systemWoke) }
+        }
     }
 
     /// Everything the tree is touched from outside with.
@@ -190,6 +196,7 @@ final class RootComponent: Component {
         defer { draining = false }
         repeat {
             var afterDrawing: [UIEffect] = []
+            var mayHaveChangedProps = false
             while !pending.isEmpty {
                 for effect in mediator.handle(pending.removeFirst()) {
                     switch effect {
@@ -197,8 +204,11 @@ final class RootComponent: Component {
                     default: perform(effect)
                     }
                 }
+                mayHaveChangedProps = mayHaveChangedProps || mediator.mayHaveChangedProps
             }
-            refresh()
+            // A row of the history coming into or going out of sight, many times a second while it is scrolled,
+            // leaves the props as they are unless it reads a reply; deriving them for it is what made scrolling stutter.
+            if mayHaveChangedProps { refresh() }
             for effect in afterDrawing { perform(effect) }
         } while !pending.isEmpty
     }
@@ -532,6 +542,8 @@ final class RootComponent: Component {
             showSettings()
         case .hideSettings:
             settings.panel.orderOut(nil)
+        case .openLink(let url):
+            NSWorkspace.shared.open(url)
         case .terminate:
             NSApp.terminate(nil)
         }

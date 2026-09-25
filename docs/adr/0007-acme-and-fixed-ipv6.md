@@ -1,7 +1,7 @@
 # 0007. Let's Encrypt による証明書の自動取得と固定 IPv6 のコンテナ構成
 
 - Date: 2026-09-14
-- Status: Accepted
+- Status: Accepted（本番では使わない（[ADR 0033](0033-running-on-kubernetes.md)）。コードと Docker の構成は残す）
 
 ## Context
 

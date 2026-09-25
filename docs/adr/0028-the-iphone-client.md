@@ -1,7 +1,8 @@
 # 0028. iPhone のクライアント
 
 - Date: 2026-09-22
-- Status: Accepted（範囲外としていた裏にいる間の通知（APNs）は [ADR 0029](0029-push-notifications-on-the-iphone.md) で決定）
+- Status: Accepted（範囲外としていた裏にいる間の通知（APNs）は [ADR 0029](0029-push-notifications-on-the-iphone.md) で決定。
+  本文の中の URL をリンクにしてタップでブラウザを開くことは [ADR 0038](0038-links-in-what-she-says.md) で追加）
 
 ## Context
 

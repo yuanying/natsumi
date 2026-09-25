@@ -1,6 +1,8 @@
 import { mkdir, realpath, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { AGENT_LIST_DIRECTORY } from './agent-list.ts';
 import { findCodeCheckout, HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
+import { makeSharedDirectory } from './permissions.ts';
 
 export class DataDirectoryError extends Error {
   constructor(message: string) { super(`data directory: ${message}`); this.name = 'DataDirectoryError'; }
@@ -25,14 +27,21 @@ export async function resolveDataDirectory(flag: string | undefined, cwd: string
  * Creates the initial layout. Existing files and directories are never overwritten or re-permissioned.
  * `memory/` is only made here; what goes in it belongs to the memory repository (ADR 0018), personality.md included.
  * `work/` and `home/` are the workspace container's `/work` and `/home/natsumi` (ADR 0019): the server makes them
- * and then never looks inside, so that boundary can be said in one sentence.
+ * and then never looks inside, so that boundary can be said in one sentence. `agents/` holds the list of agents the
+ * server writes on every start, which the workspace sees read-only as `/manual/agents` (ADR 0036).
  */
 export async function initializeDataDirectory(dir: string): Promise<void> {
-  for (const name of ['memory', WORK_DIRECTORY, HOME_DIRECTORY, STATE_DIRECTORY]) {
+  for (const name of ['memory', WORK_DIRECTORY, HOME_DIRECTORY, AGENT_LIST_DIRECTORY, STATE_DIRECTORY]) {
     const path = join(dir, name);
-    try { await mkdir(path, { mode: 0o700 }); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (!(await stat(path)).isDirectory()) throw new DataDirectoryError(`${name} exists but is not a directory`);
-    }
+    // The three the workspace mounts are shared with its group; the server's own state stays with its owner (ADR 0033).
+    const made = name === STATE_DIRECTORY ? await makePrivateDirectory(path) : await makeSharedDirectory(path);
+    if (!made && !(await stat(path)).isDirectory()) throw new DataDirectoryError(`${name} exists but is not a directory`);
+  }
+}
+
+async function makePrivateDirectory(path: string): Promise<boolean> {
+  try { await mkdir(path, { mode: 0o700 }); return true; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
   }
 }

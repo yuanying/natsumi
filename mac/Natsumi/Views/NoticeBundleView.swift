@@ -48,19 +48,14 @@ struct NoticeBundleView: View {
                 Text("お知らせ").font(Comic.font(11 * scale, bold: true))
             }
             .foregroundStyle(Comic.ink)
-            Button { card(.noticeTextClicked) } label: {
-                Text(props.text)
-                    .font(Comic.font(13 * scale))
-                    .lineSpacing(3 * scale)
-                    .foregroundStyle(Comic.ink)
-                    .lineLimit(props.lineLimit)
-                    .multilineTextAlignment(.leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(props.help)
+            // Not a Button, so that a link in the text gets its own click (see `BalloonView`, ADR 0038).
+            LinkedText(
+                runs: props.runs, font: Comic.nsFont(13 * scale), lineSpacing: 3 * scale,
+                lineLimit: props.lineLimit, click: .noticeTextClicked, fillsWidth: true, sink: card)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isButton)
+                .help(props.help)
             if props.more > 0 || props.showsHistoryLink {
                 // The same footer as the replies: the count first, under the text.
                 HStack(spacing: 8 * scale) {

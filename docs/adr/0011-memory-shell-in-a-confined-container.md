@@ -1,7 +1,7 @@
 # 0011. 閉じ込めたコンテナで、記憶を shell で探す
 
 - Date: 2026-09-15
-- Status: Accepted（記憶を読み取り専用にする点と、記憶の書き込みをサーバーのツールで行う点は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で置き換え、入れるコマンドの一覧・書ける場所・環境変数・資源の上限・答えの後までプロセスが動かないこと・作業ディレクトリ・ツールと設定とスクリプトの名前は [ADR 0019](0019-a-workspace-not-a-memory-tool.md) で置き換え）
+- Status: Accepted（記憶を読み取り専用にする点と、記憶の書き込みをサーバーのツールで行う点は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で置き換え、入れるコマンドの一覧・書ける場所・環境変数・資源の上限・答えの後までプロセスが動かないこと・作業ディレクトリ・ツールと設定とスクリプトの名前は [ADR 0019](0019-a-workspace-not-a-memory-tool.md) で置き換え、`network_mode: none` は出口の許可リストとして [ADR 0034](0034-an-allow-list-for-the-way-out.md) で置き換え、UID を natsumi と同じにする点とソケットの置き場は [ADR 0033](0033-running-on-kubernetes.md) で置き換え）
 
 ## Context
 

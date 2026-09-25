@@ -1,10 +1,12 @@
 import { homedir } from 'node:os';
 import { parseCli, UsageError } from './cli.ts';
 import { resolveDataDirectory } from './data-directory.ts';
+import { SERVER_UMASK } from './permissions.ts';
 import { startServer } from './server.ts';
 import { checkHealth, readStatus } from './status.ts';
 
-process.umask(0o077);
+// The workspace may run as another UID in a shared group (ADR 0033); see permissions.ts for what stays private.
+process.umask(SERVER_UMASK);
 
 try {
   const cli = parseCli(process.argv.slice(2));
@@ -19,7 +21,8 @@ try {
     });
     // Pi reads its state area from here; the personal default under the home directory is never used.
     process.env.PI_CODING_AGENT_DIR = server.config.pi.agentDirectory;
-    const scheme = server.config.listen.tls ? 'https' : 'http (loopback only)';
+    const { tls, behindProxy } = server.config.listen;
+    const scheme = tls ? 'https' : behindProxy ? 'http (TLS ends at the proxy in front)' : 'http (loopback only)';
     if (server.challengeAddress) {
       const { host, port } = server.challengeAddress;
       process.stdout.write(`natsumi: answering ACME challenges on ${host} port ${port} over http (challenges and redirects only)\n`);
