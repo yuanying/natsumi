@@ -264,6 +264,29 @@ struct UIMediatorTests {
         #expect(props(mediator).balloon == nil)
     }
 
+    @Test("行が見えた・見えなくなっただけでは描くものは変わらず、既読にしたときだけ変わる")
+    func rowsInSightAloneDrawNothing() {
+        var mediator = reading(messages: [Fixture.message("r1"), Fixture.message("r2")], unread: 2, key: false)
+        let before = props(mediator)
+        _ = mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: true))
+        #expect(!mediator.mayHaveChangedProps)
+        #expect(props(mediator) == before)
+        _ = mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: false))
+        #expect(!mediator.mayHaveChangedProps)
+        #expect(props(mediator) == before)
+
+        // Any other event may change them.
+        _ = mediator.handle(.conversationKeyChanged(true))
+        #expect(mediator.mayHaveChangedProps)
+        // A row that reads a reply as it comes into sight changes them.
+        #expect(sent(mediator.handle(.historyRowVisibilityChanged(messageId: "r2", isVisible: true))).count == 1)
+        #expect(mediator.mayHaveChangedProps)
+        #expect(props(mediator) != before)
+        // And one already read does not.
+        _ = mediator.handle(.historyRowVisibilityChanged(messageId: "r1", isVisible: true))
+        #expect(!mediator.mayHaveChangedProps)
+    }
+
     @Test("履歴を読んでいる間は、届いた返事を吹き出しに出さない。key でなくなれば出す")
     func noBalloonWhileReading() {
         var mediator = reading(messages: [Fixture.message("r1")], readThrough: "r1", unread: 0)
