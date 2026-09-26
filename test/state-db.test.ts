@@ -86,6 +86,11 @@ test('the schema keeps the conversation shown to the owner and only references t
       // What was said in Slack, which the day files are written from again on every edit and deletion (ADR 0039).
       // It is Slack's record, not natsumi's thinking, and the Pi session holds it only as far as an event carried it.
       if (table === 'slack_messages' && column === 'text') continue;
+      // What natsumi asked the dove to post, kept with Jev's scores and the owner's decision to look back on (ADR 0040).
+      // It is what went, or was to go, to Slack; her thinking about it stays in the Pi session.
+      if (table === 'dove_posts' && column === 'text') continue;
+      // The dove's answer waits here until it is handed to Pi, and is emptied then, like an agent's.
+      if (table === 'dove_replies' && column === 'text') continue;
       assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response|thinking|tool_calls?)$/i, `${table}.${column}`);
     }
   }
@@ -324,7 +329,7 @@ test('schema 13 adds Slack beside what was there, and one mention makes at most 
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 12));
   db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
     VALUES ('event-1', 'slack-mention', NULL, 'queued', 'x', 'x'), ('event-2', 'slack-mention', NULL, 'queued', 'x', 'x')`).run();
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [13]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 13)).applied, [13]);
   db.prepare(`INSERT INTO slack_channels (workspace, channel_id, directory, label, is_im, created_at)
     VALUES ('work', 'C1', 'dev', '#dev', 0, 'x')`).run();
   assert.throws(() => db.prepare(`INSERT INTO slack_channels (workspace, channel_id, directory, label, is_im, created_at)
@@ -334,4 +339,20 @@ test('schema 13 adds Slack beside what was there, and one mention makes at most 
     /constraint/i);
   assert.throws(() => db.prepare(`INSERT INTO slack_mentions (event_id, workspace, channel_id, ts) VALUES ('event-missing', 'work', 'C1', '2.2')`).run(),
     /constraint/i);
+}));
+
+test('schema 14 adds the dove and the approvals, and an approval belongs to one post and closes once', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 13));
+  assert.deepEqual(migrate(db, MIGRATIONS).applied, [14]);
+  const post = db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
+    expression, state, created_at, updated_at) VALUES (?, 'post', 'work', 'C1', NULL, NULL, 'work/#dev', '下書き', NULL, ?, 'x', 'x')`);
+  post.run('post-1', 'judging');
+  assert.throws(() => post.run('post-2', 'thinking'), /constraint/i, 'only the states the server writes');
+  const approval = db.prepare(`INSERT INTO approvals (approval_id, revision, kind, post_id, payload, state, created_at, expires_at)
+    VALUES (?, 1, 'slack-post', ?, '{}', 'pending', 'x', 'x')`);
+  approval.run('approval-1', 'post-1');
+  assert.throws(() => approval.run('approval-2', 'post-1'), /constraint/i, 'one approval per post');
+  assert.throws(() => approval.run('approval-3', 'post-missing'), /constraint/i);
+  assert.throws(() => db.prepare(`INSERT INTO dove_replies (event_id, post_id, result, text, created_at)
+    VALUES ('event-missing', 'post-1', 'sent', '', 'x')`).run(), /constraint/i, 'an answer belongs to an event that exists');
 }));

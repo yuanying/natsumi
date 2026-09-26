@@ -31,8 +31,10 @@ Socket Mode は natsumi から Slack へ外向きにつなぐので、公開す�
 | `files:read` | 添付の画像を取ってくる |
 | `reactions:write` | 受け取ったときに 👀 を付ける |
 | `app_mentions:read` | メンションを受け取る |
-
-投稿のための scope（`chat:write` など）は、Slack への投稿を作る作業で足します。今は要りません。
+| `reactions:write` | ポッポさんに頼まれたリアクションを付ける（受け取ったときの 👀 と同じ scope） |
+| `chat:write` | ポッポさんが投稿する |
+| `chat:write.customize` | 投稿ごとに、なつみの表情のアイコン（`icon_url`）を使う |
+| `files:write` | 画像の投稿（後日の作業）で使う。今は使いませんが、入れ直しの手間を省くために先に足しておきます |
 User Token Scopes には何も足しません。natsumi は本人の user token を使いません。
 
 ## 4. イベントを購読する
@@ -74,3 +76,6 @@ token が違うか App の設定が足りないと `could not start` が出ま�
 つながると、招待したチャンネルが data directory の `sources/slack/<名前>/` に書かれ、`sources/slack/INDEX.md` に並びます。
 初めて見るチャンネルは、既定で 90 日前から埋めます（`slack.backfillDays`、1〜365 日）。発言の多いチャンネルでは最初の接続に時間がかかるので、必要なら短くします。
 bot にメンションすると 👀 が付き、natsumi に出来事として届きます。
+natsumi が返事をポッポさんに頼むと、判定が通れば bot の発言として投稿されます。アイコンは natsumi のサーバーの `/avatar/<表情>.png` で、
+Slack がそこへ取りに行くので、`publicOrigin` は Slack から届く公開のホストである必要があります。
+アイコンが bot の既定のものになるときは、`chat:write.customize` があるかと、`https://<publicOrigin のホスト>/avatar/neutral.png` が外から開けるかを確かめます。

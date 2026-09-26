@@ -7,6 +7,7 @@ import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-wo
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
 import { SdkA2AClient, type A2AClient } from './a2a-client.ts';
 import { AgentRequests } from './agent-requests.ts';
+import { DOVE_NAME } from './dove.ts';
 import type { A2AConfig, LoopConfig } from './config.ts';
 import { ConversationStore, type EventKind, type EventState, type MessageRow,
   type RotationRow, type Transaction } from './conversation-store.ts';
@@ -124,6 +125,11 @@ export interface LoopOptions {
   updates?: readonly UpdateSource[];
   /** What a Slack mention event is made of when it is handed to her: its line, and the images beside it. */
   slack?: SlackEvents;
+  /**
+   * The dove (ADR 0040): `ask_agent` with the agent `poppo` goes here rather than to an outside agent, and its answers
+   * come back as `dove-reply` events. Present only when Slack is configured.
+   */
+  dove?: DoveEvents;
   notifyLimits?: { perTurn: number; perHour: number };
   now?: () => number;
   log?: (line: string) => void;
@@ -135,8 +141,14 @@ export interface SlackEvents {
   images(eventId: string): Promise<ImageContent[]>;
 }
 
+/** The side of the dove the loop talks to: a request, and the line of each answer. */
+export interface DoveEvents {
+  ask(message: string): ToolOutcome;
+  takeEventLine(eventId: string, receivedAt: string): Record<string, unknown>;
+}
+
 /** The kinds of event something outside the loop may raise. */
-export type RaisedKind = 'slack-mention';
+export type RaisedKind = 'slack-mention' | 'dove-reply';
 
 type StopContext = Parameters<NonNullable<AgentSession['agent']['shouldStopAfterTurn']>>[0];
 
@@ -865,6 +877,7 @@ export class ThinkingLoop {
     const timeZone = this.options.loop.timeZone;
     const raisedAt = Date.parse(row.created_at);
     if (row.kind === 'agent-reply') return this.agents.takeEventLine(eventId, row.created_at);
+    if (row.kind === 'dove-reply') return this.options.dove?.takeEventLine(eventId, row.created_at) ?? { type: 'agent_reply', received_at: row.created_at, agent: DOVE_NAME };
     if (row.kind === 'slack-mention') return this.options.slack?.eventLine(eventId, row.created_at) ?? { type: 'slack_mention', received_at: row.created_at };
     // What the sources have that she was not shown yet, on the quiet moments only; taken as the line is made (ADR 0039).
     const updates = row.kind === 'ping' || row.kind === 'self-check' ? takeUpdates(this.options.updates ?? []) : undefined;
@@ -895,7 +908,9 @@ export class ThinkingLoop {
       scheduleSelfCheck: (reason, when) => this.selfChecks.schedule(reason, when),
       listSelfChecks: () => this.selfChecks.list(),
       cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
-      askAgent: (agent, message, goOn) => this.agents.ask(agent, message, goOn),
+      // The dove is one of the agents she can ask, and lives in the server: its name never reaches A2A (ADR 0040).
+      askAgent: (agent, message, goOn) => agent === DOVE_NAME && this.options.dove
+        ? this.options.dove.ask(message) : this.agents.ask(agent, message, goOn),
       ...(this.shell ? { runShell: (command: string) => this.runShell(command) } : {}),
     };
   }

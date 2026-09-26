@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { A2AClient, CardSummary } from './a2a-client.ts';
 import type { A2AConfig } from './config.ts';
+import { DOVE_NAME } from './dove.ts';
 import { localDateTime } from './nightly.ts';
 import { writeFileAtomically } from './paths.ts';
 
@@ -27,6 +28,8 @@ const MAX_EXAMPLE_CHARS = 200;
  */
 export async function writeAgentList(options: {
   directory: string; config: A2AConfig | undefined; client: A2AClient | undefined; now: number; timeZone: string;
+  /** Slack is configured, so the dove is there to ask (ADR 0040). */
+  dove?: boolean;
 }): Promise<{ listed: string[]; unreachable: string[] }> {
   const agents = Object.entries(options.config?.agents ?? {});
   const client = options.client;
@@ -39,13 +42,21 @@ export async function writeAgentList(options: {
     `サーバーが起動したとき（${localDateTime(options.now, options.timeZone)}）に書き出した、ask_agent で頼める相手の一覧です。`,
     'ask_agent の agent には、見出しの名前をそのまま書きます。説明は各相手が自分で名乗っているものです。',
   ];
-  if (fetched.length === 0) lines.push('', '頼める相手はいません。');
+  if (options.dove) lines.push('', `## ${DOVE_NAME}`, '', ...DOVE);
+  if (fetched.length === 0 && !options.dove) lines.push('', '頼める相手はいません。');
   for (const { name, card } of fetched) lines.push('', `## ${name}`, '', ...(card ? describe(card) : UNREACHABLE));
   // Group-readable and no more: the workspace may run as another user of the shared group, and only reads it (ADR 0033).
   await writeFileAtomically(join(options.directory, AGENT_LIST_FILE), `${lines.join('\n')}\n`, 0o640);
-  return { listed: fetched.filter(entry => entry.card).map(entry => entry.name),
+  return { listed: [...options.dove ? [DOVE_NAME] : [], ...fetched.filter(entry => entry.card).map(entry => entry.name)],
     unreachable: fetched.filter(entry => !entry.card).map(entry => entry.name) };
 }
+
+/** The dove is the server's own, so what it does is written here rather than read from a card. */
+const DOVE = [
+  '- 名乗り: ポッポさん（Slack への送信役の鳩）',
+  '- 説明: あなたの代わりに Slack へ投稿し、リアクションを付けます。投稿の下書きは判定にかけられ、そのまま届けるか、本人に回すか、理由を添えて突き返します。',
+  '- 頼み方: message は見出し付きの決まった形で書きます。書き方と返事の読み方は /manual/slack.md にあります。',
+];
 
 const UNREACHABLE = ['- 今は取れない: 起動したときに、この相手の説明を取れませんでした。頼むことはできますが、何ができる相手かはここでは分かりません。'];
 

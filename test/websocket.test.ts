@@ -104,7 +104,7 @@ test('unknown event types are ignored and unimplemented commands get a safe reje
   const ws = await connected(f.wsUrl, { authorization: `Bearer ${token}` });
   const first = nextMessage(ws);
   ws.send(JSON.stringify({ v: 1, requestId: 'r0', deviceId: 'device-example', type: 'future.event', payload: {} }));
-  ws.send(JSON.stringify({ v: 1, requestId: 'r1', deviceId: 'device-example', type: 'approval.decide', payload: { approvalId: 'approval-example' } }));
+  ws.send(JSON.stringify({ v: 1, requestId: 'r1', deviceId: 'device-example', type: 'conversation.interrupt', payload: {} }));
   const message = await first;
   assert.equal(message.v, 1);
   assert.equal(message.type, 'command.rejected');

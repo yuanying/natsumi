@@ -7,8 +7,8 @@ HTTPS/WSS の待ち受けと v1 envelope の入口、Let's Encrypt（ACME HTTP-0
 （端末の登録と同期、表情、表示用の会話の記録）、git で持つ Markdown の長期記憶、閉じ込めたコンテナの中の作業環境と、
 夜の思考の記録の切り替えを提供しています。
 Mac アプリは土台（ログイン、会話の同期、デスクトップに常駐するキャラクター、その上の吹き出し、話しかけて読み返す会話のウインドウ）ができています。
-Slack は受け取り（招待されたチャンネルをファイルに書き、メンションと DM を出来事にする）までができています。
-Slack への投稿、承認の表示、Google 連携は後続の実装です。
+Slack は受け取り（招待されたチャンネルをファイルに書き、メンションと DM を出来事にする）と、ポッポさんによる投稿
+（下書きの判定、本人に回した投稿の承認の API と iPhone への通知）ができています。承認の画面、画像の投稿、Google 連携は後続の実装です。
 
 Node.js 24.12.0 以降を使用します。通常の検証は外部認証・ネットワーク接続を必要としません
 （初回の npm 依存取得を除く）。Pi は `@earendil-works/pi-coding-agent` の SDK を npm 依存として固定しています。
@@ -307,7 +307,7 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
 natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待したチャンネルを読みます
 （[ADR 0012](docs/adr/0012-slack-and-colleagues.md)、[ADR 0039](docs/adr/0039-slack-as-files-and-a-scored-dove.md)）。
 外向きの WebSocket でつなぐので、公開する入口は要りません。公式の SDK `@slack/socket-mode` と `@slack/web-api` を使います。
-設定に `slack` がなければ、Slack には何もつなぎません。今は受け取りだけで、Slack への投稿はまだできません。
+設定に `slack` がなければ、Slack には何もつなぎません。投稿は下の「Slack に投稿する（ポッポさん）」にあります。
 
 1. ワークスペースごとに Slack App を作り、bot token（`xoxb-`）と Socket Mode の app-level token（`xapp-`）を用意します。
    必要な scope とイベントは [Slack App の作り方](docs/slack-app.md) にあります。本人の user token は使いません。
@@ -333,6 +333,11 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと画像でない添付は「添付あり（取り込まず）」とだけ書きます |
    | `slack.mentionContext.messages` / `.chars` | | 5 / 500 | メンションの出来事に添える前の発言の件数（0〜20）と、1 件あたりの文字数 |
    | `slack.updates` | | `true` | 合図（ping・self_check）の `updates` に Slack の件数を載せるか |
+   | `slack.judge` | | `pi.compatible` のモデルの logprobs | ポッポさんの判定の方式と接続先。下の「Slack に投稿する」 |
+   | `slack.approvalExpiryDays` | | 7 | 承認待ちの期限（1〜90 日） |
+   | `slack.reactions` | | `+1`・`eyes`・`pray`・`white_check_mark`・`bow`・`tada` | natsumi が頼めるリアクション（コロンなしの絵文字名、1〜50 個） |
+   | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後の発言がこの件数以内ならチャンネル、超えたらスレッドに置く（0〜20） |
+   | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる返信先の周りの発言の件数（1〜20）と、1 件あたりの文字数 |
 
 - 参加するチャンネルは、bot を招待して決めます。招待した後の最初の接続で、`backfillDays` 日前から埋めます。
 - 発言は data directory の `sources/slack/<ワークスペース>/<チャンネル>/<日付>.md`（DM は `@<名前>/`）に 1 日 1 ファイルで書きます。
@@ -352,6 +357,69 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
   Slack の API の失敗は、呼び出したメソッドと Slack のエラーのコード（足りない scope があればそれも）を出します。
   例: `slack (work): filling in a conversation failed (conversations.history: missing_scope, needed im:history)`。
   埋め直しの間は、同じ失敗は 1 度だけ出し、残りは最後の 1 行の件数に数えます。
+
+### Slack に投稿する（ポッポさん）
+
+natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信役のポッポさん（`poppo`）に頼みます
+（[ADR 0040](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)）。ポッポさんはサーバーの中にいて、Slack の設定があるときだけ頼める相手の一覧に載ります。
+
+- 依頼は見出し付きのテキスト（`返信先`・`種類`・`表情`、`---` の後が本文）です。書き方は natsumi 向けのマニュアル [manual/slack.md](manual/slack.md) にあります。
+  返信先はファイルの発言の参照で、サーバーが記録と突き合わせます。形の崩れ、記録に無い参照、機械的な検査に当たる本文は、その場で断ります。
+- 下書きは判定にかけます。問いは英語で、問題点ごとの点数（スレッドに無い情報、本人に代わる約束・期限、隠しごとの匂わせ、事実と違う説明、同意の捏造、私的な事情）と、
+  スレッドかチャンネルかを聞きます。判定に見せるのは下書きと返信先の周りの発言だけです。
+  - どの点数も `thresholds.owner`（既定 0.5）未満なら、本人の承認なしにそのまま送ります。
+  - `thresholds.return`（既定 0.9）以上の問題があれば、理由を添えて natsumi に突き返します。同じ返信先で 3 回目の突き返しは、前の下書きと一緒に本人に回します。
+  - その間なら、本人に回します。判定できなかったとき（判定なし）も本人に回します。
+- 本人に回した投稿は承認待ちになり、iPhone で承認・修正・却下を選びます（API と通知は [サーバーと Mac の契約](docs/client-contract.md) の「承認と外部実行」）。
+  期限（既定 7 日）を過ぎると閉じます。修正した本文は判定に掛け直しません。送る直前には、どの本文にも機械的な検査を掛けます。
+- 投稿のアイコンは、natsumi の表情ごとの顔です。サーバーが認証なしの `/avatar/<表情>.png` で配り、`chat.postMessage` の `icon_url` に渡します
+  （画像は `assets/avatar/`）。Slack App に `chat:write`・`chat:write.customize` が要ります（[Slack App の作り方](docs/slack-app.md)）。
+- リアクションは `slack.reactions` の候補だけで、判定も承認も通しません。
+- 送った本文、判定の点数、置き場所、本人の判断は `.natsumi/state.sqlite`（migration 14）に残ります。個人データとしてバックアップの対象です。
+- ログには判定の方式、ワークスペースの名前、Slack のメソッドとエラーのコード、判定の失敗の種類（例: `dove: judge: no verdict (no-answer-token)`）だけを出し、
+  下書き、接続先、ID は出しません。
+
+#### 判定の方式（`slack.judge`）
+
+判定の方式は 2 つあり、どちらも同じ問いと同じ材料を使います。
+
+- **`logprobs`（既定）**: OpenAI 互換のモデルに、問いごとに 1 回ずつ、思考なしで 1 トークンだけ答えさせ（`temperature 0`、`max_tokens 1`、`top_logprobs 20`）、
+  最初のトークンの候補の確率から点数を出します。問題点は yes と no の確率の比、置き場所は A（thread）・B（channel）の確率を合計 1 にしたものです。
+  答えのトークンが候補に無い、logprobs が返らない、思考のタグが出た、というときは判定なしです。
+  接続先・API キー・model は、書かなければ `pi.compatible` の `baseUrl`・`apiKeyEnv`/`apiKeyFile` と `pi.model.id` を使い回します。
+  `pi` が OpenAI 互換のモデルでなく、`slack.judge` も無ければ、判定はせず、投稿はすべて本人の承認に回ります。
+- **`jev`**: TypeSafe AI の Jev の API（`POST /v1/systemone`）、または同じ API を返すサーバーに、1 回の呼び出しで全部の問いを聞きます。
+
+値は架空の例です。1 つ目は pi のモデルを使う既定のもの（書かなくても同じ）、2 つ目は Jev です。
+
+```json
+"judge": { "thresholds": { "owner": 0.5, "return": 0.9 } }
+```
+
+```json
+"judge": { "method": "jev", "apiKeyFile": "/run/secrets/natsumi_jev_api_key" }
+```
+
+| 項目 | 既定 | 中身 |
+| --- | --- | --- |
+| `slack.judge.method` | `logprobs` | `logprobs` か `jev` |
+| `slack.judge.baseUrl` | logprobs: `pi.compatible.baseUrl`、jev: `https://api.typesafe.ai` | 接続先。logprobs は OpenAI 互換の `…/v1`、jev は `/v1/systemone` の手前。http か https。ここで API キーを付けるなら、http で送れるのはループバックの相手だけです |
+| `slack.judge.apiKeyEnv` / `apiKeyFile` | logprobs で接続先を書かなければ `pi.compatible` のもの、ほかはなし | API キー。無ければ `Authorization` を付けません。pi のキーは、pi の接続先にしか送りません |
+| `slack.judge.model` | logprobs: `pi.model.id`、jev: `jev-latest` | 要求の `model` |
+| `slack.judge.concurrency` | 4 | logprobs で同時に聞く問いの数（1〜16） |
+| `slack.judge.timeoutSeconds` | 30 | 1 つの下書きの判定の全体の待ち時間の上限（5〜300 秒）。過ぎたら判定なし |
+| `slack.judge.thresholds.owner` / `.return` | 0.5 / 0.9 | 本人に回す・突き返すしきい値（0 より大きく 1 以下、owner ≦ return） |
+
+- 接続先には下書きと周りの発言が出ます。natsumi のコンテナから届くように、出口の許可リストにその接続先を加えます（[ADR 0034](docs/adr/0034-an-allow-list-for-the-way-out.md)）。
+- しきい値を決める前に、架空の場面で判定を評価できます。止めるべき下書き（匂わせ・嘘・約束・捏造した同意・私的な事情・スレッドに無い情報）と
+  正しい投稿を判定させ、しきい値ごとに止めた数と正しい投稿を止めた数、場面ごとの時間を出します。本物の接続先を呼びます。
+
+  ```sh
+  JUDGE_BASE_URL=https://llm.example.net/v1 JUDGE_MODEL=my-model JUDGE_API_KEY_ENV=MY_KEY npm run probe:jev -- --thresholds 0.5,0.9
+  ```
+
+  `JUDGE_METHOD`（`logprobs` か `jev`）、`JUDGE_CONCURRENCY`、`JUDGE_TIMEOUT_SECONDS` も指定できます。
+  キーは値ではなく、キーを入れた環境変数の名前を `JUDGE_API_KEY_ENV` で渡します。結果にキーの値は出ません。
 
 ### natsumi の作業環境（natsumi-workspace）
 
@@ -675,7 +743,7 @@ TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは Jev が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json)（証明書ファイル）と [ACME の設定例](config.acme.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。
