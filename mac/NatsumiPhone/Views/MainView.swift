@@ -39,6 +39,15 @@ struct MainView: View {
                 }
         }
         .tint(Comic.pageInk)
+        // A picture opened large covers everything, the page under it included (ADR 0045).
+        .fullScreenCover(isPresented: Binding(
+            get: { props.viewer != nil },
+            set: { if !$0 { sinks.viewer(.imageViewerClosed) } }
+        )) {
+            if let viewer = props.viewer {
+                ImageViewerView(props: viewer, send: sinks.viewer)
+            }
+        }
     }
 
     private var screen: some View {
