@@ -1,0 +1,75 @@
+# Slack App の作り方
+
+natsumi は、ワークスペースごとに専用の Slack App（bot）を持ちます（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)）。
+ここでは、受け取りに要る App を 1 つのワークスペースに作る手順を書きます。ワークスペースが複数あるなら、それぞれで繰り返します。
+Slack の画面の名前は変わることがあります。見当たらないときは、同じ役割の項目を探してください。
+
+## 1. App を作る
+
+1. <https://api.slack.com/apps> で「Create New App」→「From scratch」を選び、名前（例: natsumi）と、入れるワークスペースを選びます。
+2. 「Basic Information」の「Display Information」で、表示名とアイコンを好みに設定します。
+
+## 2. Socket Mode を有効にする
+
+1. 「Socket Mode」を開き、「Enable Socket Mode」を有効にします。
+2. app-level token の作成を求められるので、名前（例: natsumi-socket）を付け、scope に `connections:write` を選んで作ります。
+3. できた `xapp-` で始まる token が、設定の `appTokenEnv` / `appTokenFile` で指す token です。
+
+Socket Mode は natsumi から Slack へ外向きにつなぐので、公開する URL（Request URL）は要りません。
+
+## 3. bot の scope を足す
+
+「OAuth & Permissions」の「Bot Token Scopes」に、次を足します。
+
+| scope | 何に使うか |
+| --- | --- |
+| `channels:history` | 公開チャンネルの発言を読む |
+| `groups:history` | 招待された非公開チャンネルの発言を読む |
+| `im:history` | DM を読む |
+| `channels:read` / `groups:read` / `im:read` | 参加しているチャンネルと DM の一覧と名前を知る |
+| `users:read` | 発言者の表示名を知る |
+| `files:read` | 添付の画像を取ってくる |
+| `reactions:write` | 受け取ったときに 👀 を付ける |
+| `app_mentions:read` | メンションを受け取る |
+
+投稿のための scope（`chat:write` など）は、Slack への投稿を作る作業で足します。今は要りません。
+User Token Scopes には何も足しません。natsumi は本人の user token を使いません。
+
+## 4. イベントを購読する
+
+1. 「Event Subscriptions」を開き、「Enable Events」を有効にします（Socket Mode なので Request URL は求められません）。
+2. 「Subscribe to bot events」に、次を足します。
+
+| イベント | 何を受け取るか |
+| --- | --- |
+| `message.channels` | 公開チャンネルの発言 |
+| `message.groups` | 非公開チャンネルの発言 |
+| `message.im` | DM |
+| `app_mention` | メンション |
+
+3. DM を受け取るには、「App Home」の「Show Tabs」で「Messages Tab」を有効にし、
+   「Allow users to send Slash commands and messages from the messages tab」にも印を付けます。
+
+## 5. ワークスペースに入れる
+
+1. 「Install App」から、ワークスペースにインストールします（scope を変えたら入れ直します）。
+2. できた `xoxb-` で始まる Bot User OAuth Token が、設定の `botTokenEnv` / `botTokenFile` で指す token です。
+3. 読ませたいチャンネルで、bot を招待します（例: チャンネルで `/invite @natsumi`）。
+   招待したチャンネルだけを読みます。中身が外に漏れても困らないチャンネルだけに招待してください（ADR 0039 のテストの段階の前提）。
+
+## 6. token を置く
+
+token は秘密です。設定ファイルに値を書かず、次のどちらかで渡します。
+
+- ファイル: コンテナのユーザーだけが読めるファイルに置き、`botTokenFile` / `appTokenFile` に絶対パスを書きます。
+  Docker なら `secrets/` の下（Git の追跡対象外）に置いて、コンテナにマウントします。Kubernetes なら Secret をマウントします。
+- 環境変数: `botTokenEnv` / `appTokenEnv` に環境変数の名前を書き、その変数に token を入れます。
+
+token は natsumi のコンテナにだけ渡し、作業環境（natsumi-workspace）には渡しません。
+
+## 7. 確かめる
+
+natsumi を起動すると、ログに `slack (<名前>): connecting` が出ます。
+token が違うか App の設定が足りないと `could not start` が出ます。
+つながると、招待したチャンネルが data directory の `sources/slack/<名前>/` に書かれ、`sources/slack/INDEX.md` に並びます。
+bot にメンションすると 👀 が付き、natsumi に出来事として届きます。
