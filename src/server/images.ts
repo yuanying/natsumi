@@ -3,7 +3,7 @@ import { mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises
 import { basename, join, posix } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { isWithin } from './paths.ts';
-import { imageType } from './view.ts';
+import { imageType, WORK_PATH } from './view.ts';
 
 /**
  * Images natsumi hands the server from /work (ADR 0044), such as those she names under `画像:` in a request to the
@@ -14,8 +14,6 @@ import { imageType } from './view.ts';
  * which the devices fetch by its ID with the session, whatever shows it to them.
  */
 
-/** Where the workspace sees its working directory, which is `work/` in the data directory. */
-export const WORK_PATH = '/work';
 /** Where the copies are kept, under the server's own state directory. */
 export const IMAGE_DIRECTORY = 'images';
 

@@ -921,7 +921,8 @@ export class ThinkingLoop {
    */
   private runShell(command: string): Promise<ToolOutcome> {
     const path = parseView(command);
-    if (path !== undefined) return viewImage(path, join(this.options.dataDirectory, SOURCES_DIRECTORY));
+    if (path !== undefined) return viewImage(path, { sources: join(this.options.dataDirectory, SOURCES_DIRECTORY),
+      work: join(this.options.dataDirectory, WORK_DIRECTORY) });
     return this.shell!.run(command);
   }
 
