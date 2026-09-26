@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// The avatar expressions the server chooses from (client-contract `avatar.expression`).
@@ -37,10 +38,13 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
     /// The feeling natsumi put into one of her lines (ADR 0026). nil on the owner's messages, on her lines from
     /// before the server kept it, and when the value is not one this app knows: all of them read as not known.
     public let expression: Expression?
+    /// The pictures natsumi attached to a reply, in the order she put them (ADR 0045). Empty on every other line.
+    public let images: [ShownImage]
 
     public init(
         messageId: String, role: Role, kind: Kind, text: String, createdAt: String,
-        eventId: String? = nil, replyTo: String? = nil, about: [String]? = nil, expression: Expression? = nil
+        eventId: String? = nil, replyTo: String? = nil, about: [String]? = nil, expression: Expression? = nil,
+        images: [ShownImage] = []
     ) {
         self.messageId = messageId
         self.role = role
@@ -52,10 +56,11 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
         self.replyTo = replyTo
         self.about = about
         self.expression = expression
+        self.images = images
     }
 
     private enum CodingKeys: String, CodingKey {
-        case messageId, role, kind, text, createdAt, eventId, replyTo, about, expression
+        case messageId, role, kind, text, createdAt, eventId, replyTo, about, expression, images
     }
 
     public init(from decoder: Decoder) throws {
@@ -69,11 +74,64 @@ public struct ShownMessage: Codable, Equatable, Identifiable, Sendable {
             about: try values.decodeIfPresent([String].self, forKey: .about),
             // Read as a string first: a feeling added on the server later must not lose the line.
             expression: (try? values.decodeIfPresent(String.self, forKey: .expression)).flatMap { $0 }
-                .flatMap(Expression.init(rawValue:)))
+                .flatMap(Expression.init(rawValue:)),
+            // A picture this app cannot read is left out; the line and the other pictures are not.
+            images: (try? values.decodeIfPresent(Lossy<ShownImage>.self, forKey: .images))?.elements ?? [])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(messageId, forKey: .messageId)
+        try values.encode(role, forKey: .role)
+        try values.encode(kind, forKey: .kind)
+        try values.encode(text, forKey: .text)
+        try values.encode(createdAt, forKey: .createdAt)
+        try values.encodeIfPresent(eventId, forKey: .eventId)
+        try values.encodeIfPresent(replyTo, forKey: .replyTo)
+        try values.encodeIfPresent(about, forKey: .about)
+        try values.encodeIfPresent(expression, forKey: .expression)
+        if !images.isEmpty { try values.encode(images, forKey: .images) }
     }
 
     public var id: String { messageId }
     public var isNotice: Bool { kind == .notice }
+}
+
+/// A picture as the server lists it, on a reply or on an approval (client-contract「会話の画像」). The picture itself
+/// is fetched by its ID; the same ID never changes.
+public struct ShownImage: Codable, Equatable, Sendable {
+    public let imageId: String
+    public let mimeType: String
+    public let bytes: Int
+    /// Its size in pixels, when the server could read it. Both are there, or neither.
+    public let width: Int?
+    public let height: Int?
+
+    public init(imageId: String, mimeType: String, bytes: Int, width: Int? = nil, height: Int? = nil) {
+        self.imageId = imageId
+        self.mimeType = mimeType
+        self.bytes = bytes
+        let known = (width ?? 0) > 0 && (height ?? 0) > 0
+        self.width = known ? width : nil
+        self.height = known ? height : nil
+    }
+
+    private enum CodingKeys: String, CodingKey { case imageId, mimeType, bytes, width, height }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            imageId: try values.decode(String.self, forKey: .imageId), mimeType: try values.decode(String.self, forKey: .mimeType),
+            bytes: try values.decode(Int.self, forKey: .bytes),
+            width: try? values.decodeIfPresent(Int.self, forKey: .width),
+            height: try? values.decodeIfPresent(Int.self, forKey: .height))
+    }
+
+    /// Width over height, when the size is known.
+    public var aspectRatio: CGFloat? {
+        guard let width, let height else { return nil }
+        return CGFloat(width) / CGFloat(height)
+    }
 }
 
 public struct PendingEvent: Codable, Equatable, Sendable {
