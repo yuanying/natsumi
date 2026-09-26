@@ -47,3 +47,13 @@ test('the workspace image holds the manual, and compose shows it the list of age
   assert.match(mount[1]!, /read_only: true/);
   assert.match(mount[1]!, new RegExp(`subpath: ${AGENT_LIST_DIRECTORY}\\b`));
 });
+
+// ADR 0040: what she writes to the dove and what comes back are spelled the way the server reads and writes them.
+test('the Slack page says how to ask the dove and names every answer it gives', async () => {
+  const page = await read('manual/slack.md');
+  for (const word of ['poppo', '返信先:', '種類: 投稿', '種類: リアクション', '表情:', '---', 'agent_reply',
+    'sent', 'reacted', 'to_owner', 'returned', 'rejected', 'expired', 'not_sent']) {
+    assert.ok(page.includes(word), word);
+  }
+  assert.doesNotMatch(page, /今はまだ Slack に書き込めません|書き込む手段がありません/);
+});
