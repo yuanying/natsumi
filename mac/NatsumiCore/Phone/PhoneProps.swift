@@ -140,8 +140,8 @@ public enum PhonePageProps: Equatable, Sendable {
     case history(PhoneHistoryProps)
     case settings(PhoneSettingsProps)
     case approvals(PhoneApprovalListProps)
-    /// One approval, pushed over the list.
-    case approval(PhoneApprovalPageProps)
+    /// One approval, pushed over the list, and the list under it.
+    case approval(PhoneApprovalPageProps, list: PhoneApprovalListProps)
 }
 
 /// The main screen: the only one where she moves.
@@ -242,7 +242,7 @@ public enum PhoneProps {
         case .approvals:
             .approvals(PhoneApprovalProps.list(state, time: time))
         case .approval(let id):
-            .approval(PhoneApprovalProps.page(state, id: id, time: time))
+            .approval(PhoneApprovalProps.page(state, id: id, time: time), list: PhoneApprovalProps.list(state, time: time))
         case nil:
             nil
         }

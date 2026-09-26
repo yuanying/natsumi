@@ -19,6 +19,8 @@ final class PhoneRootComponent: PhoneComponent {
     private let main = MainComponent()
     private let history = HistoryComponent()
     private let settings = SettingsComponent()
+    private let approvals = ApprovalsComponent()
+    private let approval = ApprovalComponent()
 
     private var pending: [PhoneEvent] = []
     private var draining = false
@@ -35,11 +37,15 @@ final class PhoneRootComponent: PhoneComponent {
         adopt(main)
         adopt(history)
         adopt(settings)
+        adopt(approvals)
+        adopt(approval)
         model.sinks = ScreenSinks(
             login: login.sink, main: main.sink, status: main.status.sink, header: main.header.sink,
             notices: main.notices.sink, balloon: main.balloon.sink, input: main.input.sink,
             failures: main.failures.sink, historyRows: history.rows.sink, historyInput: history.input.sink,
-            historyOutgoing: history.outgoing.sink, settings: settings.buttons.sink)
+            historyOutgoing: history.outgoing.sink, settings: settings.buttons.sink, approvalsEntry: main.approvals.sink,
+            approvalRows: approvals.rows.sink, approval: approval.sink, approvalPlacement: approval.placement.sink,
+            approvalActions: approval.actions.sink, approvalEditor: approval.editor.sink)
     }
 
     /// Everything the tree is touched from outside with.
@@ -78,10 +84,20 @@ final class PhoneRootComponent: PhoneComponent {
 
     /// A silent push arrived. It is done with once the notifications are tidied.
     func remoteNotificationReceived(_ userInfo: [AnyHashable: Any]) async -> Bool {
-        guard let push = BackgroundPush(userInfo: userInfo) else { return false }
-        deliver(.backgroundPushReceived(push))
+        if let push = BackgroundPush(userInfo: userInfo) {
+            deliver(.backgroundPushReceived(push))
+        } else if let push = ApprovalResolvedPush(userInfo: userInfo) {
+            deliver(.approvalResolvedPushReceived(push))
+        } else {
+            return false
+        }
         await tidyTask?.value
         return true
+    }
+
+    /// The owner tapped the alert of an approval.
+    func approvalNotificationOpened(_ approvalId: String) {
+        deliver(.approvalNotificationOpened(approvalId: approvalId))
     }
 
     private func registerForNotifications() {
@@ -97,9 +113,7 @@ final class PhoneRootComponent: PhoneComponent {
         tidyTask = Task {
             await previous?.value
             let center = UNUserNotificationCenter.current()
-            let gone = await center.deliveredNotifications().filter {
-                AlertPush(userInfo: $0.request.content.userInfo).map(tidy.removes) ?? false
-            }
+            let gone = await center.deliveredNotifications().filter { tidy.removes(userInfo: $0.request.content.userInfo) }
             center.removeDeliveredNotifications(withIdentifiers: gone.map(\.request.identifier))
             try? await center.setBadgeCount(tidy.badge)
         }
@@ -241,6 +255,12 @@ struct ScreenSinks {
     var historyInput: PhoneEventSink = .ignored
     var historyOutgoing: PhoneEventSink = .ignored
     var settings: PhoneEventSink = .ignored
+    var approvalsEntry: PhoneEventSink = .ignored
+    var approvalRows: PhoneEventSink = .ignored
+    var approval: PhoneEventSink = .ignored
+    var approvalPlacement: PhoneEventSink = .ignored
+    var approvalActions: PhoneEventSink = .ignored
+    var approvalEditor: PhoneEventSink = .ignored
 }
 
 /// SwiftUI's window group cannot be handed a value the way a hosting view can, so it reads the props it was last

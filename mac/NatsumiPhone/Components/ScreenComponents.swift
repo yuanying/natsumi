@@ -18,6 +18,8 @@ final class MainComponent: PhoneComponent {
     let header = PhoneComponent(name: "main.header")
     /// The notice card, which opens the history.
     let notices = PhoneComponent(name: "main.notices")
+    /// The count of approvals waiting, which opens their list.
+    let approvals = PhoneComponent(name: "main.approvals")
     /// The × on her reply.
     let balloon = PhoneComponent(name: "main.balloon")
     /// The text field and the send button.
@@ -30,6 +32,7 @@ final class MainComponent: PhoneComponent {
         adopt(status)
         adopt(header)
         adopt(notices)
+        adopt(approvals)
         adopt(balloon)
         adopt(input)
         adopt(failures)
@@ -51,6 +54,36 @@ final class HistoryComponent: PhoneComponent {
         adopt(rows)
         adopt(input)
         adopt(outgoing)
+    }
+}
+
+/// The list of approvals waiting for the owner, pushed over the main screen.
+@MainActor
+final class ApprovalsComponent: PhoneComponent {
+    /// The rows, each of which opens its approval.
+    let rows = PhoneComponent(name: "approvals.rows")
+
+    init() {
+        super.init(name: "approvals")
+        adopt(rows)
+    }
+}
+
+/// One approval, pushed over the list. It raises going back to the list itself.
+@MainActor
+final class ApprovalComponent: PhoneComponent {
+    /// The choice between the thread and the channel.
+    let placement = PhoneComponent(name: "approval.placement")
+    /// 承認・修正・却下.
+    let actions = PhoneComponent(name: "approval.actions")
+    /// The draft as a text field while the owner edits it, with its buttons.
+    let editor = PhoneComponent(name: "approval.editor")
+
+    init() {
+        super.init(name: "approval")
+        adopt(placement)
+        adopt(actions)
+        adopt(editor)
     }
 }
 

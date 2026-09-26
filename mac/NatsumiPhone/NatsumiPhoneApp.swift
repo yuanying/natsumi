@@ -1,5 +1,6 @@
 import NatsumiCore
 import SwiftUI
+import UserNotifications
 
 @main
 struct NatsumiPhoneApp: App {
@@ -17,12 +18,28 @@ struct NatsumiPhoneApp: App {
 
 /// The only thing that holds the root (ADR 0028). It passes on what iOS says about notifications (ADR 0029).
 @MainActor
-final class PhoneAppDelegate: NSObject, UIApplicationDelegate {
+final class PhoneAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     let root: PhoneRootComponent = {
         let root = PhoneRootComponent()
         root.launch()
         return root
     }()
+
+    func application(
+        _ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        // Set before launching ends, so that the tap that launched the app is heard too.
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    /// The owner tapped a notification: an approval's opens that approval; the others just bring the app up.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
+    ) async {
+        guard let id = ApprovalAlertPush(userInfo: response.notification.request.content.userInfo)?.approvalId else { return }
+        await MainActor.run { root.approvalNotificationOpened(id) }
+    }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         root.deviceTokenReceived(deviceToken)

@@ -26,7 +26,7 @@ struct PhoneApprovalTests {
     }
 
     private func page(_ mediator: PhoneMediator) -> PhoneApprovalPageProps? {
-        if case .approval(let props) = main(mediator)?.page { props } else { nil }
+        if case .approval(let props, _) = main(mediator)?.page { props } else { nil }
     }
 
     private func detail(_ mediator: PhoneMediator) -> PhoneApprovalDetailProps? {
@@ -227,6 +227,17 @@ struct PhoneApprovalTests {
         #expect(main(mediator)?.approvals == nil)
         _ = mediator.handle(.approvalClosed)
         #expect(list(mediator)?.rows == [])
+    }
+
+    @Test("置き場所を変えて送ったものは、閉じた後も変えた置き場所を出す")
+    func placementAfterClosing() {
+        var mediator = synced()
+        _ = mediator.handle(.approvalOpenRequested(approvalId: "a1"))
+        _ = mediator.handle(.approvalPlacementChosen(.channel))
+        _ = mediator.handle(.approvalApproved(approvalId: "a1"))
+        _ = mediator.handle(.socketReceived(Fixture.approvalResolved("a1", seq: 2)))
+        #expect(detail(mediator)?.placement == "チャンネルに投稿")
+        #expect(detail(mediator)?.placementOptions == [])
     }
 
     @Test("送れなかった・却下・期限切れ・修正の結果の書き方")

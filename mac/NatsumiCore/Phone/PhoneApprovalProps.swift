@@ -235,7 +235,8 @@ enum PhoneApprovalProps {
         let isPending = book.pending.contains { $0.approvalId == id }
         let decision = book.decisions[id]
         let canMove = isPending && approval.target.replyTo != nil
-        let placement = (canMove ? state.approvalPlacement : nil) ?? approval.target.placement
+        // What the owner chose here stays after it closes: that is where it was sent.
+        let placement = (approval.target.replyTo != nil ? state.approvalPlacement : nil) ?? approval.target.placement
             ?? (approval.target.replyTo == nil ? .channel : .thread)
         let dates = time.labels([approval.createdAt, approval.expiresAt])
 
