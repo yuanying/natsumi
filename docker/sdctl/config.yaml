@@ -1,0 +1,10 @@
+# sdctl's defaults in natsumi's workspace (ADR 0044), which /usr/local/bin/sdctl always passes with --config. They are
+# here and not in the image's environment because natsumi's commands go through the runner, which gives a command only
+# PATH, HOME, LANG and TZ (ADR 0019). With these, `sdctl txt2img --prompt <file>` needs nothing else.
+# An environment variable of the same name (SDCTL_URL and so on) still wins, and a flag wins over both.
+#
+# The relay in the same Pod: the egress proxy listens on this loopback address and adds the token. The port is the
+# environment overlay's promise too (it also gives the workspace SDCTL_URL with it); change both together.
+url: http://127.0.0.1:17860
+params: /etc/sdctl/anima.yaml
+output_dir: /work/images
