@@ -13,7 +13,8 @@ async function setup() {
   await mkdir(data); await mkdir(home);
   const pi = (base = join(root, 'pi')): PiConfig => ({
     agentDirectory: join(base, 'agent'), sessionDirectory: join(base, 'sessions'), authPath: join(base, 'agent', 'auth.json'),
-    model: { provider: 'openai-codex', id: 'gpt-5.5' }, thinking: 'on', voiceEnabled: false,
+    routes: [{ name: 'default', model: { provider: 'openai-codex', id: 'gpt-5.5' }, compactionThreshold: 60000 }], defaultRoute: 'default',
+    thinking: 'on', voiceEnabled: false,
   });
   return { root, data, home, pi, cleanup: () => rm(root, { recursive: true, force: true }) };
 }

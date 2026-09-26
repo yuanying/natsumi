@@ -6,7 +6,9 @@ import { AGENT_LIST_DIRECTORY, writeAgentList } from './agent-list.ts';
 import { ApnsClient, parseApnsKey, type ApnsEnvironment } from './apns.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
-import { ConfigError, JUDGE_DEFAULTS, loadConfig, type JudgeConfig, type ServerConfig } from './config.ts';
+import { catalogContextWindow } from '../pi/auth.ts';
+import { checkRouteWindow, ConfigError, defaultRoute, JUDGE_DEFAULTS, loadConfig, type JudgeConfig,
+  type ServerConfig } from './config.ts';
 import { ConnectionHub } from './connections.ts';
 import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from './data-directory.ts';
 import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-login.ts';
@@ -87,6 +89,8 @@ export interface RunningServer {
   checkCertificate(): Promise<void>;
   /** Runs the nightly session switch now, as the schedule would. For operation checks. */
   rotateSession(): Promise<RotationOutcome>;
+  /** Looks for a route chosen on the command line and follows it between turns (also runs with the heartbeat). */
+  refreshRoutes(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -150,6 +154,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     db = openStateDatabase(join(dataDirectory, STATE_DIRECTORY, 'state.sqlite'));
     const { version } = migrate(db, MIGRATIONS);
     await preparePiState(config.pi, { dataDirectory, home: options.home });
+    // A subscription model's window is Pi's, not the config's, so its route's threshold is checked here (ADR 0046).
+    for (const route of config.pi.routes.filter(candidate => !candidate.compatible)) {
+      const window = await catalogContextWindow(config.pi.agentDirectory, { provider: route.model.provider, model: route.model.id });
+      if (window !== undefined) checkRouteWindow(config.pi, route, window);
+    }
 
     // One client for the loop and the list: the token file is read afresh on every call either makes (ADR 0033).
     const a2aClient = config.a2a ? new SdkA2AClient({ tokenFile: config.a2a.tokenFile }) : undefined;
@@ -185,8 +194,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
       db, dataDirectory, sessionDirectory: config.pi.sessionDirectory, agentDirectory: config.pi.agentDirectory,
-      target: { provider: config.pi.model.provider, model: config.pi.model.id }, thinking: config.pi.thinking,
-      runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
+      target: { provider: defaultRoute(config.pi).model.provider, model: defaultRoute(config.pi).model.id }, thinking: config.pi.thinking,
+      routes: { defaultRoute: config.pi.defaultRoute, list: config.pi.routes.map(route => ({ name: route.name,
+        target: { provider: route.model.provider, model: route.model.id }, compactionThreshold: route.compactionThreshold,
+        compatible: route.compatible !== undefined })) },
+      runtime: options.pi?.runtime ?? (() => createModelRuntime(config.pi, options.env)),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop,
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       updates, ...(archive ? { slack: archive } : {}), ...(theDove ? { dove: theDove } : {}), images,
@@ -323,6 +335,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     await writeStatus(dataDirectory, status);
     timers.push(setInterval(() => {
       void writeStatus(dataDirectory, { ...status, updatedAt: isoAt(Date.now()) }).catch(() => {});
+      // A choice written by the command line while natsumi is idle is followed without waiting for a turn (ADR 0046).
+      void thinkingLoop.refreshRoutes().catch(() => { log('thinking loop: the model routes could not be looked at'); });
     }, HEARTBEAT_MS));
     timers.push(setInterval(() => connections.expireSessions(), SESSION_SWEEP_MS));
 
@@ -335,6 +349,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       expireSessions: () => connections.expireSessions(),
       checkCertificate: () => manager?.checkCertificate() ?? Promise.resolve(),
       rotateSession: () => thinkingLoop.rotate(),
+      refreshRoutes: () => thinkingLoop.refreshRoutes(),
       stop() {
         stopping ??= (async () => {
           try {

@@ -48,7 +48,8 @@ function rejects(raw: unknown, path: string, reason?: RegExp) {
 
 test('a valid config becomes a typed server config', () => {
   assert.deepEqual(parseConfig(base()), {
-    pi: { ...pi(), thinking: 'on' },
+    pi: { agentDirectory: pi().agentDirectory, sessionDirectory: pi().sessionDirectory, authPath: pi().authPath, voiceEnabled: false,
+      routes: [{ name: 'default', model: pi().model, compactionThreshold: 60000 }], defaultRoute: 'default', thinking: 'on' },
     publicOrigin: 'https://natsumi.example.test',
     listen: { host: '::', port: 8443, tls: tls() },
     github: {
@@ -192,14 +193,14 @@ test('the always-memory has its own smaller limit, with a default and a floor', 
 test('an OpenAI-compatible endpoint is chosen explicitly, with its key referenced by env or file', () => {
   const endpoint = { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY' };
   const compatible = { ...pi(), model: { provider: 'natsumi-compatible', id: 'fixture-model' }, compatible: endpoint };
-  assert.deepEqual(parseConfig({ ...base(), pi: compatible }).pi.compatible,
+  assert.deepEqual(parseConfig({ ...base(), pi: compatible }).pi.routes[0]!.compatible,
     { baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' }, contextWindow: 128000 });
   const { apiKeyEnv: _key, ...noKey } = endpoint;
-  assert.deepEqual(parseConfig({ ...base(), pi: { ...compatible, compatible: { ...noKey, apiKeyFile: '/run/secrets/pi-api-key' } } }).pi.compatible?.apiKey,
+  assert.deepEqual(parseConfig({ ...base(), pi: { ...compatible, compatible: { ...noKey, apiKeyFile: '/run/secrets/pi-api-key' } } }).pi.routes[0]!.compatible?.apiKey,
     { file: '/run/secrets/pi-api-key' });
-  assert.equal(parseConfig({ ...base(), pi: { ...compatible, compatible: { ...endpoint, baseUrl: 'http://127.0.0.1:8080/v1' } } }).pi.compatible?.baseUrl,
+  assert.equal(parseConfig({ ...base(), pi: { ...compatible, compatible: { ...endpoint, baseUrl: 'http://127.0.0.1:8080/v1' } } }).pi.routes[0]!.compatible?.baseUrl,
     'http://127.0.0.1:8080/v1');
-  assert.equal('compatible' in parseConfig(base()).pi, false);
+  assert.equal('compatible' in parseConfig(base()).pi.routes[0]!, false);
 
   rejects({ ...base(), pi: { ...compatible, compatible: noKey } }, 'pi.compatible.apiKeyEnv', /apiKeyFile/);
   rejects({ ...base(), pi: { ...compatible, compatible: { ...endpoint, apiKeyFile: '/run/secrets/pi-api-key' } } }, 'pi.compatible.apiKeyFile', /only one/);
@@ -217,8 +218,8 @@ test('a compatible endpoint\'s context window is 128000 unless set, and must be 
   const compatible = (endpoint: Record<string, unknown>) => ({ ...base(), pi: { ...pi(),
     model: { provider: 'natsumi-compatible', id: 'fixture-model' },
     compatible: { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY', ...endpoint } } });
-  assert.equal(parseConfig(compatible({})).pi.compatible?.contextWindow, 128000);
-  assert.equal(parseConfig(compatible({ contextWindow: 262144 })).pi.compatible?.contextWindow, 262144);
+  assert.equal(parseConfig(compatible({})).pi.routes[0]!.compatible?.contextWindow, 128000);
+  assert.equal(parseConfig(compatible({ contextWindow: 262144 })).pi.routes[0]!.compatible?.contextWindow, 262144);
   for (const tokens of [0, -1, 1.5, '262144', null, true]) {
     rejects(compatible({ contextWindow: tokens }), 'pi.compatible.contextWindow', /integer/);
   }

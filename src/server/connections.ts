@@ -17,9 +17,10 @@ export const CLOSE_TOO_SLOW = 4002;
 
 /** Commands of the v1 client contract. The ones not handled below receive a safe rejection. */
 const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.read', 'conversation.interrupt', 'approval.decide',
-  'notification.ack', 'device.activity', 'push.register']);
+  'notification.ack', 'device.activity', 'push.register', 'model.list', 'model.use']);
 /** Commands that act for a device, and so need `session.sync` first and the connection's own device ID. */
-const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register', 'approval.decide']);
+const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register', 'approval.decide',
+  'model.list', 'model.use']);
 const DECISIONS = new Set(['approve', 'edit', 'reject']);
 const PLACEMENTS = new Set(['thread', 'channel']);
 
@@ -61,6 +62,10 @@ export interface HubLoop {
   acknowledgeNotice(input: { notificationId: string; deviceId: string }): RelayedOutcome;
   /** Everything a device needs to start over from; spread whole into `session.snapshot`. */
   snapshot(): Record<string, unknown>;
+  /** The model routes, the one in use and the one chosen (ADR 0046). */
+  routeStatus(): object;
+  /** Chooses the route the next turn is on (ADR 0046). */
+  chooseRoute(input: { route: string; deviceId: string }): Promise<RelayedOutcome>;
 }
 
 /** Where a device asks to be pushed while it is away (ADR 0029). Kept whether or not APNs is configured. */
@@ -241,6 +246,18 @@ export class ConnectionHub {
         return answer(stream!, approvals.decide({ approvalId, revision: revision as number, decision: decision as 'approve' | 'edit' | 'reject',
           ...(decision === 'edit' ? { text: text as string } : {}), ...(placement ? { placement: placement as 'thread' | 'channel' } : {}),
           deviceId: connection.deviceId! }), id);
+      }
+      case 'model.list': {
+        const { loop } = this.options;
+        if (loop.unavailable) return stream!.publish('service.unavailable', { code: loop.unavailable }, id);
+        return stream!.publish('command.accepted', { ...loop.routeStatus() }, id);
+      }
+      case 'model.use': {
+        const { route } = payload;
+        if (typeof route !== 'string' || route === '' || route.length > 64) return reject('invalid-request');
+        void this.options.loop.chooseRoute({ route, deviceId: connection.deviceId! }).then(outcome => answer(stream!, outcome, id),
+          () => reject('invalid-request'));
+        return;
       }
       case 'push.register':
         // Independent of the loop: a device registers even while natsumi cannot talk.
