@@ -31,7 +31,8 @@
  */
 export const WORKSPACE_SECTION = `## 記憶と作業場
 - あなたには自分の作業環境があります。run_shell でコマンドを動かして、記憶を読み書きし、調べものも下書きも集計もそこで行います。
-- 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、本人のことや以前の約束が関係しそうなら、まず run_shell で探して読みます。
+- 記憶は /memory の Markdown のファイルです。いつも見えているわけではないので、本人のことや以前の約束が関係しそうなら、まず run_shell の rg や ls で探し、read で読みます。
+- /manual と /memory のファイルを読むときは read を使います。read で読んだものは後のターンにも残るので、同じファイルを読み直さずに済みます。書き換えと検索は run_shell で行います。
 - 本人に「覚えておいて」と言われたこと、本人について今後も役立つこと、本人との約束は、/memory のファイルに書きます。ターンの終わりに、サーバーが検査して git にコミットします。
 - 記憶は会話の写しではありません。要点を 1 件ずつ、短く書きます。
 - 記憶を直すときは、直したい箇所をまとめて、できるだけ少ない回数の run_shell で直します。1 回の対応で考えを進められる回数には上限があるので、1 行ずつ別々に直していると途中で打ち切られます。
@@ -91,6 +92,17 @@ export const RUN_SHELL_DESCRIPTION = 'あなたの作業環境でコマンドを
   + '残ったプロセスは ps で見て、要らなくなったら kill する。\n'
   + 'コマンドの長さは 8000 文字まで。超えると実行されずに返るので、長いものは /work にファイルとして書いて bash で動かす。\n'
   + '時間と出力の大きさにも上限がある。当たったときは結果の文で知らせる。';
+
+/**
+ * Pi's own `read`, pointed at the workspace (ADR 0047), with its description in natsumi's words. Fixed like every
+ * description here; the one number in it is the limit `read-tool.ts` enforces, a decision rather than a deployment's,
+ * and a test holds the two together.
+ */
+export const READ_DESCRIPTION = '/manual と /memory の下のファイルを読む。マニュアルと記憶を読むときは、run_shell の cat ではなくこれを使う。'
+  + 'read で読んだものは、ターンが終わっても思考の記録に残るので、同じファイルを何度も読み直さなくてよい。\n'
+  + 'path は絶対パスか、/work からの相対パス。1 回に読めるのは 400 行（または 50KB）まで。'
+  + '続きは offset（何行目から。1 から数える）と limit（何行）で読む。\n'
+  + '画像やバイナリは読めない（画像は run_shell の view で見る）。/work やほかの場所のファイルは run_shell で読む。';
 
 /**
  * The feeling of a line, in the same fixed words for both tools (ADR 0026). The choices are the parameter's own, so
