@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import type { ImageContent } from '@earendil-works/pi-ai';
 import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
 import { SdkA2AClient, type A2AClient } from './a2a-client.ts';
@@ -18,8 +19,10 @@ import { WorkspaceSize } from './workspace-size.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { ReadState, type ReadPosition } from './read-state.ts';
 import { localDateTime } from './nightly.ts';
-import { HOME_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
+import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
+import { takeUpdates, type UpdateSource } from './updates.ts';
+import { parseView, viewImage } from './view.ts';
 
 /** notify_owner is limited per turn and per rolling hour (ADR 0008). */
 export const DEFAULT_NOTIFY_LIMITS = { perTurn: 3, perHour: 12 };
@@ -114,10 +117,26 @@ export interface LoopOptions {
   a2a?: A2AConfig;
   /** Replaces the SDK client built from `a2a`. */
   a2aClient?: A2AClient;
+  /**
+   * What natsumi reads besides her memory (ADR 0039). Their `updates` ride on pings and self-checks. The loop knows
+   * neither how many there are nor what they read.
+   */
+  updates?: readonly UpdateSource[];
+  /** What a Slack mention event is made of when it is handed to her: its line, and the images beside it. */
+  slack?: SlackEvents;
   notifyLimits?: { perTurn: number; perHour: number };
   now?: () => number;
   log?: (line: string) => void;
 }
+
+/** The side of Slack the loop reads a mention event from (ADR 0039). */
+export interface SlackEvents {
+  eventLine(eventId: string, receivedAt: string): Record<string, unknown>;
+  images(eventId: string): Promise<ImageContent[]>;
+}
+
+/** The kinds of event something outside the loop may raise. */
+export type RaisedKind = 'slack-mention';
 
 type StopContext = Parameters<NonNullable<AgentSession['agent']['shouldStopAfterTurn']>>[0];
 
@@ -393,8 +412,17 @@ export class ThinkingLoop {
    * nobody is waiting on it the way the owner waits on a reply (ADR 0036).
    */
   private raiseAgentReply(record: (eventId: string, transaction: Transaction) => void): void {
+    this.raise('agent-reply', record);
+  }
+
+  /**
+   * An event raised from outside the loop, such as a Slack mention (ADR 0039). The caller's own rows are written in
+   * the event's transaction, so neither is ever recorded without the other. Like an agent's answer it waits behind
+   * whatever is running: it is queued, not steered in.
+   */
+  raise(kind: RaisedKind | 'agent-reply', record: (eventId: string, transaction: Transaction) => void): void {
     const eventId = this.store.transaction(transaction => {
-      const id = this.store.insertEvent('agent-reply');
+      const id = this.store.insertEvent(kind);
       record(id, transaction);
       return id;
     });
@@ -633,8 +661,9 @@ export class ThinkingLoop {
     const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, timeoutMs);
     const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice()].filter(Boolean).join('\n\n');
     const prompt = formatEvents(eventIds.map(id => this.eventLine(id))) + (notices ? `\n\n${notices}` : '');
+    const images = await this.eventImages(eventIds);
     try {
-      await session.prompt(prompt, { expandPromptTemplates: false });
+      await session.prompt(prompt, { expandPromptTemplates: false, ...(images.length > 0 ? { images } : {}) });
     } catch {
       // Judged below from what Pi recorded; the error text never leaves the server.
     } finally { clearTimeout(timer); }
@@ -836,15 +865,19 @@ export class ThinkingLoop {
     const timeZone = this.options.loop.timeZone;
     const raisedAt = Date.parse(row.created_at);
     if (row.kind === 'agent-reply') return this.agents.takeEventLine(eventId, row.created_at);
+    if (row.kind === 'slack-mention') return this.options.slack?.eventLine(eventId, row.created_at) ?? { type: 'slack_mention', received_at: row.created_at };
+    // What the sources have that she was not shown yet, on the quiet moments only; taken as the line is made (ADR 0039).
+    const updates = row.kind === 'ping' || row.kind === 'self-check' ? takeUpdates(this.options.updates ?? []) : undefined;
+    const shownUpdates = updates ? { updates } : {};
     if (row.kind === 'self-check') {
       return { type: 'self_check', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone),
-        checks: this.selfChecks.carriedBy(eventId, raisedAt) };
+        checks: this.selfChecks.carriedBy(eventId, raisedAt), ...shownUpdates };
     }
     // How many of her notices the owner has not checked, when any: read-only, so she need not send them again.
     const unacknowledged = this.readState.unacknowledgedNotificationIds().length;
     const notices = unacknowledged > 0 ? { unacknowledged_notices: unacknowledged } : {};
     if (row.kind === 'ping') {
-      return { type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices };
+      return { type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices, ...shownUpdates };
     }
     return { type: 'mac_message', received_at: row.message_at, text: row.text, ...notices };
   }
@@ -863,8 +896,28 @@ export class ThinkingLoop {
       listSelfChecks: () => this.selfChecks.list(),
       cancelSelfCheck: checkId => this.selfChecks.cancel(checkId),
       askAgent: (agent, message, goOn) => this.agents.ask(agent, message, goOn),
-      ...(this.shell ? { runShell: (command: string) => this.shell!.run(command) } : {}),
+      ...(this.shell ? { runShell: (command: string) => this.runShell(command) } : {}),
     };
+  }
+
+  /**
+   * A command in the workspace. `view <path>` alone is the server's own: it answers with the image itself, which the
+   * runner could not put into a tool result (ADR 0039).
+   */
+  private runShell(command: string): Promise<ToolOutcome> {
+    const path = parseView(command);
+    if (path !== undefined) return viewImage(path, join(this.options.dataDirectory, SOURCES_DIRECTORY));
+    return this.shell!.run(command);
+  }
+
+  /** The images a turn's events bring with them, handed to the model beside the prompt. */
+  private async eventImages(eventIds: string[]): Promise<ImageContent[]> {
+    const images: ImageContent[] = [];
+    for (const eventId of eventIds) {
+      if (this.store.eventKind(eventId) !== 'slack-mention' || !this.options.slack) continue;
+      try { images.push(...await this.options.slack.images(eventId)); } catch { /* the line still goes; the images are a courtesy */ }
+    }
+    return images;
   }
 
   /**
