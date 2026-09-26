@@ -16,7 +16,7 @@ import { ScriptedModel } from './support/scripted-model.ts';
 // synthetic login covers; the scripted stream stands in for either, and records which model each call went to.
 
 const FIRST = { provider: 'openai-codex', model: 'gpt-5.5' };
-const SECOND = { provider: 'openai-codex', model: 'gpt-5.4' };
+const SECOND = { provider: 'openai-codex', model: 'gpt-5.6-sol' };
 const route = (name: string, target: typeof FIRST, compactionThreshold = 60_000): LoopRoute =>
   ({ name, target, compactionThreshold, compatible: false });
 const ROUTES = { list: [route('main', FIRST), route('spare', SECOND),
@@ -101,7 +101,7 @@ test('a switch asked for during a turn waits for it to end; the next turn is on 
     assert.deepEqual(loop.snapshot().modelRoutes, {
       defaultRoute: 'main', current: 'main', chosen: 'main',
       routes: [{ name: 'main', provider: 'openai-codex', model: 'gpt-5.5', ready: true },
-        { name: 'spare', provider: 'openai-codex', model: 'gpt-5.4', ready: true },
+        { name: 'spare', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true },
         { name: 'broken', provider: 'openai-codex', model: 'fixture-unknown-model', ready: false }],
     });
     const first = f.send(loop, 'ひとつめ');
@@ -119,7 +119,7 @@ test('a switch asked for during a turn waits for it to end; the next turn is on 
 
     const second = f.send(loop, 'ふたつめ');
     await completed(events, second.eventId);
-    assert.deepEqual(turnModels(f.calls).slice(2), ['gpt-5.4', 'gpt-5.4']);
+    assert.deepEqual(turnModels(f.calls).slice(2), ['gpt-5.6-sol', 'gpt-5.6-sol']);
     const changed = events.filter(e => e.type === 'model.routes');
     assert.equal(changed.at(-1)?.payload.current, 'spare');
     assert.equal(loop.snapshot().modelRoutes.current, 'spare');
@@ -135,13 +135,13 @@ test('a choice written by the command line is taken before the next turn, and su
     const { loop, events } = await f.open();
     await writeRouteChoice(f.data, 'spare', Date.now());
     await completed(events, f.send(loop, 'きりかえた？').eventId);
-    assert.deepEqual(turnModels(f.calls), ['gpt-5.4', 'gpt-5.4']);
+    assert.deepEqual(turnModels(f.calls), ['gpt-5.6-sol', 'gpt-5.6-sol']);
     await loop.close();
 
     const restarted = await f.open();
     assert.equal(restarted.loop.snapshot().modelRoutes.current, 'spare');
     await completed(restarted.events, f.send(restarted.loop, '再起動後').eventId);
-    assert.deepEqual(turnModels(f.calls).slice(2), ['gpt-5.4', 'gpt-5.4']);
+    assert.deepEqual(turnModels(f.calls).slice(2), ['gpt-5.6-sol', 'gpt-5.6-sol']);
     assert.equal((await readRouteStatus(f.data))?.current, 'spare');
   } finally { await f.cleanup(); }
 });
@@ -221,7 +221,7 @@ test('after a switch to a route with a lower threshold, the session is compacted
     await loop.idle();
     const summary = f.calls.findIndex(c => c.summary);
     assert.ok(summary >= 0, 'compacted after the switch');
-    assert.equal(f.calls[summary]!.model, 'gpt-5.4');
+    assert.equal(f.calls[summary]!.model, 'gpt-5.6-sol');
     await completed(events, f.send(loop, 'つぎ').eventId);
     assert.ok(f.calls.findIndex((c, i) => i > summary && !c.summary) > summary);
   } finally { await f.cleanup(); }
