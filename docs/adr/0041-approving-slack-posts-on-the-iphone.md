@@ -1,7 +1,7 @@
 # 0041. Slack の投稿を iPhone で承認する
 
 - Date: 2026-09-26
-- Status: Accepted
+- Status: Accepted（承認の画面に画像を見せる点と、サーバーの承認待ちの画像を取る道は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加）
 
 ## Context
 

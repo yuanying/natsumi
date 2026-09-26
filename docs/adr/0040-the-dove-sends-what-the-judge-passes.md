@@ -1,7 +1,7 @@
 # 0040. ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう
 
 - Date: 2026-09-26
-- Status: Accepted（リアクションの絵文字を設定の候補の一覧に限る点は [ADR 0042](0042-any-emoji-that-exists.md) で置き換え）
+- Status: Accepted（リアクションの絵文字を設定の候補の一覧に限る点は [ADR 0042](0042-any-emoji-that-exists.md) で置き換え、依頼の見出しの `画像` と、判定にも承認にも通さない画像だけの投稿は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加）
 
 ## Context
 
