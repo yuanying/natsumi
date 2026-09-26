@@ -1,0 +1,486 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { ConversationStore } from '../src/server/conversation-store.ts';
+import { SlackDove, type DoveConfig } from '../src/server/dove.ts';
+import { JEV_ISSUES, JevError, type JevClient, type JevJudgement } from '../src/server/jev.ts';
+import { MIGRATIONS } from '../src/server/migrations.ts';
+import { SlackArchive } from '../src/server/slack-archive.ts';
+import { migrate, openStateDatabase } from '../src/server/state-db.ts';
+import { FakeSlack, tsAt } from './support/fake-slack.ts';
+
+/**
+ * The dove (ADR 0012, ADR 0039, ADR 0040), against a stand-in Slack and a stand-in Jev: natsumi's request is checked
+ * and matched against the record, judged, and then sent, handed to the owner, or turned back. What happened comes back
+ * to her later as an event whose line names no ID, and the owner decides on what was handed to her.
+ */
+
+const ORIGIN = 'https://natsumi.example.test';
+const DAY = 86_400_000;
+const CONFIG: DoveConfig = {
+  thresholds: { owner: 0.3, return: 0.7 }, approvalDays: 7, reactions: ['eyes', '+1', 'pray'], placementFollowing: 2,
+  judgeContext: { messages: 5, chars: 500 },
+};
+
+/** A Jev that answers what the test queued, and records what it was asked. */
+class FakeJev implements JevClient {
+  readonly asked: { state: Record<string, unknown>; placement: boolean }[] = [];
+  readonly answers: (JevJudgement | Error)[] = [];
+  async judge(state: Record<string, unknown>, options: { placement: boolean }): Promise<JevJudgement> {
+    this.asked.push({ state, placement: options.placement });
+    const answer = this.answers.shift() ?? scores([], 'thread');
+    if (answer instanceof Error) throw answer;
+    return options.placement ? answer : { issues: answer.issues };
+  }
+}
+
+function scores(values: number[], choice: 'thread' | 'channel' = 'thread'): JevJudgement {
+  return {
+    issues: JEV_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: values[index] ?? 0.01 })),
+    placement: { choice, probabilities: choice === 'thread' ? { thread: 0.8, channel: 0.2 } : { thread: 0.1, channel: 0.9 } },
+  };
+}
+const SEND = () => scores([]);
+const OWNER = () => scores([0.01, 0.5]);
+const RETURN = () => scores([0.9]);
+
+const PARENT = tsAt('2026-09-25T05:32:05Z'); // 14:32:05 in Tokyo
+
+async function setup(t: test.TestContext, options: { jev?: boolean } = {}) {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-dove-')));
+  const db = openStateDatabase(join(root, 'state.sqlite'));
+  migrate(db, MIGRATIONS);
+  const clock = { now: Date.parse('2026-09-25T06:00:00Z') };
+  const archive = new SlackArchive({ db, directory: join(root, 'slack'), timeZone: 'Asia/Tokyo', now: () => clock.now,
+    mentionContext: { messages: 5, chars: 500 } });
+  archive.addChannel('work', 'C1', { name: 'dev', isIm: false });
+  await archive.record('work', 'C1', { ts: PARENT, speaker: '山田', own: false, text: '明日のレビュー、大丈夫そう？', files: [], edited: false }, false);
+  const slack = new FakeSlack();
+  const jev = new FakeJev();
+  const store = new ConversationStore(db, () => clock.now);
+  const events: string[] = [];
+  const clientEvents: { type: string; payload: Record<string, any> }[] = [];
+  const logs: string[] = [];
+  const open = () => {
+    const dove = new SlackDove({
+      db, archive, workspaces: { work: slack }, ...(options.jev === false ? {} : { jev }), config: CONFIG, publicOrigin: ORIGIN,
+      now: () => clock.now, log: line => { logs.push(line); },
+      raise: record => {
+        events.push(store.transaction(transaction => {
+          const id = store.insertEvent('dove-reply');
+          record(id, transaction);
+          return id;
+        }));
+      },
+    });
+    dove.subscribe(event => { clientEvents.push(event); });
+    return dove;
+  };
+  const dove = open();
+  t.after(async () => {
+    dove.close();
+    db.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const lines = () => events.map(id => dove.takeEventLine(id, '2026-09-25T06:00:00.000Z'));
+  return { root, db, clock, archive, slack, jev, dove, events, clientEvents, logs, lines, open };
+}
+
+const post = (body: string, { to = 'work/#dev 2026-09-25 14:32:05 山田', expression }: { to?: string; expression?: string } = {}) =>
+  `返信先: ${to}\n種類: 投稿\n${expression ? `表情: ${expression}\n` : ''}---\n${body}`;
+
+/** No Slack ts, no approval or post ID: she names things by what she can read (ADR 0024). */
+function assertNoIds(line: Record<string, unknown>) {
+  const text = JSON.stringify(line);
+  assert.doesNotMatch(text, /\d{10}\.\d{6}/, 'no Slack ts');
+  assert.doesNotMatch(text, /approval-|post-|[0-9a-f]{8}-[0-9a-f]{4}-/, 'no ID of the server');
+  assert.doesNotMatch(text, /C1\b/, 'no channel ID');
+}
+
+test('a draft Jev passes is sent at once, without the owner, into the thread, under the icon of her feeling', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  const outcome = await f.dove.ask(post('大丈夫です。明日の 10 時に始めましょう。', { expression: 'happy' }));
+  assert.equal(outcome.ok, true);
+  assert.match(outcome.text, /受け付け/);
+  assert.match(outcome.text, /agent_reply/);
+  assert.equal(f.slack.posts.length, 0, 'the tool only takes the request');
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '大丈夫です。明日の 10 時に始めましょう。', threadTs: PARENT,
+    iconUrl: `${ORIGIN}/avatar/happy.png` }]);
+  assert.equal(f.clientEvents.length, 0, 'nothing waits for the owner');
+  const [line] = f.lines();
+  assert.equal(line!.type, 'agent_reply');
+  assert.equal(line!.agent, 'poppo');
+  assert.equal(line!.result, 'sent');
+  assert.equal(line!.reply_to, 'work/#dev 2026-09-25 14:32:05 山田');
+  assertNoIds(line!);
+  const row = f.db.prepare('SELECT verdict, placement, sent_text, scores, state FROM dove_posts').get() as Record<string, string>;
+  assert.equal(row.verdict, 'send');
+  assert.equal(row.placement, 'thread');
+  assert.equal(row.state, 'sent');
+  assert.equal(row.sent_text, '大丈夫です。明日の 10 時に始めましょう。');
+  assert.equal(JSON.parse(row.scores!).length, JEV_ISSUES.length, 'the scores are kept for looking back');
+});
+
+test('Jev sees the draft and the message it answers, and nothing natsumi said about it', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  const [{ state, placement }] = f.jev.asked as [{ state: Record<string, any>; placement: boolean }];
+  assert.equal(placement, true);
+  assert.equal(state.draft, '大丈夫です。');
+  assert.equal(state.channel, 'work/#dev');
+  assert.deepEqual(state.reply_to, { from: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、大丈夫そう？' });
+  assert.deepEqual(state.conversation, [{ from: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、大丈夫そう？' }]);
+  assert.deepEqual(Object.keys(state).sort(), ['channel', 'conversation', 'draft', 'reply_to']);
+});
+
+test('without a feeling the icon is neutral, and Jev choosing the channel posts outside the thread', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(scores([], 'channel'));
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '大丈夫です。', iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+});
+
+test('a post to the channel itself goes to the channel, and Jev is not asked where', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  await f.dove.ask(post('おはようございます。', { to: 'work/#dev' }));
+  await f.dove.idle();
+  assert.equal(f.jev.asked[0]!.placement, false);
+  assert.equal(f.jev.asked[0]!.state.reply_to, null);
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: 'おはようございます。', iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+});
+
+test('a draft Jev hands to the owner waits for her approval, and the approval carries what the contract says', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('大丈夫です。', { expression: 'thinking' }));
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0, 'nothing is sent before the owner decides');
+  const [line] = f.lines();
+  assert.equal(line!.result, 'to_owner');
+  assert.match(String(line!.text), new RegExp(JEV_ISSUES[1]!.label));
+  assertNoIds(line!);
+  assert.equal(f.clientEvents.length, 1);
+  const { type, payload } = f.clientEvents[0]!;
+  assert.equal(type, 'approval.pending');
+  assert.match(payload.approvalId, /./);
+  assert.equal(payload.revision, 1);
+  assert.equal(payload.kind, 'slack-post');
+  assert.equal(payload.createdAt, '2026-09-25T06:00:00.000Z');
+  assert.equal(payload.expiresAt, '2026-10-02T06:00:00.000Z');
+  assert.deepEqual(payload.target, { channel: 'work/#dev', placement: 'thread',
+    replyTo: { speaker: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、大丈夫そう？' } });
+  assert.equal(payload.text, '大丈夫です。');
+  assert.equal(payload.expression, 'thinking');
+  assert.equal(payload.reason.verdict, 'owner');
+  assert.equal(payload.reason.issues.length, JEV_ISSUES.length);
+  assert.deepEqual(payload.reason.issues[1], { name: JEV_ISSUES[1]!.name, label: JEV_ISSUES[1]!.label, score: 0.5, flagged: true });
+  assert.equal(payload.reason.issues[0].flagged, undefined);
+  assert.deepEqual(payload.reason.placement, { probabilities: { thread: 0.8, channel: 0.2 } });
+  assert.deepEqual(payload.history, []);
+  assert.deepEqual(f.dove.pendingApprovals(), [payload]);
+});
+
+test('with no verdict the draft goes to the owner, and the server places it: the channel when little came after', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(new JevError('http-529'));
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0);
+  const approval = f.clientEvents[0]!.payload;
+  assert.equal(approval.reason.verdict, 'no-verdict');
+  assert.deepEqual(approval.reason.issues, []);
+  assert.equal(approval.reason.placement, undefined);
+  assert.equal(approval.target.placement, 'channel');
+  assert.equal(f.lines()[0]!.result, 'to_owner');
+  assert.ok(f.logs.some(line => line.includes('http-529')));
+});
+
+test('with no verdict and more than a few messages after it, the server places the reply in the thread', async t => {
+  const f = await setup(t, { jev: false });
+  for (const [index, second] of ['10', '20', '30'].entries()) {
+    await f.archive.record('work', 'C1', { ts: tsAt(`2026-09-25T05:33:${second}Z`), speaker: '佐藤', own: false, text: `別の話 ${index}`, files: [], edited: false }, false);
+  }
+  await f.dove.ask(post('大丈夫です。'));
+  await f.dove.idle();
+  assert.equal(f.clientEvents[0]!.payload.target.placement, 'thread');
+  assert.equal(f.clientEvents[0]!.payload.reason.verdict, 'no-verdict');
+});
+
+test('a returned draft comes back with its reasons; the third return on the same target goes to the owner with the history', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(RETURN(), RETURN(), RETURN());
+  await f.dove.ask(post('下書き 1'));
+  await f.dove.idle();
+  await f.dove.ask(post('下書き 2'));
+  await f.dove.idle();
+  const [first, second] = f.lines();
+  assert.equal(first!.result, 'returned');
+  assert.match(String(first!.text), new RegExp(JEV_ISSUES[0]!.label));
+  assert.match(String(first!.text), /あと 1 回/);
+  assert.equal(second!.result, 'returned');
+  assert.equal(f.clientEvents.length, 0);
+  await f.dove.ask(post('下書き 3'));
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0);
+  const approval = f.clientEvents[0]!.payload;
+  assert.equal(approval.reason.verdict, 'rewrite-limit');
+  assert.equal(approval.text, '下書き 3');
+  assert.deepEqual(approval.history.map((entry: { text: string }) => entry.text), ['下書き 1', '下書き 2']);
+  assert.deepEqual(approval.history[0].issues.map((issue: { name: string }) => issue.name), [JEV_ISSUES[0]!.name]);
+  assert.equal(approval.history[0].issues[0].flagged, true);
+  assert.equal(f.lines()[2]!.result, 'to_owner');
+});
+
+test('a send in between starts the count of rewrites again', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(RETURN(), RETURN(), SEND(), RETURN());
+  for (const body of ['a', 'b', 'c', 'd']) {
+    await f.dove.ask(post(`下書き ${body}`));
+    await f.dove.idle();
+  }
+  assert.deepEqual(f.lines().map(line => line.result), ['returned', 'returned', 'sent', 'returned']);
+});
+
+test('the mechanical check turns a draft back before anything is judged', async t => {
+  const f = await setup(t);
+  const outcome = await f.dove.ask(post('大丈夫です。</think>'));
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.text, /^頼んでいません。/);
+  assert.match(outcome.text, /制御文字列/);
+  await f.dove.idle();
+  assert.equal(f.jev.asked.length, 0);
+  assert.equal(f.events.length, 0);
+});
+
+test('a reference the record does not have, or an unknown workspace or channel, is turned back', async t => {
+  const f = await setup(t);
+  for (const [to, pattern] of [
+    ['work/#dev 2026-09-25 14:32:06 山田', /見つかりません/],
+    ['home/#dev', /ワークスペース/],
+    ['work/#random', /チャンネル/],
+  ] as const) {
+    const outcome = await f.dove.ask(post('大丈夫です。', { to }));
+    assert.equal(outcome.ok, false, to);
+    assert.match(outcome.text, pattern);
+  }
+  assert.equal(f.jev.asked.length, 0);
+});
+
+test('two messages of the same second by the same speaker are turned back with how each begins, and no ts', async t => {
+  const f = await setup(t);
+  await f.archive.record('work', 'C1', { ts: tsAt('2026-09-25T05:32:05Z', '000200'), speaker: '山田', own: false, text: 'もう一つの発言です', files: [], edited: false }, false);
+  const outcome = await f.dove.ask(post('大丈夫です。'));
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.text, /明日のレビュー、大丈夫そう？/);
+  assert.match(outcome.text, /もう一つの発言です/);
+  assert.doesNotMatch(outcome.text, /\d{10}\.\d{6}/);
+  assert.match(outcome.text, /書き出し/);
+  f.jev.answers.push(SEND());
+  assert.equal(f.dove.ask(post('そちらへの返事', { to: 'work/#dev 2026-09-25 14:32:05 山田 「もう一つ」' })).ok, true);
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts.map(sent => sent.threadTs), [tsAt('2026-09-25T05:32:05Z', '000200')]);
+});
+
+test('approving sends exactly the approved text, once, and tells the devices and natsumi', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('承認を待つ下書き', { expression: 'sad' }));
+  await f.dove.idle();
+  const { approvalId } = f.clientEvents[0]!.payload;
+  const accepted = f.dove.decide({ approvalId, revision: 1, decision: 'approve', deviceId: 'd1' });
+  assert.deepEqual(accepted, { kind: 'accepted', approvalId, revision: 1, state: 'approved' });
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '承認を待つ下書き', threadTs: PARENT, iconUrl: `${ORIGIN}/avatar/sad.png` }]);
+  const resolved = f.clientEvents.find(event => event.type === 'approval.resolved')!.payload;
+  assert.deepEqual({ ...resolved, resolvedAt: undefined }, { approvalId, revision: 1, state: 'approved', resolvedAt: undefined,
+    delivery: 'sent', sentText: '承認を待つ下書き' });
+  const last = f.lines().at(-1)!;
+  assert.equal(last.result, 'sent');
+  assert.match(String(last.text), /本人/);
+  // The same answer again, from another device: the first decision stands and nothing is sent twice.
+  assert.deepEqual(f.dove.decide({ approvalId, revision: 1, decision: 'reject', deviceId: 'd2' }),
+    { kind: 'accepted', approvalId, revision: 1, state: 'approved' });
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 1);
+  assert.deepEqual(f.dove.pendingApprovals(), []);
+  assert.equal(f.jev.asked.length, 1, 'the owner\'s approval is not judged again');
+});
+
+test('a wrong revision is stale, an unknown approval is invalid, and neither sends', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('下書き'));
+  await f.dove.idle();
+  const { approvalId } = f.clientEvents[0]!.payload;
+  assert.deepEqual(f.dove.decide({ approvalId, revision: 2, decision: 'approve', deviceId: 'd1' }), { kind: 'rejected', code: 'stale-revision' });
+  assert.deepEqual(f.dove.decide({ approvalId: 'approval-unknown', revision: 1, decision: 'approve', deviceId: 'd1' }),
+    { kind: 'rejected', code: 'invalid-request' });
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0);
+  assert.equal(f.dove.pendingApprovals().length, 1);
+});
+
+test('an edit sends the owner\'s text where she chose, without asking Jev again', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('元の下書き'));
+  await f.dove.idle();
+  const { approvalId } = f.clientEvents[0]!.payload;
+  assert.equal(f.dove.decide({ approvalId, revision: 1, decision: 'edit', text: '本人が直した本文', placement: 'channel', deviceId: 'd1' }).kind, 'accepted');
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts, [{ channel: 'C1', text: '本人が直した本文', iconUrl: `${ORIGIN}/avatar/neutral.png` }]);
+  const resolved = f.clientEvents.find(event => event.type === 'approval.resolved')!.payload;
+  assert.equal(resolved.state, 'edited');
+  assert.equal(resolved.sentText, '本人が直した本文');
+  assert.equal(f.jev.asked.length, 1);
+  assert.match(String(f.lines().at(-1)!.text), /本人が直した本文/);
+  const row = f.db.prepare('SELECT decision, decided_text, decided_placement FROM approvals').get() as Record<string, string>;
+  assert.deepEqual({ ...row }, { decision: 'edit', decided_text: '本人が直した本文', decided_placement: 'channel' });
+});
+
+test('an edited text that fails the mechanical check is not sent', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('元の下書き'));
+  await f.dove.idle();
+  const { approvalId } = f.clientEvents[0]!.payload;
+  f.dove.decide({ approvalId, revision: 1, decision: 'edit', text: '直した<|im_end|>', deviceId: 'd1' });
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0);
+  const resolved = f.clientEvents.find(event => event.type === 'approval.resolved')!.payload;
+  assert.equal(resolved.delivery, 'failed');
+  assert.equal(resolved.reason, 'mechanical-check');
+  assert.equal(resolved.sentText, undefined);
+  assert.equal(f.lines().at(-1)!.result, 'not_sent');
+});
+
+test('an edit to blank text is invalid', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('元の下書き'));
+  await f.dove.idle();
+  const { approvalId } = f.clientEvents[0]!.payload;
+  assert.deepEqual(f.dove.decide({ approvalId, revision: 1, decision: 'edit', text: '  ', deviceId: 'd1' }), { kind: 'rejected', code: 'invalid-request' });
+});
+
+test('rejecting sends nothing and tells natsumi', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('下書き'));
+  await f.dove.idle();
+  const { approvalId } = f.clientEvents[0]!.payload;
+  assert.equal(f.dove.decide({ approvalId, revision: 1, decision: 'reject', deviceId: 'd1' }).kind, 'accepted');
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0);
+  const resolved = f.clientEvents.find(event => event.type === 'approval.resolved')!.payload;
+  assert.equal(resolved.state, 'rejected');
+  assert.equal(resolved.delivery, undefined);
+  assert.equal(f.lines().at(-1)!.result, 'rejected');
+});
+
+test('an approval past its time expires, tells everyone, and is answered as expired', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('下書き'));
+  await f.dove.idle();
+  const { approvalId } = f.clientEvents[0]!.payload;
+  f.clock.now += 7 * DAY - 1;
+  f.dove.expire();
+  assert.equal(f.dove.pendingApprovals().length, 1);
+  f.clock.now += 1;
+  f.dove.expire();
+  assert.deepEqual(f.dove.pendingApprovals(), []);
+  const resolved = f.clientEvents.find(event => event.type === 'approval.resolved')!.payload;
+  assert.equal(resolved.state, 'expired');
+  assert.equal(f.lines().at(-1)!.result, 'expired');
+  assert.deepEqual(f.dove.decide({ approvalId, revision: 1, decision: 'approve', deviceId: 'd1' }),
+    { kind: 'accepted', approvalId, revision: 1, state: 'expired' });
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0);
+});
+
+test('a decision that comes after the time is up expires the approval rather than sending', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(post('下書き'));
+  await f.dove.idle();
+  const { approvalId } = f.clientEvents[0]!.payload;
+  f.clock.now += 8 * DAY;
+  assert.equal((f.dove.decide({ approvalId, revision: 1, decision: 'approve', deviceId: 'd1' }) as { state: string }).state, 'expired');
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0);
+});
+
+test('a reaction from the list is put on at once, with neither Jev nor the owner', async t => {
+  const f = await setup(t);
+  const outcome = await f.dove.ask('返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n:+1:');
+  assert.equal(outcome.ok, true);
+  await f.dove.idle();
+  assert.deepEqual(f.slack.reactions, [{ channel: 'C1', ts: PARENT, name: '+1' }]);
+  assert.equal(f.jev.asked.length, 0);
+  assert.equal(f.clientEvents.length, 0);
+  const [reacted] = f.lines();
+  assert.equal(reacted!.result, 'reacted');
+  assertNoIds(reacted!);
+});
+
+test('a reaction not on the list is refused, and the refusal names the list', async t => {
+  const f = await setup(t);
+  const outcome = await f.dove.ask('返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\nfire');
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.text, /eyes.*\+1.*pray/);
+  await f.dove.idle();
+  assert.deepEqual(f.slack.reactions, []);
+});
+
+test('Slack refusing the post, or the message having been deleted, is told to natsumi as not sent', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND(), SEND());
+  f.slack.fail('postMessage', 'C1', 'chat.postMessage', 'ratelimited');
+  await f.dove.ask(post('一通目'));
+  await f.dove.idle();
+  assert.equal(f.lines()[0]!.result, 'not_sent');
+  assert.ok(f.logs.some(line => line.includes('chat.postMessage: ratelimited')));
+  assert.ok(!f.logs.some(line => line.includes('一通目')), 'no text in the log');
+  f.slack.failures.clear();
+  await f.dove.ask(post('二通目'));
+  await f.archive.remove('work', 'C1', PARENT);
+  await f.dove.idle();
+  assert.equal(f.slack.posts.length, 0);
+  assert.equal(f.lines()[1]!.result, 'not_sent');
+  const rows = f.db.prepare('SELECT state, failure FROM dove_posts ORDER BY created_at, rowid').all().map(row => ({ ...row }));
+  assert.deepEqual(rows, [{ state: 'failed', failure: 'slack-error' }, { state: 'failed', failure: 'target-gone' }]);
+});
+
+test('after a restart, a draft still being judged is judged, and one caught mid-send is never sent twice', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  f.db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
+    expression, state, created_at, updated_at) VALUES ('post-a', 'post', 'work', 'C1', ?, NULL, 'work/#dev 2026-09-25 14:32:05 山田',
+    '判定中だった下書き', NULL, 'judging', '2026-09-25T05:59:00.000Z', '2026-09-25T05:59:00.000Z'),
+    ('post-b', 'post', 'work', 'C1', ?, NULL, 'work/#dev 2026-09-25 14:32:05 山田', '送信中だった下書き', NULL, 'sending',
+    '2026-09-25T05:59:01.000Z', '2026-09-25T05:59:01.000Z')`).run(PARENT, PARENT);
+  f.dove.resume();
+  await f.dove.idle();
+  assert.deepEqual(f.slack.posts.map(sent => sent.text), ['判定中だった下書き']);
+  assert.deepEqual(f.lines().map(line => line.result).sort(), ['not_sent', 'sent']);
+});
+
+test('an event line is handed over once: its text is emptied from the record after', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(RETURN());
+  await f.dove.ask(post('下書き'));
+  await f.dove.idle();
+  const line = f.dove.takeEventLine(f.events[0]!, '2026-09-25T06:00:00.000Z');
+  assert.match(String(line.text), /./);
+  const row = f.db.prepare('SELECT text FROM dove_replies').get() as { text: string };
+  assert.equal(row.text, '');
+});

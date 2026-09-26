@@ -6,8 +6,8 @@ import { ErrorCode, WebClient } from '@slack/web-api';
  * Mode connection it listens on with the app token. Everything past this file works on the shapes below, so the
  * tests put a stand-in here and never touch the network.
  *
- * Only the bot's own tokens are used. Nothing here reads as the owner, and nothing posts: sending is the dove's, in
- * a later unit of work.
+ * Only the bot's own tokens are used. Nothing here reads as the owner. The one call that posts, `postMessage`, is the
+ * dove's alone (ADR 0040): natsumi has no way to it but a request the dove judged.
  */
 
 /** A file attached to a message, as far as the server needs it. */
@@ -45,6 +45,8 @@ export interface SlackApi {
   replies(channel: string, threadTs: string): Promise<SlackMessage[]>;
   userName(userId: string): Promise<string>;
   addReaction(channel: string, ts: string, name: string): Promise<void>;
+  /** Posts as the bot, in a thread when `threadTs` is given, under the icon at `iconUrl`. Returns the new message's ts. */
+  postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string }): Promise<string>;
   /** A file's bytes, or undefined when it is larger than `maxBytes`. */
   download(url: string, maxBytes: number): Promise<Buffer | undefined>;
 }
@@ -191,6 +193,12 @@ export const connectSlack: SlackConnector = ({ botToken, appToken }) => {
         // Already there (a retry that raced the first try) is what was wanted.
         if ((error as SlackCallError).reason !== 'already_reacted') throw error;
       }
+    },
+    async postMessage(channel, text, { threadTs, iconUrl }) {
+      // icon_url needs chat:write.customize. Links are not unfurled: a preview is more than what was judged.
+      const answer = await calling('chat.postMessage', () => web.chat.postMessage({ channel, text, icon_url: iconUrl,
+        unfurl_links: false, unfurl_media: false, ...(threadTs ? { thread_ts: threadTs } : {}) }));
+      return String(answer.ts ?? '');
     },
     async download(url, maxBytes) {
       let response: Response;

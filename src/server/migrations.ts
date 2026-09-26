@@ -395,4 +395,73 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 14,
+    name: 'dove-and-approvals',
+    sql: `
+      -- What natsumi asked the dove to post or react with (ADR 0040), and what became of it. The target is the message
+      -- she named (target_ts, and target_thread_ts when it is a reply), or the channel itself when target_ts is NULL;
+      -- reference is how she named it, which is all her events ever show. verdict, scores (JSON: name, label, score,
+      -- flagged per issue) and placement_probabilities are Jev's, kept to look back on how it judged (ADR 0039).
+      -- placement is where the post was to go: Jev's choice, or the server's rule without one.
+      CREATE TABLE dove_posts (
+        post_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('post', 'reaction')),
+        workspace TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        target_ts TEXT,
+        target_thread_ts TEXT,
+        reference TEXT NOT NULL,
+        text TEXT NOT NULL,
+        expression TEXT,
+        verdict TEXT CHECK (verdict IS NULL OR verdict IN ('send', 'owner', 'return', 'no-verdict', 'rewrite-limit')),
+        scores TEXT,
+        placement_probabilities TEXT,
+        placement TEXT CHECK (placement IS NULL OR placement IN ('thread', 'channel')),
+        state TEXT NOT NULL CHECK (state IN ('judging', 'sending', 'sent', 'returned', 'pending', 'rejected', 'expired', 'failed')),
+        -- What was sent and where: the draft, or the owner's own text when she edited it.
+        sent_text TEXT,
+        sent_placement TEXT,
+        failure TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX dove_posts_by_target ON dove_posts (workspace, channel_id, target_ts, created_at);
+      CREATE INDEX dove_posts_by_state ON dove_posts (state);
+
+      -- What waits for the owner's decision (ADR 0002, ADR 0040). payload is the approval as the devices are shown it,
+      -- fixed when it is made: what she approves is what was shown to her. The decision, the owner's own text and
+      -- placement when she edited, and what the send came to are kept beside it, so the owner's judgement can be
+      -- set against Jev's.
+      CREATE TABLE approvals (
+        approval_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('slack-post')),
+        post_id TEXT NOT NULL UNIQUE REFERENCES dove_posts (post_id),
+        payload TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'edited', 'rejected', 'expired')),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        decision TEXT CHECK (decision IS NULL OR decision IN ('approve', 'edit', 'reject')),
+        decided_text TEXT,
+        decided_placement TEXT,
+        device_id TEXT,
+        delivery TEXT CHECK (delivery IS NULL OR delivery IN ('sent', 'failed')),
+        delivery_reason TEXT,
+        sent_text TEXT,
+        resolved_at TEXT
+      ) STRICT;
+      CREATE INDEX approvals_by_state ON approvals (state, expires_at);
+
+      -- The dove's answers, as the events that carry them to natsumi. The text is the server's, and is emptied once
+      -- handed over: from then on it is in the Pi session (ADR 0008).
+      CREATE TABLE dove_replies (
+        event_id TEXT PRIMARY KEY REFERENCES loop_events (event_id),
+        post_id TEXT NOT NULL REFERENCES dove_posts (post_id),
+        result TEXT NOT NULL CHECK (result IN ('sent', 'reacted', 'to_owner', 'returned', 'rejected', 'expired', 'not_sent')),
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];
