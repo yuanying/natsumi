@@ -39,6 +39,8 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      API key の参照 `apiKeyEnv` か `apiKeyFile`）の組です。両者の間で自動の切り替えはしません。
      `compatible.contextWindow` は、Pi に伝えるそのモデルの context の大きさ（tokens、既定 128000）です。
      エンドポイントの 1 スロットの大きさ以下にします。サブスクリプションのモデルでは、Pi のモデル定義の値を使います。
+     経路を複数並べて切り替えたいときは、`model` と `compatible` の代わりに `routes`（名前付きの経路）と
+     `defaultRoute`（既定の経路の名前）を書きます。下記「モデルの経路を切り替える」を見てください。
      `thinking` は既定で `"on"`（思考あり）で、`"off"` にもできます。
    - `publicOrigin`: クライアントが使う origin（例: `https://natsumi.example.net:8443`）。https に限ります。
    - `listen`: 待ち受けアドレス・ポート・TLS。`"host": "::"` で IPv4 と IPv6 の両方で待ち受けます。
@@ -139,6 +141,72 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
 どちらもモデルを使うので、静かな時間にもモデルの利用が発生します。
 
 稼働状態は `node dist/src/server/main.js health --data-dir <data directory>` で確認できます（稼働中なら終了コード 0）。
+
+### モデルの経路を切り替える
+
+思考ループのモデルの経路に名前を付けて設定に並べ、動いているサーバーのまま手で切り替えられます
+（[ADR 0046](docs/adr/0046-named-model-routes-switched-by-hand.md)）。自動の切り替えはしません。
+
+```json
+"pi": {
+  "agentDirectory": "/var/lib/natsumi-pi/agent",
+  "sessionDirectory": "/var/lib/natsumi-pi/sessions",
+  "authPath": "/var/lib/natsumi-pi/agent/auth.json",
+  "routes": {
+    "local": {
+      "model": { "provider": "natsumi-compatible", "id": "example-model" },
+      "compatible": { "baseUrl": "https://llm.example.net/v1", "apiKeyEnv": "NATSUMI_PI_API_KEY", "contextWindow": 131072 }
+    },
+    "plus": {
+      "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+      "compactionThreshold": 150000
+    }
+  },
+  "defaultRoute": "local",
+  "voiceEnabled": false
+}
+```
+
+- 経路の名前は小文字の英字・数字・ハイフン（32 文字まで）です。経路ごとに `model` と、互換なら `compatible` を書きます。
+  互換の経路を 2 つ以上並べるときは、provider を `natsumi-compatible-<何か>` のように経路ごとに変えます。
+  1 つ目は `natsumi-compatible` のままにしておくと、これまでの session の記録と同じモデルとして続きます。
+- `compactionThreshold` は省けます。書かなければ `loop.compactionThreshold` を使います。上限と窓の組み合わせは経路ごとに検査します。
+  互換の経路は `compatible.contextWindow` で、サブスクリプションの経路は Pi のモデル定義の窓（`gpt-5.5` は 272000）で検査します。
+- `pi.model`（と `pi.compatible`）だけの設定は、`default` という名前の経路 1 つとして読みます。
+- ポッポさんの判定が使い回すのは、既定の経路の互換のモデルだけです。切り替えても判定は変わりません。
+
+切り替えはサーバーのコマンドで行います。サーバーが動いているときも止まっているときも、同じ data directory を指せば効きます。
+
+```sh
+node dist/src/server/main.js model list --data-dir <data directory>     # 経路の一覧（* が使っている経路）
+node dist/src/server/main.js model status --data-dir <data directory>   # 使っている経路・選んだ経路・既定の経路
+node dist/src/server/main.js model use plus --data-dir <data directory> # plus を選ぶ
+```
+
+Kubernetes では `kubectl exec natsumi-0 -c server -- node /app/dist/src/server/main.js model use plus --data-dir /data` のように打ちます。
+
+- 選んだ経路は data directory の `.natsumi/model-route.json` に残り、再起動しても続きます。
+  動いているサーバーは、次のターンの前に読んで移ります。何もしていなければ 15 秒以内に移ります。止まっているなら次の起動で使います。
+  同じ session のまま、次のターンからモデルだけが変わります。移った時点で新しい経路の上限を超えていれば、次のターンの前に要約します。
+- サーバーは経路の一覧と、それぞれが使える状態か（キーが読めるか、ログインがあるか）を `.natsumi/model-routes.json` に書きます。
+  `model use` は、この一覧に無い経路と、使える状態にない経路を断ります（サーバーを一度も起動していなければ、確かめずに書きます）。
+- 設定から消えた経路が選ばれていたら、既定の経路に戻してログに残します。
+- 使える状態にない経路が選ばれたまま起動すると、natsumi は話せない状態で起動します。ほかの経路には落としません。
+  `model use` で別の経路を選び、起動し直してください。
+- Mac・iPhone のアプリからも、`model.list` と `model.use` のコマンドで読んで選べます（[契約](docs/client-contract.md)）。
+
+サブスクリプションの経路（例: ChatGPT Plus の `openai-codex`）は、`pi.authPath` の OAuth のログインを使います。
+サーバーはこのファイルを作りません。本人が Pi の CLI で、その Pi 領域にログインします。`authPath` は
+`<agentDirectory>/auth.json` にしておきます（Pi の CLI はそこに書きます）。
+
+```sh
+PI_CODING_AGENT_DIR=<pi.agentDirectory> node node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js
+# Pi の画面で /login を打ち、provider を選んでログインします。
+```
+
+image の中では `/app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js` です。
+起動したときにログインのファイルが無かった場合は、ログインしたあとに一度起動し直してください。
+ファイルがあれば、ログインのし直しは起動し直さなくても効きます。
 
 設定の不備（未知の項目、相対パス、秘密の直書き、外部アドレスでの平文の待ち受けなど）は、該当する設定名を示して起動を止めます。
 秘密は設定ファイルに書かず、`...Env`（環境変数名）や `...File`（secret mount のパス）で参照します。
@@ -338,7 +406,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと画像でない添付は「添付あり（取り込まず）」とだけ書きます |
    | `slack.mentionContext.messages` / `.chars` | | 5 / 500 | メンションの出来事に添える前の発言の件数（0〜20）と、1 件あたりの文字数 |
    | `slack.updates` | | `true` | 合図（ping・self_check）の `updates` に Slack の件数を載せるか |
-   | `slack.judge` | | `pi.compatible` のモデルの logprobs | ポッポさんの判定の方式と接続先。下の「Slack に投稿する」 |
+   | `slack.judge` | | 既定の経路の互換のモデルの logprobs | ポッポさんの判定の方式と接続先。下の「Slack に投稿する」 |
    | `slack.approvalExpiryDays` | | 7 | 承認待ちの期限（1〜90 日） |
    | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後の発言がこの件数以内ならチャンネル、超えたらスレッドに置く（0〜20） |
    | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる返信先の周りの発言の件数（1〜20）と、1 件あたりの文字数 |
@@ -411,7 +479,7 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
 - **`logprobs`（既定）**: OpenAI 互換のモデルに、問いごとに 1 回ずつ、思考なしで 1 トークンだけ答えさせ（`temperature 0`、`max_tokens 1`、`top_logprobs 20`）、
   最初のトークンの候補の確率から点数を出します。問題点は yes と no の確率の比、置き場所は A（thread）・B（channel）の確率を合計 1 にしたものです。
   答えのトークンが候補に無い、logprobs が返らない、思考のタグが出た、というときは判定なしです。
-  接続先・API キー・model は、書かなければ `pi.compatible` の `baseUrl`・`apiKeyEnv`/`apiKeyFile` と `pi.model.id` を使い回します。
+  接続先・API キー・model は、書かなければ既定の経路（`pi.defaultRoute`。`pi.model` だけの設定ならその経路）の `compatible` の `baseUrl`・`apiKeyEnv`/`apiKeyFile` と `model.id` を使い回します。経路を切り替えても変わりません。
   `pi` が OpenAI 互換のモデルでなく、`slack.judge` も無ければ、判定はせず、投稿はすべて本人の承認に回ります。
 - **`jev`**: TypeSafe AI の Jev の API（`POST /v1/systemone`）、または同じ API を返すサーバーに、1 回の呼び出しで全部の問いを聞きます。
 
@@ -428,9 +496,9 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
 | 項目 | 既定 | 中身 |
 | --- | --- | --- |
 | `slack.judge.method` | `logprobs` | `logprobs` か `jev` |
-| `slack.judge.baseUrl` | logprobs: `pi.compatible.baseUrl`、jev: `https://api.typesafe.ai` | 接続先。logprobs は OpenAI 互換の `…/v1`、jev は `/v1/systemone` の手前。http か https。ここで API キーを付けるなら、http で送れるのはループバックの相手だけです |
-| `slack.judge.apiKeyEnv` / `apiKeyFile` | logprobs で接続先を書かなければ `pi.compatible` のもの、ほかはなし | API キー。無ければ `Authorization` を付けません。pi のキーは、pi の接続先にしか送りません |
-| `slack.judge.model` | logprobs: `pi.model.id`、jev: `jev-latest` | 要求の `model` |
+| `slack.judge.baseUrl` | logprobs: 既定の経路の `compatible.baseUrl`、jev: `https://api.typesafe.ai` | 接続先。logprobs は OpenAI 互換の `…/v1`、jev は `/v1/systemone` の手前。http か https。ここで API キーを付けるなら、http で送れるのはループバックの相手だけです |
+| `slack.judge.apiKeyEnv` / `apiKeyFile` | logprobs で接続先を書かなければ既定の経路の `compatible` のもの、ほかはなし | API キー。無ければ `Authorization` を付けません。pi のキーは、pi の接続先にしか送りません |
+| `slack.judge.model` | logprobs: 既定の経路の `model.id`、jev: `jev-latest` | 要求の `model` |
 | `slack.judge.concurrency` | 4 | logprobs で同時に聞く問いの数（1〜16） |
 | `slack.judge.timeoutSeconds` | 30 | 1 つの下書きの判定の全体の待ち時間の上限（5〜300 秒）。過ぎたら判定なし |
 | `slack.judge.thresholds.owner` / `.return` | 0.5 / 0.9 | 本人に回す・突き返すしきい値（0 より大きく 1 以下、owner ≦ return） |
@@ -805,7 +873,7 @@ TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)、[ポッポさんは実在する絵文字ならどれでもリアクションに付ける](docs/adr/0042-any-emoji-that-exists.md)、[Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる](docs/adr/0043-reactions-in-the-channel-files.md)、[なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)、[なつみは reply_to_mac の返事に画像を添えて、本人に見せる](docs/adr/0045-showing-the-owner-images-with-a-reply.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)、[ポッポさんは実在する絵文字ならどれでもリアクションに付ける](docs/adr/0042-any-emoji-that-exists.md)、[Slack のリアクションをチャンネルのファイルに書き、なつみの投稿へのものを合図で知らせる](docs/adr/0043-reactions-in-the-channel-files.md)、[なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)、[なつみは reply_to_mac の返事に画像を添えて、本人に見せる](docs/adr/0045-showing-the-owner-images-with-a-reply.md)、[モデルの経路に名前を付けて並べ、本人が手で切り替える](docs/adr/0046-named-model-routes-switched-by-hand.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [権限と秘密の一覧](docs/permissions.md): サーバーが外に対して持つ権限・秘密・外への出口と、受け付ける認証
 - [実接続の実行方法と結果](docs/probe-results.md)

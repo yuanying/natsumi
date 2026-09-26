@@ -60,7 +60,7 @@ Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
 クライアントのメッセージは 1 件ごとに `v` を検証する。`v` が 1 でなければ `command.rejected`（`unsupported-version`）を送り、
 close code 1002 で閉じる。JSON のオブジェクトでなければ `invalid-envelope` を送り、1007 で閉じる。1 メッセージは 64 KiB までとする。
 未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる（command を受けるたびと、定期的に期限を確かめる）。
-下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide` は実装済みで、それ以外の command は
+下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use` は実装済みで、それ以外の command は
 `command.rejected`（`not-implemented`）を返す。`session.sync` の前の応答は、その接続だけの一時的な stream で採番する。
 会話の扱いの理由は [ADR 0008](adr/0008-single-thinking-loop-and-mac-conversation.md)、
 既読と知らせの確認の理由は [ADR 0013](adr/0013-read-state-on-the-server.md) にある。
@@ -97,10 +97,12 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `notification.ack` | notificationId（知らせの messageId） | `command.accepted`（notificationId、acknowledgedAt。2 回目以降も最初の時刻）、または invalid-request / `service.unavailable` |
 | `device.activity` | 明示操作の kind のみ | サーバー受理順で通知先更新。画面内容は含めない（未実装） |
 | `push.register` | token、publicKey、environment | `command.accepted`（environment）、または invalid-request。下記「iPhone への通知」 |
+| `model.list` | — | `command.accepted`（`modelRoutes` と同じ形: defaultRoute、current、chosen、routes）、または `service.unavailable`。下記「モデルの経路」 |
+| `model.use` | route（経路の名前） | `command.accepted`（chosen、current）、または unknown-route / route-unavailable / invalid-request / `service.unavailable`。下記「モデルの経路」 |
 
 | サーバー event | 内容 |
 | --- | --- |
-| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`pendingApprovals`（承認待ちの承認をすべて古い順に。Slack の設定が無ければ空）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）。envelope の seq が snapshot の sequence |
+| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`pendingApprovals`（承認待ちの承認をすべて古い順に。Slack の設定が無ければ空）、`modelRoutes`（モデルの経路。下記「モデルの経路」）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）。envelope の seq が snapshot の sequence |
 | `conversation.read` | readThroughMessageId、unreadReplyCount。カーソルが進んだときだけ全端末に届く |
 | `notification.acked` | notificationId、acknowledgedAt。知らせを初めて確認したときだけ全端末に届く |
 | `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は本人のメッセージに答えたものなら replyTo（答えたメッセージのうち最も新しいもののイベント）、notice は関係するイベントがあれば about。本人のメッセージに答えていない reply（続けて話したセリフや、自分から話しかけたセリフ）には replyTo が無い（ADR 0032）。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026）。reply は、natsumi が画像を添えたときだけ images（画像の一覧。下記「会話の画像」）を持つ。画像の無い行には欄が無い（空の配列も送らない） |
@@ -110,6 +112,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `approval.pending` | 新しい承認待ち（承認の全体）。全端末に届く。下記「承認と外部実行」 |
 | `approval.resolved` | approvalId、revision、state（approved / edited / rejected / expired）、resolvedAt。送ったときは delivery（sent / failed）、sent なら sentText、failed なら reason（mechanical-check / slack-error / target-gone）。全端末に届く |
 | `notification.batch` | 未実装で、送られない。知らせは `conversation.message`（kind: notice）で届く。下記「通知と定期処理」 |
+| `model.routes` | `modelRoutes` と同じ形。使っている経路・選ばれた経路・経路の一覧・使える状態かのどれかが変わったときに全端末に届く。下記「モデルの経路」 |
 | `session.renewed` | expiresAt（延びたセッションの期限）。接続中に期限が動いたときだけ、その接続に届く。その場限りで、採番せず、再送もしない。上記「セッションの延長」 |
 | `command.accepted` | command ごとの結果（`conversation.send` は messageId・eventId・state、`session.sync` の再送は deviceId・mode: resume・sessionExpiresAt） |
 | `command.rejected` / `service.unavailable` | 安全なエラーコード。上流の生エラー本文は転送しない。`service.unavailable` の code は pi-unavailable / conversation-restore-failed / stopping。`session.sync` への答えのときは deviceId と sessionExpiresAt も付く |
@@ -123,7 +126,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
    サーバーのバッファに残っていれば、欠けたイベントが元の seq のまま届き、続けて `command.accepted`（mode: resume）が届く。
 3. それ以外の場合は `session.snapshot` が届く。Mac は表示をこの snapshot で置き換え、以後はこれより大きい seq のイベントを適用する。
 4. 会話が使えない場合は `service.unavailable` が届く（deviceId と sessionExpiresAt も付く）。
-5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`）は `sync-required`、
+5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`・`model.list`・`model.use`）は `sync-required`、
    接続の端末と異なる `deviceId` の command は `device-mismatch` で拒否される。
 6. 同じ端末で新しく接続すると古い接続は close code 4001 で閉じられる。受信が大きく遅れた接続は 4002 で閉じられるので、再接続して同期する。
 
@@ -166,6 +169,34 @@ epoch/streamId が変わった、その stream の seq が抜けた、受信が�
 stream を破棄・再作成する場合は新しい streamId を発行し、同じ ID で seq をリセットしない。
 snapshot はサーバーの一つの同期処理で作るので、その間にイベントは割り込まない。snapshot より大きい seq のイベントをその上に適用する。
 Mac 再起動時はサーバーの snapshot を正とし、永続的な独自会話 DB は持たない。
+
+## モデルの経路
+
+natsumi の思考のモデルは、サーバーの設定に名前付きで並べた経路（例: 本人のエンドポイントの `local`、ChatGPT Plus の `plus`）の 1 つを使う。
+本人が選んだ経路に、ターンの間で切り替わる。自動では切り替わらない（[ADR 0046](adr/0046-named-model-routes-switched-by-hand.md)）。
+同じ経路はサーバーのコマンド（`model use`）でも選べるので、アプリの外で変わることもある。
+
+`modelRoutes`（`session.snapshot` の欄、`model.list` の答え、`model.routes` の payload）は次の形である。
+
+| 欄 | 内容 |
+| --- | --- |
+| `defaultRoute` | 既定の経路の名前 |
+| `current` | いま使っている経路の名前。natsumi が話せない間は null |
+| `chosen` | 本人が選んだ経路の名前（選んでいなければ既定）。`current` と違えば、次のターンの前にそちらへ移る。移れない（使える状態にない）間は違ったままである |
+| `routes` | 経路の一覧（設定の順）。各要素は `name`（経路の名前）、`provider`・`model`（Pi のモデル。表示用）、`ready`（いま使える状態か。キーが読めない・ログインが無いと false） |
+
+```json
+{"defaultRoute":"local","current":"local","chosen":"plus","routes":[{"name":"local","provider":"natsumi-compatible","model":"example-model","ready":true},{"name":"plus","provider":"openai-codex","model":"gpt-5.5","ready":true}]}
+```
+
+- 接続先の URL・キー・ログインの情報は渡さない。
+- `model.use`（payload `{"route":"plus"}`）は、選んだことを記録して `command.accepted`（`chosen` と、まだ移っていなければ前の経路の `current`）を返す。
+  実際に移ったときに、全端末に `model.routes`（`current` が新しい経路）が届く。natsumi が何もしていなければすぐ、考えている途中ならそのターンが終わってから移る。
+- 設定に無い名前は `unknown-route`、使える状態にない経路は `route-unavailable`、route が文字列でないか空なら `invalid-request` で拒否する。
+  natsumi が話せない間は、`model.list` も `model.use` も `service.unavailable` を返す。
+- すでに使っている経路を選び直しても受け付ける。何も変わらなければ `model.routes` は届かない。
+- 切り替えても会話の履歴（snapshot の messages）は変わらない。思考の記録も同じ session のまま続く。
+- 画面は、`current` を今の経路として示し、`chosen` が違うあいだは「次のターンから」と示すとよい。`ready` が false の経路は選べないように見せる。
 
 ## 会話の画像
 
