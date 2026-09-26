@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { basename } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Transaction } from './conversation-store.ts';
 import { parseDoveRequest } from './dove-request.ts';
+import { discardImages, type ImageLimits, type ImageStore, type TakenImage } from './images.ts';
 import { decideVerdict, JudgeError, type JudgeClient, type ScoredIssue, type Thresholds } from './judge.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
@@ -20,6 +23,10 @@ import { SlackEmoji } from './slack-emoji.ts';
  * goes to the owner instead, with the drafts before it. A reaction with any emoji that exists is put on with neither
  * Jev nor the owner. Whatever happens comes back to her as an `agent_reply` event from `poppo`, in the server's words,
  * naming no ID (ADR 0024).
+ *
+ * A post may carry images from /work (ADR 0044), copied to the server's side as it is asked, so that the owner approves
+ * and Slack is sent the copy. Only the text is judged; images alone go with neither Jev nor the owner, placed by the
+ * rule used without a verdict.
  *
  * What the owner decides is final and is taken once: a second answer gets the first one back (ADR 0002). Only what she
  * approved, or her own text, is sent, and the mechanical check comes right before every send, hers included.
@@ -43,6 +50,8 @@ export interface DoveConfig {
   placementFollowing: number;
   /** What Jev is shown around the target: how many messages, and the characters each keeps. */
   judgeContext: { messages: number; chars: number };
+  /** How large and how many the images of one request may be. */
+  images: ImageLimits;
 }
 
 export type RaiseDoveReply = (record: (eventId: string, transaction: Transaction) => void) => void;
@@ -57,6 +66,10 @@ export interface SlackDoveOptions {
   config: DoveConfig;
   /** Where Slack fetches the icons from: `<publicOrigin>/avatar/<feeling>.png` (ADR 0040). */
   publicOrigin: string;
+  /** natsumi's `/work` as the server sees it: the only place images are taken from. */
+  workDirectory: string;
+  /** Where the images are copied and recorded, out of the workspace's reach. */
+  images: ImageStore;
   now: () => number;
   raise: RaiseDoveReply;
   log?: (line: string) => void;
@@ -71,6 +84,7 @@ interface PostRow {
   target_thread_ts: string | null; reference: string; text: string; expression: string | null; verdict: string | null;
   scores: string | null; placement: Placement | null; state: string;
 }
+interface ImageRow { image_id: string; source: string; file: string; mime_type: string; bytes: number }
 interface ApprovalRow {
   approval_id: string; revision: number; post_id: string; payload: string; state: string; expires_at: string;
   decision: string | null; decided_text: string | null; decided_placement: Placement | null;
@@ -136,7 +150,7 @@ export class SlackDove {
     const refuse = (text: string): ToolOutcome => ({ ok: false, text: text.startsWith('頼んでいません。') ? text : `頼んでいません。${text}` });
     const parsed = parseDoveRequest(message);
     if (!parsed.ok) return refuse(parsed.text);
-    const { target, kind, expression, body } = parsed.request;
+    const { target, kind, expression, body, images = [] } = parsed.request;
     if (!this.options.workspaces[target.workspace]) {
       return refuse(`ワークスペース「${target.workspace}」は Slack の設定にありません。/sources/slack/INDEX.md にある名前で書いてください。`);
     }
@@ -145,22 +159,42 @@ export class SlackDove {
     if (kind === 'reaction' && !await this.emoji.exists(target.workspace, body)) {
       return refuse(`リアクション「${body}」は付けられません。その名前の絵文字は、標準の絵文字にも ${target.workspace} のカスタム絵文字にもありません。名前の確かめ方は /manual/slack.md にあります。`);
     }
-    if (kind === 'post') {
+    if (kind === 'post' && body !== '') {
       const check = checkOutgoingText(body);
       if (!check.ok) return refuse(refusalText(check).replace('送信していません。', ''));
     }
     const postId = `post-${randomUUID()}`;
+    // Copied last, once nothing else can turn the request back: what is copied is what the owner and Slack are shown.
+    let taken: TakenImage[] = [];
+    if (images.length > 0) {
+      const result = await this.options.images.take(images, this.options.workDirectory, this.options.config.images);
+      if (!result.ok) return refuse(result.text);
+      taken = result.images;
+    }
     const { message: named } = resolved.target;
     const reference = named ? `${resolved.target.label} ${named.at} ${named.speaker}` : resolved.target.label;
     const now = this.iso();
-    this.db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
-      expression, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'judging', ?, ?)`)
-      .run(postId, kind, target.workspace, resolved.target.channelId, named?.ts ?? null, named?.threadTs ?? null, reference, body,
-        expression ?? null, now, now);
+    try {
+      this.transaction(() => {
+        this.db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
+          expression, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'judging', ?, ?)`)
+          .run(postId, kind, target.workspace, resolved.target.channelId, named?.ts ?? null, named?.threadTs ?? null, reference, body,
+            expression ?? null, now, now);
+        this.options.images.record(taken, now);
+        const image = this.db.prepare('INSERT INTO dove_post_images (post_id, position, image_id) VALUES (?, ?, ?)');
+        taken.forEach((one, position) => image.run(postId, position, one.imageId));
+      });
+    } catch (error) {
+      await discardImages(taken);
+      throw error;
+    }
     this.enqueue(() => this.carry(postId));
+    const later = 'は、後で agent_reply の出来事（agent: poppo）として届きます。待たずに、ほかのことをしてかまいません。';
     return { ok: true, text: kind === 'reaction'
-      ? 'ポッポさんがリアクションの依頼を受け付けました。付けたかどうかは、後で agent_reply の出来事（agent: poppo）として届きます。待たずに、ほかのことをしてかまいません。'
-      : 'ポッポさんが投稿の依頼を受け付けました。届けたか、本人に回したか、突き返したかは、後で agent_reply の出来事（agent: poppo）として届きます。待たずに、ほかのことをしてかまいません。' };
+      ? `ポッポさんがリアクションの依頼を受け付けました。付けたかどうか${later}`
+      : body === ''
+        ? `ポッポさんが画像 ${taken.length} 枚の投稿の依頼を受け付けました。本文が無いので、判定にも本人にも回さずに届けます。届けたかどうか${later}`
+        : `ポッポさんが投稿の依頼${taken.length > 0 ? `（画像 ${taken.length} 枚付き）` : ''}を受け付けました。届けたか、本人に回したか、突き返したか${later}` };
   }
 
   /**
@@ -242,9 +276,12 @@ export class SlackDove {
       { result: Result; text: string; reference: string; draft: string; kind: string } | undefined;
     if (!row) return { type: 'agent_reply', received_at: receivedAt, agent: DOVE_NAME };
     this.db.prepare(`UPDATE dove_replies SET text = '' WHERE event_id = ?`).run(eventId);
+    const postId = (this.db.prepare('SELECT post_id FROM dove_replies WHERE event_id = ?').get(eventId) as { post_id: string }).post_id;
+    const images = this.images(postId).map(image => image.source);
     return {
       type: 'agent_reply', received_at: receivedAt, agent: DOVE_NAME, result: row.result, reply_to: row.reference,
-      ...(row.kind === 'reaction' ? { reaction: row.draft } : { draft: cut(row.draft, DRAFT_HEAD_CHARS) }),
+      ...(row.kind === 'reaction' ? { reaction: row.draft } : row.draft === '' ? {} : { draft: cut(row.draft, DRAFT_HEAD_CHARS) }),
+      ...(images.length > 0 ? { images } : {}),
       ...(row.text ? { text: row.text } : {}),
     };
   }
@@ -265,6 +302,7 @@ export class SlackDove {
     if (!post || post.state !== 'judging') return;
     if (post.kind === 'reaction') return this.react(post);
     const target = this.target(post);
+    if (post.text === '') return this.sendImagesAlone(post, target);
     const { judgeContext, thresholds } = this.options.config;
     let judged: { verdict: 'send' | 'owner' | 'return'; issues: ScoredIssue[]; placement?: { choice: Placement; probabilities?: Record<string, number> } }
       | undefined;
@@ -297,7 +335,7 @@ export class SlackDove {
       const delivered = await this.deliver(post, post.text, placement);
       if (delivered === true) {
         this.setPost(postId, { state: 'sent', sent_text: post.text, sent_placement: placement });
-        this.tell(postId, 'sent', `ポッポ！ ${where(target.label, placement)}に届けたよ。`);
+        this.tell(postId, 'sent', `ポッポ！ ${where(target.label, placement)}に${this.withImages(postId)}届けたよ。`);
       } else this.fail(post, delivered);
       return;
     }
@@ -317,6 +355,16 @@ export class SlackDove {
         : 'ポッポ…今は判定ができなかったから、本人に見てもらうね。本人が決めたら、また知らせるよ。');
   }
 
+  /** Images with no text (ADR 0044): nothing for Jev to judge, so neither Jev nor the owner; placed as without a verdict. */
+  private async sendImagesAlone(post: PostRow, target: ResolvedTarget): Promise<void> {
+    const placement: Placement = !target.message ? 'channel' : this.defaultPlacement(target);
+    this.setPost(post.post_id, { placement, state: 'sending' });
+    const delivered = await this.deliver(post, '', placement);
+    if (delivered !== true) return this.fail(post, delivered);
+    this.setPost(post.post_id, { state: 'sent', sent_text: '', sent_placement: placement });
+    this.tell(post.post_id, 'sent', `ポッポ！ 画像 ${this.images(post.post_id).length} 枚を${where(target.label, placement)}に届けたよ。`);
+  }
+
   /** Makes the approval, fixed as the owner will see it, and tells every device. */
   private hand(post: PostRow, target: ResolvedTarget, reason: {
     verdict: string; placement: Placement; issues: ScoredIssue[]; probabilities: Record<string, number> | undefined;
@@ -326,12 +374,14 @@ export class SlackDove {
     const createdAt = this.iso();
     const expiresAt = isoAt(this.options.now() + this.options.config.approvalDays * 86_400_000);
     const replyTo = target.message;
+    const images = this.images(post.post_id);
     const payload: ApprovalPayload = {
       approvalId, revision: 1, kind: 'slack-post', createdAt, expiresAt,
       target: { channel: target.label, placement: reason.placement,
         ...(replyTo ? { replyTo: { speaker: replyTo.speaker, at: replyTo.at, text: cut(replyTo.text, REPLY_TO_HEAD_CHARS) } } : {}) },
       text: post.text,
       ...(post.expression ? { expression: post.expression } : {}),
+      ...(images.length > 0 ? { images: images.map(image => ({ imageId: image.image_id, mimeType: image.mime_type, bytes: image.bytes })) } : {}),
       reason: { verdict: reason.verdict, issues: reason.issues, ...(reason.probabilities ? { placement: { probabilities: reason.probabilities } } : {}) },
       history: reason.history.map(entry => ({ text: entry.text, issues: entry.issues.filter(issue => issue.flagged) })),
     };
@@ -361,8 +411,8 @@ export class SlackDove {
       });
       this.emit('approval.resolved', { approvalId, revision: approval.revision, state: approval.state, resolvedAt, delivery: 'sent', sentText: text });
       this.tell(post.post_id, 'sent', approval.state === 'edited'
-        ? `ポッポ！ 本人が直した本文で、${where(shown.target.channel, placement)}に届けたよ。届けた本文:「${text}」`
-        : `ポッポ！ 本人が承認したから、${where(shown.target.channel, placement)}に届けたよ。`);
+        ? `ポッポ！ 本人が直した本文で、${where(shown.target.channel, placement)}に${this.withImages(post.post_id)}届けたよ。届けた本文:「${text}」`
+        : `ポッポ！ 本人が承認したから、${where(shown.target.channel, placement)}に${this.withImages(post.post_id)}届けたよ。`);
       return;
     }
     this.fail(post, delivered);
@@ -384,15 +434,26 @@ export class SlackDove {
     this.tell(post.post_id, 'reacted', `ポッポ！ :${post.text}: を付けたよ。`);
   }
 
-  /** The last check and the post itself. True when Slack took it; otherwise why not. */
+  /**
+   * The last check and the post itself: the text, or the images with the text as their comment. True when Slack took
+   * it; otherwise why not. Only images alone go without text, and then there is no text to check.
+   */
   private async deliver(post: PostRow, text: string, placement: Placement): Promise<true | Failure> {
-    if (!checkOutgoingText(text).ok) return 'mechanical-check';
+    const images = this.images(post.post_id);
+    if ((text !== '' || images.length === 0) && !checkOutgoingText(text).ok) return 'mechanical-check';
     if (post.target_ts && !this.options.archive.isPresent(post.workspace, post.channel_id, post.target_ts)) return 'target-gone';
     const api = this.options.workspaces[post.workspace];
     if (!api) return 'slack-error';
     const threadTs = placement === 'thread' && post.target_ts ? post.target_thread_ts ?? post.target_ts : undefined;
     const expression = post.expression ?? 'neutral';
     try {
+      if (images.length > 0) {
+        // The copies taken when she asked, never /work again. Slack takes no icon with an upload.
+        const files = await Promise.all(images.map(async image => ({ filename: basename(image.source),
+          data: await readFile(this.options.images.path(image.file)) })));
+        await api.uploadFiles(post.channel_id, files, { ...(threadTs ? { threadTs } : {}), ...(text !== '' ? { initialComment: text } : {}) });
+        return true;
+      }
       await api.postMessage(post.channel_id, text, { ...(threadTs ? { threadTs } : {}),
         iconUrl: `${this.options.publicOrigin}/avatar/${expression}.png` });
       return true;
@@ -473,6 +534,18 @@ export class SlackDove {
 
   private post(postId: string): PostRow | undefined {
     return this.db.prepare('SELECT * FROM dove_posts WHERE post_id = ?').get(postId) as PostRow | undefined;
+  }
+
+  /** A post's images, in the order she named them. */
+  private images(postId: string): ImageRow[] {
+    return this.db.prepare(`SELECT i.image_id, i.source, i.file, i.mime_type, i.bytes FROM dove_post_images p
+      JOIN images i ON i.image_id = p.image_id WHERE p.post_id = ? ORDER BY p.position`).all(postId) as unknown as ImageRow[];
+  }
+
+  /** `画像 2 枚と一緒に` when the post has images, for the line that says it was sent. */
+  private withImages(postId: string): string {
+    const count = this.images(postId).length;
+    return count > 0 ? `画像 ${count} 枚と一緒に` : '';
   }
 
   private approval(approvalId: string): ApprovalRow | undefined {

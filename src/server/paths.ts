@@ -3,7 +3,8 @@ import { basename, dirname, join, relative, isAbsolute } from 'node:path';
 
 /**
  * Where `/work` and `/home/natsumi` live inside the data directory. The workspace container mounts them from the
- * same volume by subpath (ADR 0019); the server makes them and then never looks inside.
+ * same volume by subpath (ADR 0019); the server makes them and then looks inside only to copy the images natsumi
+ * asks the dove to post from /work (ADR 0044).
  */
 export const WORK_DIRECTORY = 'work';
 export const HOME_DIRECTORY = 'home';

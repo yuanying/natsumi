@@ -71,3 +71,32 @@ for (const [name, message, pattern] of [
     assert.match((parsed as { text: string }).text, /^頼んでいません。/);
   });
 }
+
+// ADR 0044: `画像:` names an image under /work, one line each; with images the body may be left out.
+test('images are named one line each, in the order written, and the body becomes their comment', () => {
+  const parsed = parseDoveRequest('返信先: work/#dev\n種類: 投稿\n画像: /work/images/cat.png\n画像：/work/images/dog.webp\n---\n描いたよ');
+  assert.deepEqual(parsed, { ok: true, request: {
+    target: { workspace: 'work', channel: '#dev' }, kind: 'post', body: '描いたよ', images: ['/work/images/cat.png', '/work/images/dog.webp'],
+  } });
+});
+
+test('with an image the body may be empty, and the separator may even be the last line', () => {
+  for (const message of ['返信先: work/#dev\n種類: 投稿\n画像: /work/cat.png\n---\n', '返信先: work/#dev\n種類: 投稿\n画像: /work/cat.png\n---']) {
+    assert.deepEqual(parseDoveRequest(message), { ok: true, request: {
+      target: { workspace: 'work', channel: '#dev' }, kind: 'post', body: '', images: ['/work/cat.png'] } });
+  }
+});
+
+for (const [name, message, pattern] of [
+  ['an image with no path', '返信先: work/#dev\n種類: 投稿\n画像:\n---\nこんにちは', /画像/],
+  ['an image on a relative path', '返信先: work/#dev\n種類: 投稿\n画像: images/cat.png\n---\nこんにちは', /\/work\//],
+  ['an image on a reaction', '返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n画像: /work/cat.png\n---\n+1', /リアクション/],
+  ['neither an image nor a body', '返信先: work/#dev\n種類: 投稿\n---\n', /本文/],
+] as const) {
+  test(`${name} is turned back with what to fix`, () => {
+    const parsed = parseDoveRequest(message);
+    assert.equal(parsed.ok, false);
+    assert.match((parsed as { text: string }).text, pattern);
+    assert.match((parsed as { text: string }).text, /^頼んでいません。/);
+  });
+}

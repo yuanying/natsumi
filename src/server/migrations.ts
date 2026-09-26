@@ -491,4 +491,31 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX slack_reactions_counted ON slack_reactions (counted) WHERE counted = 1;
     `,
   },
+  {
+    version: 16,
+    name: 'images',
+    sql: `
+      -- Images natsumi handed the server from /work (ADR 0044). source is the path as she wrote it; file is the copy the
+      -- server took at that moment, in its own image directory, and the copy is what the owner is shown and what is
+      -- sent. An image belongs to no one feature: the devices fetch it by its ID with the session.
+      CREATE TABLE images (
+        image_id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        file TEXT NOT NULL UNIQUE,
+        mime_type TEXT NOT NULL CHECK (mime_type IN ('image/png', 'image/jpeg', 'image/webp')),
+        bytes INTEGER NOT NULL CHECK (bytes >= 0),
+        sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      -- The images of a dove's post, in the order she named them. Kept with the post for looking back, like its text
+      -- (ADR 0040).
+      CREATE TABLE dove_post_images (
+        post_id TEXT NOT NULL REFERENCES dove_posts (post_id),
+        position INTEGER NOT NULL CHECK (position >= 0),
+        image_id TEXT NOT NULL REFERENCES images (image_id),
+        PRIMARY KEY (post_id, position)
+      ) STRICT;
+    `,
+  },
 ];

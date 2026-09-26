@@ -9,9 +9,12 @@ import { EXPRESSIONS, type Expression } from './loop-tools.ts';
  * 返信先: work/#dev 2026-09-25 14:32:05 山田
  * 種類: 投稿
  * 表情: happy
+ * 画像: /work/images/cat.png
  * ---
- * 本文（リアクションなら絵文字の名前）
+ * 本文（リアクションなら絵文字の名前。画像があれば省ける）
  * ```
+ *
+ * `画像` names an image under /work, one line each (ADR 0044); where it is and what it is are checked when it is taken.
  */
 
 /** A message or a channel as natsumi names it: never by a Slack ID (ADR 0024). */
@@ -30,15 +33,19 @@ export interface DoveRequest {
   target: ParsedReference;
   kind: 'post' | 'reaction';
   expression?: Expression;
-  /** The draft, or for a reaction the emoji's name without colons. */
+  /** The draft, or for a reaction the emoji's name without colons. Empty only for a post of images alone. */
   body: string;
+  /** The images to post with it, as the workspace names them, in the order written. Present only when there are some. */
+  images?: string[];
 }
 
 export type ParsedRequest = { ok: true; request: DoveRequest } | { ok: false; text: string };
 
 const KINDS: Record<string, DoveRequest['kind']> = { 投稿: 'post', リアクション: 'reaction' };
-const HEADINGS = ['返信先', '種類', '表情'];
-const FORM = '返信先・種類（・表情）の見出しを 1 行ずつ書き、`---` の行の後に本文を書いてください。書き方は /manual/slack.md にあります。';
+const HEADINGS = ['返信先', '種類', '表情', '画像'];
+/** The heading that may be written more than once, one image per line. */
+const IMAGE = '画像';
+const FORM = '返信先・種類（・表情・画像）の見出しを 1 行ずつ書き、`---` の行の後に本文を書いてください。書き方は /manual/slack.md にあります。';
 const REFERENCE = /^([^\s/]+)\/([#@][^\s]+)(?:\s+(\S+)(?:\s+(\S+)(?:\s+(.+))?)?)?$/;
 
 /** Reads a request, or says in one sentence why it cannot be taken. */
@@ -48,12 +55,19 @@ export function parseDoveRequest(message: string): ParsedRequest {
   const separator = lines.findIndex(line => line.trim() === '---');
   if (separator < 0) return refuse(`\`---\` の行がありません。${FORM}`);
   const headings = new Map<string, string>();
+  const images: string[] = [];
   for (const line of lines.slice(0, separator)) {
     if (line.trim() === '') continue;
     const match = /^\s*([^:：]+?)\s*[:：]\s*(.*?)\s*$/.exec(line);
     if (!match) return refuse(`見出しの行「${line.trim()}」が「見出し: 値」の形ではありません。${FORM}`);
     const [, name, value] = match as unknown as [string, string, string];
     if (!HEADINGS.includes(name)) return refuse(`「${name}」という見出しはありません。使える見出しは ${HEADINGS.join('・')} です。`);
+    if (name === IMAGE) {
+      if (value === '') return refuse('見出し「画像」にパスがありません。`画像: /work/images/cat.png` のように、1 行に 1 枚ずつ書いてください。');
+      if (!value.startsWith('/')) return refuse(`画像「${value}」は /work/ から始まる絶対パスで書いてください。`);
+      images.push(value);
+      continue;
+    }
     if (headings.has(name)) return refuse(`見出し「${name}」が 2 回あります。1 回だけ書いてください。`);
     headings.set(name, value);
   }
@@ -71,7 +85,10 @@ export function parseDoveRequest(message: string): ParsedRequest {
   }
   const expression = expressionText as Expression | undefined;
   const body = lines.slice(separator + 1).join('\n').replace(/^\n+|\s+$/g, '');
-  if (body.trim() === '') return refuse(kind === 'reaction' ? '`---` の後に絵文字の名前がありません。' : '`---` の後に本文がありません。');
+  if (kind === 'reaction' && images.length > 0) return refuse('リアクションに画像は付けられません。画像を投稿するなら、種類を投稿にしてください。');
+  if (body.trim() === '' && images.length === 0) {
+    return refuse(kind === 'reaction' ? '`---` の後に絵文字の名前がありません。' : '`---` の後に本文がありません（画像だけを投稿するなら、見出し「画像」を書きます）。');
+  }
   if (kind === 'reaction') {
     if (!target.at) return refuse('リアクションは発言に付けます。返信先には発言の参照（例: work/#dev 2026-09-25 14:32:05 山田）を書いてください。');
     const emoji = body.trim().replace(/^:(.*):$/, '$1');
@@ -79,7 +96,8 @@ export function parseDoveRequest(message: string): ParsedRequest {
     if (!/^[^\s:]+(?:::skin-tone-\d)?$/u.test(emoji)) return refuse('リアクションの本文には、絵文字の名前を 1 つだけ書いてください（例: +1）。');
     return { ok: true, request: { target, kind, ...(expression ? { expression } : {}), body: emoji } };
   }
-  return { ok: true, request: { target, kind, ...(expression ? { expression } : {}), body } };
+  return { ok: true, request: { target, kind, ...(expression ? { expression } : {}), body: body.trim() === '' ? '' : body,
+    ...(images.length > 0 ? { images } : {}) } };
 }
 
 /**

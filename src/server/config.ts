@@ -212,6 +212,8 @@ export interface SlackConfig {
   placementFollowing: number;
   /** What Jev is shown around a draft's target: how many messages, and the characters each keeps. */
   judgeContext: { messages: number; chars: number };
+  /** The images natsumi asks the dove to post (ADR 0044): the largest one taken, and the most in one request. */
+  postImages: { maxBytes: number; maxCount: number };
 }
 
 /**
@@ -236,7 +238,7 @@ export interface JudgeConfig {
 export const SLACK_DEFAULTS = {
   reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
   approvalExpiryDays: 7, placementFollowing: 2,
-  judgeContext: { messages: 5, chars: 500 },
+  judgeContext: { messages: 5, chars: 500 }, postImages: { maxBytes: 10 * 1024 * 1024, maxCount: 4 },
 };
 export const JUDGE_DEFAULTS = {
   method: 'logprobs' as const, concurrency: 4, timeoutSeconds: 30, thresholds: { owner: 0.5, return: 0.9 },
@@ -256,6 +258,10 @@ const DOVE_NAME = 'poppo';
  */
 const MAX_SLACK_BACKFILL_DAYS = 365;
 const MAX_SLACK_IMAGE_BYTES = 20 * 1024 * 1024;
+/** Each image the dove posts is copied and kept (ADR 0044); an image generated for chat is a few MB at most. */
+const MAX_POST_IMAGE_BYTES = 50 * 1024 * 1024;
+/** The most files one message is given here: as many as a Slack message is usually seen with. */
+const MAX_POST_IMAGES = 10;
 const MAX_MENTION_CONTEXT_MESSAGES = 20;
 const MIN_MENTION_CONTEXT_CHARS = 50;
 /** Slack's emoji names: lower case, digits and a few marks, without the colons. */
@@ -545,7 +551,7 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   // The list of reactions was dropped (ADR 0042); one still written would promise a limit that is no longer there.
   if ('reactions' in slack) throw new ConfigError(`${path}.reactions`, 'was removed: any emoji that exists may be asked for (ADR 0042); delete it');
   onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', 'mentionContext', 'updates', 'judge', 'approvalExpiryDays',
-    'placementFollowing', 'judgeContext']);
+    'placementFollowing', 'judgeContext', 'postImages']);
   const workspacesPath = `${path}.workspaces`;
   const listed = object(required(slack, 'workspaces', path), workspacesPath);
   const workspaces: SlackConfig['workspaces'] = {};
@@ -602,10 +608,22 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   if (!positiveInteger(judgeChars, MIN_MENTION_CONTEXT_CHARS)) {
     throw new ConfigError(`${judgePath}.chars`, `must be an integer of at least ${MIN_MENTION_CONTEXT_CHARS}`);
   }
+  const imagesPath = `${path}.postImages`;
+  const images = object(slack.postImages ?? {}, imagesPath);
+  onlyKeys(images, imagesPath, ['maxBytes', 'maxCount']);
+  const imageBytes = images.maxBytes ?? SLACK_DEFAULTS.postImages.maxBytes;
+  if (!positiveInteger(imageBytes, 1024) || (imageBytes as number) > MAX_POST_IMAGE_BYTES) {
+    throw new ConfigError(`${imagesPath}.maxBytes`, `must be an integer from 1024 to ${MAX_POST_IMAGE_BYTES}`);
+  }
+  const imageCount = images.maxCount ?? SLACK_DEFAULTS.postImages.maxCount;
+  if (!positiveInteger(imageCount, 1) || (imageCount as number) > MAX_POST_IMAGES) {
+    throw new ConfigError(`${imagesPath}.maxCount`, `must be an integer from 1 to ${MAX_POST_IMAGES}`);
+  }
   return { workspaces, reaction, backfillDays: days as number, maxImageBytes: bytes as number,
     mentionContext: { messages, chars: chars as number }, updates,
     approvalExpiryDays: expiry as number, placementFollowing: following,
-    judgeContext: { messages: judgeMessages as number, chars: judgeChars as number } };
+    judgeContext: { messages: judgeMessages as number, chars: judgeChars as number },
+    postImages: { maxBytes: imageBytes as number, maxCount: imageCount as number } };
 }
 
 /**

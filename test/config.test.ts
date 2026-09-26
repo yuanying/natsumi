@@ -471,7 +471,7 @@ test('Slack is off unless the slack section is given, and has defaults for the r
     workspaces: { work: { botToken: { env: 'NATSUMI_SLACK_WORK_BOT_TOKEN' }, appToken: { file: '/run/secrets/slack-work-app-token' } } },
     reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
     approvalExpiryDays: 7, placementFollowing: 2,
-    judgeContext: { messages: 5, chars: 500 },
+    judgeContext: { messages: 5, chars: 500 }, postImages: { maxBytes: 10 * 1024 * 1024, maxCount: 4 },
   });
   const tuned = parseConfig({ ...base(), slack: { ...slack(), reaction: 'white_check_mark', backfillDays: 1, maxImageBytes: 1048576,
     mentionContext: { messages: 3, chars: 200 }, updates: false } }).slack;
@@ -574,6 +574,19 @@ test('the approvals and where a reply goes are checked', () => {
   for (const placementFollowing of [-1, 21, 1.5]) rejects({ ...base(), slack: { ...slack(), placementFollowing } }, 'slack.placementFollowing');
   rejects({ ...base(), slack: { ...slack(), judgeContext: { messages: 0 } } }, 'slack.judgeContext.messages');
   rejects({ ...base(), slack: { ...slack(), judgeContext: { chars: 10 } } }, 'slack.judgeContext.chars');
+});
+
+// ADR 0044: how large and how many the images she asks the dove to post may be.
+test('the limits on the images she posts are checked', () => {
+  const tuned = parseConfig({ ...base(), slack: { ...slack(), postImages: { maxBytes: 2048, maxCount: 10 } } }).slack;
+  assert.deepEqual(tuned?.postImages, { maxBytes: 2048, maxCount: 10 });
+  assert.deepEqual(parseConfig({ ...base(), slack: { ...slack(), postImages: { maxCount: 1 } } }).slack?.postImages,
+    { maxBytes: 10 * 1024 * 1024, maxCount: 1 });
+  for (const maxBytes of [0, 1023, 50 * 1024 * 1024 + 1, 1.5]) {
+    rejects({ ...base(), slack: { ...slack(), postImages: { maxBytes } } }, 'slack.postImages.maxBytes');
+  }
+  for (const maxCount of [0, 11, 1.5]) rejects({ ...base(), slack: { ...slack(), postImages: { maxCount } } }, 'slack.postImages.maxCount');
+  rejects({ ...base(), slack: { ...slack(), postImages: { types: ['image/gif'] } } }, 'slack.postImages.types', /unknown/);
 });
 
 test('poppo is the dove\'s name, and no outside agent may take it', () => {

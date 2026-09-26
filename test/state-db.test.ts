@@ -363,11 +363,28 @@ test('schema 15 adds the reactions on Slack messages, one per person, name and m
     VALUES ('work', 'C1', 'dev', '#dev', 0, 'x')`).run();
   db.prepare(`INSERT INTO slack_messages (workspace, channel_id, ts, thread_ts, speaker, own, text, files, edited, deleted, file_date, counted,
     created_at, updated_at) VALUES ('work', 'C1', '1.1', NULL, '山田', 0, 'x', '[]', 0, 0, '2026-09-25', 0, 'x', 'x')`).run();
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [15]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 15)).applied, [15]);
   const reaction = db.prepare(`INSERT INTO slack_reactions (workspace, channel_id, ts, name, position, user_id, reactor, others, counted, created_at)
     VALUES ('work', 'C1', ?, '+1', 0, ?, '佐藤', ?, 0, 'x')`);
   reaction.run('1.1', 'U2', 0);
   assert.throws(() => reaction.run('1.1', 'U2', 0), /constraint/i, 'one per person, name and message');
   assert.throws(() => reaction.run('9.9', 'U2', 0), /constraint/i, 'only on a message recorded');
   assert.throws(() => reaction.run('1.1', '', -1), /constraint/i);
+}));
+
+test('schema 16 adds the images the server took, and the images of a post, each once in its place', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 15));
+  assert.deepEqual(migrate(db, MIGRATIONS).applied, [16]);
+  db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
+    expression, state, created_at, updated_at) VALUES ('post-1', 'post', 'work', 'C1', NULL, NULL, 'work/#dev', '', NULL, 'judging', 'x', 'x')`).run();
+  const image = db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, created_at)
+    VALUES (?, '/work/cat.png', ?, ?, 10, 'ab', 'x')`);
+  image.run('image-1', 'image-1.png', 'image/png');
+  image.run('image-2', 'image-2.webp', 'image/webp');
+  assert.throws(() => image.run('image-3', 'image-3.gif', 'image/gif'), /constraint/i, 'only the types taken');
+  const link = db.prepare('INSERT INTO dove_post_images (post_id, position, image_id) VALUES (?, ?, ?)');
+  link.run('post-1', 0, 'image-1');
+  assert.throws(() => link.run('post-1', 0, 'image-2'), /constraint/i, 'one image in each place');
+  assert.throws(() => link.run('post-missing', 1, 'image-2'), /constraint/i);
+  assert.throws(() => link.run('post-1', 1, 'image-missing'), /constraint/i);
 }));
