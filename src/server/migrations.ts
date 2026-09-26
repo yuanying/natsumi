@@ -464,4 +464,31 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 15,
+    name: 'slack-reactions',
+    sql: `
+      -- The reactions on the messages recorded (ADR 0043), which the day files write under each message. user_id is
+      -- who put it on, kept so that taking it off finds it, and never written where natsumi reads; reactor is their
+      -- name as it was looked up. The row whose user_id is '' stands for those Slack only counted when it did not name
+      -- everyone (a fill-in of a much-used reaction): others is how many they are. counted is 1 while a reaction someone
+      -- else put on her own post waits to be shown in the updates, and 0 once shown or never to be counted. position
+      -- orders the reactions on a message as Slack does: a reaction keeps its place while anyone still has it on.
+      CREATE TABLE slack_reactions (
+        workspace TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        name TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        reactor TEXT NOT NULL,
+        others INTEGER NOT NULL CHECK (others >= 0),
+        counted INTEGER NOT NULL CHECK (counted IN (0, 1)),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workspace, channel_id, ts, name, user_id),
+        FOREIGN KEY (workspace, channel_id, ts) REFERENCES slack_messages (workspace, channel_id, ts)
+      ) STRICT;
+      CREATE INDEX slack_reactions_counted ON slack_reactions (counted) WHERE counted = 1;
+    `,
+  },
 ];

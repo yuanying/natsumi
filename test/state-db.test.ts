@@ -343,7 +343,7 @@ test('schema 13 adds Slack beside what was there, and one mention makes at most 
 
 test('schema 14 adds the dove and the approvals, and an approval belongs to one post and closes once', () => withDb(db => {
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 13));
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [14]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 14)).applied, [14]);
   const post = db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
     expression, state, created_at, updated_at) VALUES (?, 'post', 'work', 'C1', NULL, NULL, 'work/#dev', '下書き', NULL, ?, 'x', 'x')`);
   post.run('post-1', 'judging');
@@ -355,4 +355,19 @@ test('schema 14 adds the dove and the approvals, and an approval belongs to one 
   assert.throws(() => approval.run('approval-3', 'post-missing'), /constraint/i);
   assert.throws(() => db.prepare(`INSERT INTO dove_replies (event_id, post_id, result, text, created_at)
     VALUES ('event-missing', 'post-1', 'sent', '', 'x')`).run(), /constraint/i, 'an answer belongs to an event that exists');
+}));
+
+test('schema 15 adds the reactions on Slack messages, one per person, name and message', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 14));
+  db.prepare(`INSERT INTO slack_channels (workspace, channel_id, directory, label, is_im, created_at)
+    VALUES ('work', 'C1', 'dev', '#dev', 0, 'x')`).run();
+  db.prepare(`INSERT INTO slack_messages (workspace, channel_id, ts, thread_ts, speaker, own, text, files, edited, deleted, file_date, counted,
+    created_at, updated_at) VALUES ('work', 'C1', '1.1', NULL, '山田', 0, 'x', '[]', 0, 0, '2026-09-25', 0, 'x', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS).applied, [15]);
+  const reaction = db.prepare(`INSERT INTO slack_reactions (workspace, channel_id, ts, name, position, user_id, reactor, others, counted, created_at)
+    VALUES ('work', 'C1', ?, '+1', 0, ?, '佐藤', ?, 0, 'x')`);
+  reaction.run('1.1', 'U2', 0);
+  assert.throws(() => reaction.run('1.1', 'U2', 0), /constraint/i, 'one per person, name and message');
+  assert.throws(() => reaction.run('9.9', 'U2', 0), /constraint/i, 'only on a message recorded');
+  assert.throws(() => reaction.run('1.1', '', -1), /constraint/i);
 }));

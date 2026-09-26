@@ -6,7 +6,7 @@ import type { Transaction } from './conversation-store.ts';
 import type { ParsedReference } from './dove-request.ts';
 import { isoAt } from './nightly.ts';
 import { writeFileAtomically } from './paths.ts';
-import type { UpdateSource } from './updates.ts';
+import type { UpdateCounts, UpdateSource } from './updates.ts';
 import { imageType, SOURCES_PATH } from './view.ts';
 
 /**
@@ -14,6 +14,9 @@ import { imageType, SOURCES_PATH } from './view.ts';
  * out as one Markdown file a day under `sources/slack/<workspace>/<channel>/`, which the workspace sees read-only as
  * `/sources/slack/`. A change to a message writes its day's file again from the rows, so an edit or a deletion is
  * never a patch on the file. Nothing is removed from disk: the owner clears old files by hand.
+ *
+ * The reactions on a message are written under it, by name (ADR 0043). Putting one on or taking it off writes the day
+ * again, and those others put on her own posts are counted in the updates.
  *
  * It is also Slack's update source — what came since natsumi was last shown it — and what a mention event is made
  * of when it is handed to her. No Slack ID (ts, channel, user) is ever written where she reads it (ADR 0024): a
@@ -40,7 +43,18 @@ export interface ArchivedMessage {
   /** `path` is where the workspace sees a fetched image; without it the file was only noted. */
   files: { name: string; path?: string }[];
   edited: boolean;
+  /**
+   * Every reaction on it, when Slack said (a fill-in): what is recorded is made to match. Left out when Slack did
+   * not say (a live message event), so what is recorded stays.
+   */
+  reactions?: ArchivedReaction[];
 }
+
+/** Someone who put a reaction on. `countable` is false for natsumi herself: her own reactions are never news to her. */
+export interface Reactor { userId: string; name: string; countable: boolean }
+
+/** One reaction on a message: the people Slack named, and how many more it only counted. */
+export interface ArchivedReaction { name: string; people: Reactor[]; others: number }
 
 /**
  * A reference natsumi wrote, matched against the record (ADR 0040): the channel, and the message when one was named.
@@ -58,6 +72,8 @@ export interface ResolvedTarget {
 export interface SeenMessage { from: string; at: string; text: string }
 
 export interface ChannelRow { workspace: string; channel_id: string; directory: string; label: string; is_im: number }
+
+interface ReactionRow { ts: string; name: string; user_id: string; reactor: string; others: number }
 
 interface MessageRow {
   workspace: string; channel_id: string; ts: string; thread_ts: string | null; speaker: string; own: number; text: string;
@@ -160,6 +176,7 @@ export class SlackArchive implements UpdateSource {
         .run(workspace, channelId, message.ts, message.threadTs ?? null, message.speaker, message.own ? 1 : 0, message.text, files,
           message.edited ? 1 : 0, fileDate, counted && !message.own ? 1 : 0, now, now);
     }
+    if (message.reactions) this.matchReactions(workspace, channelId, message.ts, message.reactions, (existing?.own ?? (message.own ? 1 : 0)) === 1);
     await this.write(workspace, channelId, (existing ?? this.row(workspace, channelId, message.ts)!).file_date);
     return !existing;
   }
@@ -170,7 +187,41 @@ export class SlackArchive implements UpdateSource {
     if (!row || row.deleted) return;
     this.db.prepare(`UPDATE slack_messages SET deleted = 1, counted = 0, updated_at = ? WHERE workspace = ? AND channel_id = ? AND ts = ?`)
       .run(this.iso(), workspace, channelId, ts);
+    this.db.prepare('UPDATE slack_reactions SET counted = 0 WHERE workspace = ? AND channel_id = ? AND ts = ?').run(workspace, channelId, ts);
     await this.write(workspace, channelId, row.file_date);
+  }
+
+  /**
+   * A reaction put on a recorded message: its day's file is written again with it. One already recorded (Slack sent
+   * the event again) changes nothing. Returns false when the message is not recorded, and the reaction is let go.
+   */
+  async react(workspace: string, channelId: string, ts: string, name: string, reactor: Reactor): Promise<boolean> {
+    const row = this.row(workspace, channelId, ts);
+    if (!row) return false;
+    const counted = reactor.countable && row.own === 1 && row.deleted === 0;
+    const { changes } = this.db.prepare(`INSERT INTO slack_reactions (workspace, channel_id, ts, name, position, user_id, reactor, others,
+      counted, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?) ON CONFLICT DO NOTHING`)
+      .run(workspace, channelId, ts, name, this.position(workspace, channelId, ts, name), reactor.userId, reactor.name, counted ? 1 : 0, this.iso());
+    if (Number(changes) > 0) await this.write(workspace, channelId, row.file_date);
+    return true;
+  }
+
+  /**
+   * A reaction taken off: gone from the file, and from the count if it had not been shown yet. Someone Slack only
+   * counted comes off the number.
+   */
+  async unreact(workspace: string, channelId: string, ts: string, name: string, userId: string): Promise<void> {
+    const row = this.row(workspace, channelId, ts);
+    if (!row) return;
+    let { changes } = this.db.prepare(`DELETE FROM slack_reactions WHERE workspace = ? AND channel_id = ? AND ts = ? AND name = ? AND user_id = ?`)
+      .run(workspace, channelId, ts, name, userId);
+    if (Number(changes) === 0) {
+      ({ changes } = this.db.prepare(`UPDATE slack_reactions SET others = others - 1 WHERE workspace = ? AND channel_id = ? AND ts = ?
+        AND name = ? AND user_id = '' AND others > 0`).run(workspace, channelId, ts, name));
+      this.db.prepare(`DELETE FROM slack_reactions WHERE workspace = ? AND channel_id = ? AND ts = ? AND name = ? AND user_id = '' AND others = 0`)
+        .run(workspace, channelId, ts, name);
+    }
+    if (Number(changes) > 0) await this.write(workspace, channelId, row.file_date);
   }
 
   hasMention(workspace: string, channelId: string, ts: string): boolean {
@@ -239,17 +290,30 @@ export class SlackArchive implements UpdateSource {
     return images;
   }
 
-  /** What came since the updates were last shown, per channel, with the newest file of each; then counts from now. */
-  take(): { new: Record<string, number>; files: string[] } | undefined {
-    const rows = this.db.prepare(`SELECT m.workspace, c.label, c.directory, COUNT(*) AS n, MAX(m.file_date) AS latest
+  /**
+   * What came since the updates were last shown, per channel: new messages, and the reactions others put on her own
+   * posts (ADR 0043). With them the files to read: the newest one with a new message, and the newest one with a
+   * reacted post. Then counts from now.
+   */
+  take(): UpdateCounts | undefined {
+    type Counted = { workspace: string; label: string; directory: string; n: number; latest: string };
+    const messages = this.db.prepare(`SELECT m.workspace, c.label, c.directory, COUNT(*) AS n, MAX(m.file_date) AS latest
       FROM slack_messages m JOIN slack_channels c ON c.workspace = m.workspace AND c.channel_id = m.channel_id
-      WHERE m.counted = 1 GROUP BY m.workspace, m.channel_id ORDER BY m.workspace, c.label`).all() as
-      { workspace: string; label: string; directory: string; n: number; latest: string }[];
-    if (rows.length === 0) return undefined;
+      WHERE m.counted = 1 GROUP BY m.workspace, m.channel_id ORDER BY m.workspace, c.label`).all() as Counted[];
+    const reactions = this.db.prepare(`SELECT m.workspace, c.label, c.directory, COUNT(*) AS n, MAX(m.file_date) AS latest
+      FROM slack_reactions r JOIN slack_messages m ON m.workspace = r.workspace AND m.channel_id = r.channel_id AND m.ts = r.ts
+      JOIN slack_channels c ON c.workspace = m.workspace AND c.channel_id = m.channel_id
+      WHERE r.counted = 1 GROUP BY m.workspace, m.channel_id ORDER BY m.workspace, c.label`).all() as Counted[];
+    if (messages.length === 0 && reactions.length === 0) return undefined;
     this.db.prepare('UPDATE slack_messages SET counted = 0 WHERE counted = 1').run();
+    this.db.prepare('UPDATE slack_reactions SET counted = 0 WHERE counted = 1').run();
+    const where = (row: Counted) => `${row.workspace}/${row.label}`;
+    const files = [...messages, ...reactions].sort((a, b) => where(a) < where(b) ? -1 : where(a) > where(b) ? 1 : 0)
+      .map(row => `${SLACK_PATH}/${row.workspace}/${row.directory}/${row.latest}.md`);
     return {
-      new: Object.fromEntries(rows.map(row => [`${row.workspace}/${row.label}`, row.n])),
-      files: rows.map(row => `${SLACK_PATH}/${row.workspace}/${row.directory}/${row.latest}.md`),
+      ...(messages.length > 0 ? { new: Object.fromEntries(messages.map(row => [where(row), row.n])) } : {}),
+      ...(reactions.length > 0 ? { reactions_on_mine: Object.fromEntries(reactions.map(row => [where(row), row.n])) } : {}),
+      files: [...new Set(files)],
     };
   }
 
@@ -328,6 +392,37 @@ export class SlackArchive implements UpdateSource {
       MessageRow | undefined;
   }
 
+  /**
+   * Makes a message's recorded reactions what Slack said they are: what is no longer there goes, what is new comes,
+   * and a new one someone else put on her own post is counted.
+   */
+  private matchReactions(workspace: string, channelId: string, ts: string, reactions: ArchivedReaction[], own: boolean): void {
+    const key = (name: string, userId: string) => `${name}\u0000${userId}`;
+    const wanted = new Set(reactions.flatMap(reaction => [
+      ...reaction.people.map(person => key(reaction.name, person.userId)), ...(reaction.others > 0 ? [key(reaction.name, '')] : [])]));
+    const recorded = this.db.prepare('SELECT name, user_id FROM slack_reactions WHERE workspace = ? AND channel_id = ? AND ts = ?')
+      .all(workspace, channelId, ts) as { name: string; user_id: string }[];
+    const gone = this.db.prepare('DELETE FROM slack_reactions WHERE workspace = ? AND channel_id = ? AND ts = ? AND name = ? AND user_id = ?');
+    for (const row of recorded) if (!wanted.has(key(row.name, row.user_id))) gone.run(workspace, channelId, ts, row.name, row.user_id);
+    const put = this.db.prepare(`INSERT INTO slack_reactions (workspace, channel_id, ts, name, position, user_id, reactor, others, counted,
+      created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO UPDATE SET position = excluded.position, others = excluded.others`);
+    const now = this.iso();
+    for (const [position, reaction] of reactions.entries()) {
+      for (const person of reaction.people) {
+        put.run(workspace, channelId, ts, reaction.name, position, person.userId, person.name, 0, person.countable && own ? 1 : 0, now);
+      }
+      // Those Slack only counted are not counted in the updates: who they are, and so whether they are new, is not known.
+      if (reaction.others > 0) put.run(workspace, channelId, ts, reaction.name, position, '', '', reaction.others, 0, now);
+    }
+  }
+
+  /** Where a reaction put on goes among a message's: its own place while anyone has it on, and otherwise the last. */
+  private position(workspace: string, channelId: string, ts: string, name: string): number {
+    const found = this.db.prepare(`SELECT MIN(CASE WHEN name = ? THEN position END) AS own, MAX(position) AS last FROM slack_reactions
+      WHERE workspace = ? AND channel_id = ? AND ts = ?`).get(name, workspace, channelId, ts) as { own: number | null; last: number | null };
+    return found.own ?? (found.last ?? -1) + 1;
+  }
+
   private write(workspace: string, channelId: string, date: string): Promise<void> {
     return this.enqueue(async () => {
       await this.writeDay(workspace, channelId, date);
@@ -346,6 +441,12 @@ export class SlackArchive implements UpdateSource {
     const channel = this.channel(workspace, channelId)!;
     const rows = (this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND file_date = ?
       ORDER BY CAST(ts AS REAL)`).all(workspace, channelId, date) as unknown as MessageRow[]);
+    const reactions = new Map<string, ReactionRow[]>();
+    for (const reaction of this.db.prepare(`SELECT r.ts, r.name, r.user_id, r.reactor, r.others FROM slack_reactions r
+      JOIN slack_messages m ON m.workspace = r.workspace AND m.channel_id = r.channel_id AND m.ts = r.ts
+      WHERE m.workspace = ? AND m.channel_id = ? AND m.file_date = ? ORDER BY r.position, r.rowid`).all(workspace, channelId, date) as unknown as ReactionRow[]) {
+      reactions.set(reaction.ts, [...reactions.get(reaction.ts) ?? [], reaction]);
+    }
     const parents = new Set(rows.filter(row => !row.thread_ts).map(row => row.ts));
     const replies = new Map<string, MessageRow[]>();
     for (const row of rows) {
@@ -356,22 +457,24 @@ export class SlackArchive implements UpdateSource {
       if (row.thread_ts && parents.has(row.thread_ts)) continue;
       const thread = (replies.get(row.ts) ?? []).filter(reply => !reply.deleted);
       if (row.deleted && thread.length === 0) continue;
-      lines.push('', ...this.entry(row, date, ''));
-      for (const reply of thread) lines.push('', ...this.entry(reply, date, '  '));
+      lines.push('', ...this.entry(row, date, '', reactions.get(row.ts) ?? []));
+      for (const reply of thread) lines.push('', ...this.entry(reply, date, '  ', reactions.get(reply.ts) ?? []));
     }
     const path = join(this.options.directory, workspace, channel.directory, `${date}.md`);
     await mkdir(join(this.options.directory, workspace, channel.directory), { recursive: true, mode: 0o750 });
     await writeFileAtomically(path, `${lines.join('\n')}\n`, FILE_MODE);
   }
 
-  private entry(row: MessageRow, fileDate: string, indent: string): string[] {
+  private entry(row: MessageRow, fileDate: string, indent: string, reactions: ReactionRow[]): string[] {
     const { date, time } = this.local(row.ts);
     const heading = `${indent}${indent ? '###' : '##'} ${date === fileDate ? time : `${date} ${time}`} ${row.speaker}`;
     if (row.deleted) return [heading, '', `${indent}（この発言は削除されました）`];
     // A line opening like a heading would pass for a message of its own, so it is escaped.
     const body = row.text.split('\n').map(line => `${indent}${/^\s*#/.test(line) ? '\\' : ''}${line}`);
     const files = parseFiles(row.files).map(file => `${indent}- ${file.path ? `画像: ${file.path}` : `添付あり（取り込まず）: ${oneLine(file.name)}`}`);
-    return [heading, '', ...(row.text ? body : []), ...files, ...(row.edited ? [`${indent}（編集済み）`] : [])];
+    const reacted = reactionLine(reactions);
+    return [heading, '', ...(row.text ? body : []), ...files, ...(row.edited ? [`${indent}（編集済み）`] : []),
+      ...(reacted ? [`${indent}${reacted}`] : [])];
   }
 
   /** `INDEX.md`: every channel with when it last changed and its newest file. */
@@ -411,6 +514,24 @@ export class SlackArchive implements UpdateSource {
   }
 
   private iso(): string { return isoAt(this.options.now()); }
+}
+
+/**
+ * `リアクション: :+1: 山田・佐藤、:tada: 田中・ほか 3 人`: each reaction in its place, with who put it on, in the order
+ * they did. Undefined when there is none.
+ */
+function reactionLine(rows: ReactionRow[]): string | undefined {
+  const byName = new Map<string, { people: string[]; others: number }>();
+  for (const row of rows) {
+    const reaction = byName.get(row.name) ?? { people: [], others: 0 };
+    if (row.user_id === '') reaction.others += row.others; else reaction.people.push(oneLine(row.reactor) || 'someone');
+    byName.set(row.name, reaction);
+  }
+  if (byName.size === 0) return undefined;
+  return `リアクション: ${[...byName].map(([name, { people, others }]) => {
+    const who = others === 0 ? people : people.length === 0 ? [`${others} 人`] : [...people, `ほか ${others} 人`];
+    return `:${oneLine(name)}: ${who.join('・')}`;
+  }).join('、')}`;
 }
 
 function parseFiles(json: string): { name: string; path?: string }[] {
