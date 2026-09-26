@@ -20,6 +20,7 @@ const DEVICE_TOKEN = /^(?:[0-9a-f]{2}){16,100}$/;
 const ALERTS: Record<string, { title: string; body: string }> = {
   reply: { title: 'なつみ', body: '返事があります' },
   notice: { title: 'なつみ', body: '知らせがあります' },
+  approval: { title: 'なつみ', body: '承認待ちがあります' },
 };
 
 export interface Registration { token: string; publicKey: Buffer; environment: ApnsEnvironment }
@@ -90,6 +91,8 @@ export interface PushEvent { type: string; payload: Record<string, unknown> }
 export interface PushNotifierOptions {
   db: DatabaseSync;
   loop: { subscribe(listener: (event: PushEvent) => void): () => void };
+  /** `approval.pending` and `approval.resolved` (ADR 0040). */
+  approvals?: { subscribe(listener: (event: PushEvent) => void): () => void };
   registrations: PushRegistrations;
   sender: { send(request: ApnsRequest): Promise<ApnsResponse> };
   allowedUserId: number;
@@ -111,26 +114,30 @@ export class PushNotifier {
   private readonly delays: readonly number[];
   private readonly timers = new Map<NodeJS.Timeout, () => void>();
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeApprovals: () => void;
   private closed = false;
 
   constructor(options: PushNotifierOptions) {
     this.options = options;
     this.readState = new ReadState(options.db, Date.now);
     this.delays = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
-    this.unsubscribe = options.loop.subscribe(event => {
+    const listener = (event: PushEvent) => {
       setImmediate(() => {
         if (this.closed) return;
         try { this.handle(event); } catch (error) {
           this.options.log(`push: could not prepare a push for ${event.type} (${error instanceof Error ? error.name : 'error'})`);
         }
       });
-    });
+    };
+    this.unsubscribe = options.loop.subscribe(listener);
+    this.unsubscribeApprovals = options.approvals?.subscribe(listener) ?? (() => {});
   }
 
   /** Stops listening and drops the tries still waiting. */
   close(): void {
     this.closed = true;
     this.unsubscribe();
+    this.unsubscribeApprovals();
     for (const [timer, wake] of this.timers) { clearTimeout(timer); wake(); }
     this.timers.clear();
   }
@@ -145,9 +152,30 @@ export class PushNotifier {
       const expression = typeof payload.expression === 'string' ? payload.expression : undefined;
       const badge = this.badge();
       for (const target of this.awayTargets()) {
-        const body = alertPayload({ alert, badge, messageId: payload.messageId, kind: payload.kind as string, position,
-          text: payload.text, expression, devicePublicKey: target.publicKey });
+        const body = alertPayload({ alert, badge, plain: { messageId: payload.messageId, kind: payload.kind as string, position },
+          sealedTo: payload.messageId, devicePublicKey: target.publicKey,
+          plaintext: maxChars => pushPlaintext({ text: payload.text as string, expression }, maxChars) });
         this.dispatch(target, { environment: target.environment, token: target.token, pushType: 'alert', payload: body, id: randomUUID() });
+      }
+      return;
+    }
+    if (type === 'approval.pending') {
+      const { approvalId, text, target } = payload as { approvalId?: unknown; text?: unknown; target?: { channel?: unknown } };
+      if (typeof approvalId !== 'string' || typeof text !== 'string' || typeof target?.channel !== 'string') return;
+      const channel = target.channel;
+      const badge = this.badge();
+      for (const target of this.awayTargets()) {
+        const body = alertPayload({ alert: ALERTS.approval!, badge, plain: { kind: 'approval', approvalId }, sealedTo: approvalId,
+          devicePublicKey: target.publicKey, plaintext: maxChars => approvalPlaintext(text, channel, maxChars) });
+        this.dispatch(target, { environment: target.environment, token: target.token, pushType: 'alert', payload: body, id: randomUUID() });
+      }
+      return;
+    }
+    if (type === 'approval.resolved') {
+      if (typeof payload.approvalId !== 'string') return;
+      const body = { aps: { 'content-available': 1 }, kind: 'approval-resolved', approvalId: payload.approvalId, badge: this.badge() };
+      for (const target of this.awayTargets()) {
+        this.dispatch(target, { environment: target.environment, token: target.token, pushType: 'background', payload: body, id: randomUUID() });
       }
       return;
     }
@@ -170,9 +198,10 @@ export class PushNotifier {
     return this.options.registrations.targets(this.options.allowedUserId).filter(target => !this.options.isConnected(target.deviceId));
   }
 
-  /** Unread replies and unchecked notices (ADR 0029 5). */
+  /** Unread replies, unchecked notices (ADR 0029 5), and approvals waiting for the owner (ADR 0040). */
   private badge(): number {
-    return this.readState.position().unreadReplyCount + this.readState.unacknowledgedNotificationIds().length;
+    const approvals = this.options.db.prepare(`SELECT COUNT(*) AS n FROM approvals WHERE state = 'pending'`).get() as { n: number };
+    return this.readState.position().unreadReplyCount + this.readState.unacknowledgedNotificationIds().length + approvals.n;
   }
 
   private positionOf(messageId: string): number | undefined {
@@ -225,19 +254,26 @@ export class PushNotifier {
   }
 }
 
+/** What an approval's alert seals (ADR 0040): the draft, cut like a line, and where it would go. */
+function approvalPlaintext(text: string, channel: string, maxChars: number): Buffer {
+  const characters = [...text];
+  const cut = characters.length <= maxChars ? text : `${characters.slice(0, maxChars - 1).join('')}…`;
+  return Buffer.from(JSON.stringify({ text: cut, channel }));
+}
+
 /**
- * An alert as ADR 0029 3 sets it out, the text encrypted to the device. The text is cut to 1000 characters, and
- * further when wide characters would still take the payload past APNs' limit.
+ * An alert as ADR 0029 3 sets it out, the text encrypted to the device with `sealedTo` (the messageId, or an
+ * approval's ID) as AAD. The text is cut to 1000 characters, and further when wide characters would still take the
+ * payload past APNs' limit.
  */
 function alertPayload(input: {
-  alert: { title: string; body: string }; badge: number; messageId: string; kind: string; position: number; text: string;
-  expression: string | undefined; devicePublicKey: Buffer;
+  alert: { title: string; body: string }; badge: number; plain: Record<string, unknown>; sealedTo: string;
+  plaintext: (maxChars: number) => Buffer; devicePublicKey: Buffer;
 }): object {
   const build = (maxChars: number) => ({
     aps: { alert: input.alert, 'mutable-content': 1, badge: input.badge, sound: 'default' },
-    messageId: input.messageId, kind: input.kind, position: input.position,
-    e: sealPush({ devicePublicKey: input.devicePublicKey, messageId: input.messageId,
-      plaintext: pushPlaintext({ text: input.text, expression: input.expression }, maxChars) }),
+    ...input.plain,
+    e: sealPush({ devicePublicKey: input.devicePublicKey, messageId: input.sealedTo, plaintext: input.plaintext(maxChars) }),
   });
   const fits = (payload: object) => Buffer.byteLength(JSON.stringify(payload)) <= APNS_PAYLOAD_MAX_BYTES;
   const whole = build(PUSH_TEXT_MAX_CHARS);

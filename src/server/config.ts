@@ -201,11 +201,41 @@ export interface SlackConfig {
   mentionContext: { messages: number; chars: number };
   /** Whether Slack is counted in the `updates` of pings and self-checks. */
   updates: boolean;
+  /** The dove's judge (ADR 0040). Without it every draft is "no verdict" and goes to the owner. */
+  jev?: JevConfig;
+  /** How long an approval waits for the owner before it expires. */
+  approvalExpiryDays: number;
+  /** The reactions natsumi may ask the dove for, by Slack's emoji name. */
+  reactions: string[];
+  /** Without a verdict, a reply to a top-level message goes to the channel while at most this many came after it. */
+  placementFollowing: number;
+  /** What Jev is shown around a draft's target: how many messages, and the characters each keeps. */
+  judgeContext: { messages: number; chars: number };
+}
+
+/** TypeSafe AI's Jev, which the dove judges drafts with (ADR 0039, ADR 0040). */
+export interface JevConfig {
+  /** TypeSafe's, or a server of the owner's own that answers the same API (ADR 0040). */
+  baseUrl: string;
+  /** Absent for a server that needs none: then no Authorization header is sent. */
+  apiKey?: SecretReference;
+  model: string;
+  /** A score at or over `owner` hands the draft to the owner; one at or over `return` turns it back to natsumi. */
+  thresholds: { owner: number; return: number };
 }
 
 export const SLACK_DEFAULTS = {
   reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
+  approvalExpiryDays: 7, reactions: ['+1', 'eyes', 'pray', 'white_check_mark', 'bow', 'tada'], placementFollowing: 2,
+  judgeContext: { messages: 5, chars: 500 },
 };
+export const JEV_DEFAULTS = { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest', thresholds: { owner: 0.3, return: 0.7 } };
+const MAX_APPROVAL_EXPIRY_DAYS = 90;
+const MAX_REACTIONS = 50;
+const MAX_PLACEMENT_FOLLOWING = 20;
+const MAX_JUDGE_CONTEXT_MESSAGES = 20;
+/** The dove's name in ask_agent (ADR 0040). The config's outside agents may not take it. */
+const DOVE_NAME = 'poppo';
 /**
  * A year: the channels natsumi is invited to are quiet, so a long first fill-in is cheap, and the files are kept
  * rather than cleared anyway. Beyond a year a typo would mean days of paging through history at Slack's rate limit.
@@ -471,6 +501,7 @@ function parseA2A(value: unknown, path: string): A2AConfig {
   for (const [name, entry] of Object.entries(listed)) {
     const entryPath = `${agentsPath}.${name}`;
     if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
+    if (name === DOVE_NAME) throw new ConfigError(entryPath, 'the name is the Slack dove\'s own, served by the server itself (ADR 0040)');
     const agent = object(entry, entryPath);
     onlyKeys(agent, entryPath, ['url']);
     // The token rides on every call, so it goes nowhere it could be read on the way.
@@ -492,7 +523,8 @@ function parseA2A(value: unknown, path: string): A2AConfig {
 
 function parseSlack(value: unknown, path: string): SlackConfig {
   const slack = object(value, path);
-  onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', 'mentionContext', 'updates']);
+  onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', 'mentionContext', 'updates', 'jev', 'approvalExpiryDays',
+    'reactions', 'placementFollowing', 'judgeContext']);
   const workspacesPath = `${path}.workspaces`;
   const listed = object(required(slack, 'workspaces', path), workspacesPath);
   const workspaces: SlackConfig['workspaces'] = {};
@@ -530,8 +562,63 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   }
   const updates = slack.updates ?? SLACK_DEFAULTS.updates;
   if (typeof updates !== 'boolean') throw new ConfigError(`${path}.updates`, 'must be true or false');
+  const expiry = slack.approvalExpiryDays ?? SLACK_DEFAULTS.approvalExpiryDays;
+  if (!positiveInteger(expiry, 1) || (expiry as number) > MAX_APPROVAL_EXPIRY_DAYS) {
+    throw new ConfigError(`${path}.approvalExpiryDays`, `must be an integer from 1 to ${MAX_APPROVAL_EXPIRY_DAYS}`);
+  }
+  const reactions = slack.reactions ?? SLACK_DEFAULTS.reactions;
+  if (!Array.isArray(reactions) || reactions.length === 0 || reactions.length > MAX_REACTIONS
+    || !reactions.every(name => typeof name === 'string' && EMOJI_NAME.test(name)) || new Set(reactions).size !== reactions.length) {
+    throw new ConfigError(`${path}.reactions`, `must list 1 to ${MAX_REACTIONS} different emoji names without colons`);
+  }
+  const following = slack.placementFollowing ?? SLACK_DEFAULTS.placementFollowing;
+  if (!(typeof following === 'number' && Number.isInteger(following) && following >= 0 && following <= MAX_PLACEMENT_FOLLOWING)) {
+    throw new ConfigError(`${path}.placementFollowing`, `must be an integer from 0 to ${MAX_PLACEMENT_FOLLOWING}`);
+  }
+  const judgePath = `${path}.judgeContext`;
+  const judge = object(slack.judgeContext ?? {}, judgePath);
+  onlyKeys(judge, judgePath, ['messages', 'chars']);
+  const judgeMessages = judge.messages ?? SLACK_DEFAULTS.judgeContext.messages;
+  if (!positiveInteger(judgeMessages, 1) || (judgeMessages as number) > MAX_JUDGE_CONTEXT_MESSAGES) {
+    throw new ConfigError(`${judgePath}.messages`, `must be an integer from 1 to ${MAX_JUDGE_CONTEXT_MESSAGES}`);
+  }
+  const judgeChars = judge.chars ?? SLACK_DEFAULTS.judgeContext.chars;
+  if (!positiveInteger(judgeChars, MIN_MENTION_CONTEXT_CHARS)) {
+    throw new ConfigError(`${judgePath}.chars`, `must be an integer of at least ${MIN_MENTION_CONTEXT_CHARS}`);
+  }
   return { workspaces, reaction, backfillDays: days as number, maxImageBytes: bytes as number,
-    mentionContext: { messages, chars: chars as number }, updates };
+    mentionContext: { messages, chars: chars as number }, updates,
+    ...(slack.jev === undefined ? {} : { jev: parseJev(slack.jev, `${path}.jev`) }),
+    approvalExpiryDays: expiry as number, reactions: reactions as string[], placementFollowing: following,
+    judgeContext: { messages: judgeMessages as number, chars: judgeChars as number } };
+}
+
+function parseJev(value: unknown, path: string): JevConfig {
+  const jev = object(value, path);
+  onlyKeys(jev, path, ['baseUrl', 'apiKeyEnv', 'apiKeyFile', 'model', 'thresholds']);
+  const apiKey = jev.apiKeyEnv === undefined && jev.apiKeyFile === undefined ? undefined : secretReference(jev, path, 'apiKey');
+  const basePath = `${path}.baseUrl`;
+  const base = jev.baseUrl === undefined ? new URL(JEV_DEFAULTS.baseUrl) : parseUrl(jev.baseUrl, basePath);
+  if (base.protocol !== 'https:' && base.protocol !== 'http:') throw new ConfigError(basePath, 'must be an http or https URL');
+  if (base.username || base.password || base.search || base.hash) throw new ConfigError(basePath, 'must not carry credentials, a query or a fragment');
+  // Every draft and what surrounds it go there; a key on top of that goes over plain http only to this machine.
+  if (apiKey && base.protocol === 'http:' && !isLoopbackHost(base.hostname)) {
+    throw new ConfigError(basePath, 'must use https when an API key is sent (http is accepted with a key only for a loopback host)');
+  }
+  const baseUrl = jev.baseUrl === undefined ? JEV_DEFAULTS.baseUrl : (jev.baseUrl as string).replace(/\/+$/, '');
+  const model = jev.model === undefined ? JEV_DEFAULTS.model : nonEmptyString(jev.model, `${path}.model`);
+  const thresholdsPath = `${path}.thresholds`;
+  const thresholds = object(jev.thresholds ?? {}, thresholdsPath);
+  onlyKeys(thresholds, thresholdsPath, ['owner', 'return']);
+  const read = (name: 'owner' | 'return') => {
+    const threshold = thresholds[name] ?? JEV_DEFAULTS.thresholds[name];
+    if (typeof threshold !== 'number' || !(threshold > 0 && threshold <= 1)) throw new ConfigError(`${thresholdsPath}.${name}`, 'must be a number over 0 and at most 1');
+    return threshold;
+  };
+  const owner = read('owner');
+  const returnAt = read('return');
+  if (owner > returnAt) throw new ConfigError(thresholdsPath, 'owner must not be over return');
+  return { baseUrl, ...(apiKey ? { apiKey } : {}), model, thresholds: { owner, return: returnAt } };
 }
 
 function parseLoop(value: unknown, path: string): LoopConfig {

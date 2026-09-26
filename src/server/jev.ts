@@ -8,7 +8,9 @@
  * in Slack, never natsumi's own account of it nor anything from her memory (ADR 0012).
  */
 
-export const JEV_URL = 'https://api.typesafe.ai/v1/systemone';
+/** TypeSafe's own. A Jev-compatible server of the owner's own answers the same path at another base (ADR 0040). */
+export const DEFAULT_JEV_BASE_URL = 'https://api.typesafe.ai';
+const JEV_PATH = '/v1/systemone';
 export const DEFAULT_JEV_MODEL = 'jev-latest';
 /** A judgement that takes longer than this is no verdict: the draft goes to the owner rather than wait. */
 export const DEFAULT_JEV_TIMEOUT_MS = 30_000;
@@ -69,7 +71,8 @@ const PLACEMENT = {
 
 export interface JevJudgement {
   issues: { name: string; label: string; score: number }[];
-  placement?: { choice: 'thread' | 'channel'; probabilities: { thread: number; channel: number } };
+  /** A compatible server may leave out the probabilities; the choice is what is needed. */
+  placement?: { choice: 'thread' | 'channel'; probabilities?: { thread: number; channel: number } };
 }
 
 export interface JevClient {
@@ -88,7 +91,10 @@ export class JevError extends Error {
 }
 
 export interface HttpJevClientOptions {
-  apiKey: string;
+  /** `https://api.typesafe.ai` unless another server that speaks the same API is named. */
+  baseUrl?: string;
+  /** Without it no Authorization header is sent: a server of the owner's own may need none. */
+  apiKey?: string;
   model: string;
   timeoutMs?: number;
   /** Replaced by the tests; nothing here ever reaches the network in them. */
@@ -107,9 +113,10 @@ export class HttpJevClient implements JevClient {
     const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? DEFAULT_JEV_TIMEOUT_MS);
     let text: string;
     try {
-      const response = await fetching(JEV_URL, {
+      const base = (this.options.baseUrl ?? DEFAULT_JEV_BASE_URL).replace(/\/+$/, '');
+      const response = await fetching(`${base}${JEV_PATH}`, {
         method: 'POST', signal: controller.signal,
-        headers: { authorization: `Bearer ${this.options.apiKey}`, 'content-type': 'application/json' },
+        headers: { ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}), 'content-type': 'application/json' },
         body: JSON.stringify({ model: this.options.model, state, questions }),
       });
       if (!response.ok) throw new JevError(`http-${response.status}`);
@@ -134,12 +141,12 @@ function parseAnswer(text: string, placement: boolean): JevJudgement {
   });
   if (!placement) return { issues };
   const answer = answers.placement;
-  const thread = answer?.probabilities?.thread;
-  const channel = answer?.probabilities?.channel;
-  if ((answer?.choice !== 'thread' && answer?.choice !== 'channel') || !probability(thread) || !probability(channel)) {
-    throw new JevError('malformed');
-  }
-  return { issues, placement: { choice: answer.choice, probabilities: { thread, channel } } };
+  if (answer?.choice !== 'thread' && answer?.choice !== 'channel') throw new JevError('malformed');
+  const thread = answer.probabilities?.thread;
+  const channel = answer.probabilities?.channel;
+  // The probabilities are shown to the owner when there are any; a compatible server may not give them.
+  const probabilities = probability(thread) && probability(channel) ? { probabilities: { thread, channel } } : {};
+  return { issues, placement: { choice: answer.choice, ...probabilities } };
 }
 
 const probability = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;

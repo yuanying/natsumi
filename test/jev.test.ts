@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { decideVerdict, HttpJevClient, JEV_ISSUES, JevError, JEV_URL, type JevJudgement } from '../src/server/jev.ts';
+import { decideVerdict, DEFAULT_JEV_BASE_URL, HttpJevClient, JEV_ISSUES, JevError, type JevJudgement } from '../src/server/jev.ts';
 
 /**
  * The dove's judge (ADR 0039, ADR 0040): one call to Jev with a Noul per issue and a Choice for where a reply goes,
@@ -34,7 +34,8 @@ test('one call asks every issue as a Noul and the placement as a Choice, in Engl
   await client.judge(STATE, { placement: true });
   assert.equal(stub.calls.length, 1);
   const { url, init } = stub.calls[0]!;
-  assert.equal(url, JEV_URL);
+  assert.equal(url, `${DEFAULT_JEV_BASE_URL}/v1/systemone`);
+  assert.equal(DEFAULT_JEV_BASE_URL, 'https://api.typesafe.ai');
   assert.equal(init.method, 'POST');
   assert.equal((init.headers as Record<string, string>).authorization, 'Bearer fixture-jev-key');
   const body = JSON.parse(String(init.body));
@@ -56,6 +57,23 @@ test('the answer becomes a score per issue, with its Japanese label, and the pla
   assert.deepEqual(judged.placement, { choice: 'thread', probabilities: { thread: 0.8, channel: 0.2 } });
 });
 
+test('a Jev-compatible server of her own: another base URL and model, and no key means no Authorization header', async () => {
+  const stub = answering(200, fullAnswer());
+  const client = new HttpJevClient({ baseUrl: 'http://jev.example.test:8080/', model: 'local-judge', fetch: stub.fetch });
+  await client.judge(STATE, { placement: true });
+  assert.equal(stub.calls[0]!.url, 'http://jev.example.test:8080/v1/systemone');
+  assert.equal((stub.calls[0]!.init.headers as Record<string, string>).authorization, undefined);
+  assert.equal(JSON.parse(String(stub.calls[0]!.init.body)).model, 'local-judge');
+});
+
+test('a compatible server that leaves out confidence and the probabilities still gives a verdict and a placement', async () => {
+  const answer = fullAnswer();
+  answer.answers.placement = { type: 'choice', choice: 'channel' } as never;
+  const client = new HttpJevClient({ model: 'm', fetch: answering(200, answer).fetch });
+  const judged = await client.judge(STATE, { placement: true });
+  assert.deepEqual(judged.placement, { choice: 'channel' });
+});
+
 test('without a message to reply to, the placement is not asked', async () => {
   const stub = answering(200, { ...fullAnswer(), answers: Object.fromEntries(JEV_ISSUES.map(issue => [issue.name, { type: 'noul', noul: 0.1 }])) });
   const client = new HttpJevClient({ apiKey: 'k', model: 'jev-latest', fetch: stub.fetch });
@@ -69,12 +87,14 @@ for (const [name, status, body, kind] of [
   ['a rate limit', 429, { error: 'x' }, 'http-429'],
   ['an overload', 529, { error: 'x' }, 'http-529'],
   ['a body that is not JSON', 200, 'not json', 'malformed'],
+  ['a question kind the server refuses', 400, { error: 'unsupported question type' }, 'http-400'],
+  ['a placement with no choice', 200, { answers: { ...Object.fromEntries(JEV_ISSUES.map(issue => [issue.name, { noul: 0.1 }])), placement: { confidence: 0.5 } } }, 'malformed'],
   ['an answer missing an issue', 200, { answers: { placement: { choice: 'thread', probabilities: { thread: 1, channel: 0 } } } }, 'malformed'],
   ['a score out of range', 200, { answers: Object.fromEntries(JEV_ISSUES.map(issue => [issue.name, { noul: 2 }])) }, 'malformed'],
 ] as const) {
   test(`${name} is no verdict, and the error names only its kind`, async () => {
     const client = new HttpJevClient({ apiKey: 'fixture-jev-key', model: 'jev-latest', fetch: answering(status, body).fetch });
-    await assert.rejects(client.judge(STATE, { placement: false }), (error: unknown) => {
+    await assert.rejects(client.judge(STATE, { placement: true }), (error: unknown) => {
       assert.ok(error instanceof JevError);
       assert.equal(error.kind, kind);
       assert.doesNotMatch(error.message, /fixture-jev-key|大丈夫/);

@@ -6,7 +6,7 @@ import { AGENT_LIST_DIRECTORY, writeAgentList } from './agent-list.ts';
 import { ApnsClient, parseApnsKey, type ApnsEnvironment } from './apns.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
-import { ConfigError, loadConfig, type ServerConfig } from './config.ts';
+import { ConfigError, JEV_DEFAULTS, loadConfig, type ServerConfig } from './config.ts';
 import { ConnectionHub } from './connections.ts';
 import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from './data-directory.ts';
 import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-login.ts';
@@ -19,6 +19,8 @@ import { preparePiState } from './pi-state.ts';
 import { parseRegistration, PushNotifier, PushRegistrations } from './push.ts';
 import { readSecret, readTlsFiles } from './secrets.ts';
 import { SessionStore } from './sessions.ts';
+import { SlackDove } from './dove.ts';
+import { HttpJevClient, type JevClient } from './jev.ts';
 import { SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
 import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
@@ -30,6 +32,8 @@ import { Scheduler } from './scheduler.ts';
 import { ThinkingLoop, type RotationOutcome } from './thinking-loop.ts';
 
 const SESSION_SWEEP_MS = 30_000;
+/** How often approvals past their time are closed. A minute late is nothing against a week (ADR 0040). */
+const APPROVAL_SWEEP_MS = 60_000;
 
 export interface StartOptions {
   config: string;
@@ -58,6 +62,8 @@ export interface StartOptions {
   a2a?: { pollIntervalMs?: number };
   /** Replaces the Slack SDKs. Tests hand in a stand-in for the Web API and Socket Mode. */
   slack?: { connector?: SlackConnector };
+  /** Replaces the Jev client built from `slack.jev`. Tests hand in a stand-in; nothing reaches TypeSafe from them. */
+  jev?: { client?: JevClient };
 }
 
 type Address = { host: string; port: number };
@@ -100,6 +106,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     botToken: await readSecret(workspace.botToken, `slack.workspaces.${name}.botToken`, options.env),
     appToken: await readSecret(workspace.appToken, `slack.workspaces.${name}.appToken`, options.env),
   }))) : [];
+  const jevKey = config.slack?.jev?.apiKey ? await readSecret(config.slack.jev.apiKey, 'slack.jev.apiKey', options.env) : undefined;
   const tls = config.listen.tls;
   const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
   const now = options.clock ?? Date.now;
@@ -116,6 +123,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let challenge: ChallengeListener | undefined;
   let certificates: CertificateManager | undefined;
   let scheduler: Scheduler | undefined;
+  let dove: SlackDove | undefined;
   const slackWorkspaces: SlackWorkspace[] = [];
   const timers: NodeJS.Timeout[] = [];
   // Everything opened above, closed in the reverse order.
@@ -123,6 +131,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
     scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
     await Promise.all(slackWorkspaces.map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
+    dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
     apns?.close();
     await certificates?.close(); // Abandons an ACME order in flight: no certificate arrives at a listener being closed.
@@ -147,6 +156,20 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       timeZone: config.loop.timeZone, now, mentionContext: slackConfig.mentionContext }) : undefined;
     await archive?.prepare();
     const updates: UpdateSource[] = archive && slackConfig?.updates ? [archive] : [];
+    const connector = options.slack?.connector ?? connectSlack;
+    const slackConnections = archive ? slackTokens.map(({ name, botToken, appToken }) => ({ name, ...connector({ botToken, appToken }) })) : [];
+
+    // The dove (ADR 0040): what natsumi asks to post is judged and sent, or handed to the owner, from here. Its answers
+    // are raised into the loop, which is opened next with the dove as one of the agents she can ask.
+    let raiseInto: ThinkingLoop | undefined;
+    const theDove = dove = archive && slackConfig ? new SlackDove({
+      db, archive, workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
+      jev: options.jev?.client ?? (slackConfig.jev ? new HttpJevClient({ baseUrl: slackConfig.jev.baseUrl, model: slackConfig.jev.model,
+        ...(jevKey ? { apiKey: jevKey } : {}) }) : undefined),
+      config: { thresholds: slackConfig.jev?.thresholds ?? JEV_DEFAULTS.thresholds, approvalDays: slackConfig.approvalExpiryDays,
+        reactions: slackConfig.reactions, placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext },
+      publicOrigin: config.publicOrigin, now, log, raise: record => raiseInto?.raise('dove-reply', record),
+    }) : undefined;
 
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
@@ -155,15 +178,20 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop,
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
-      updates, ...(archive ? { slack: archive } : {}),
+      updates, ...(archive ? { slack: archive } : {}), ...(theDove ? { dove: theDove } : {}),
     });
+    raiseInto = thinkingLoop;
+    if (theDove) {
+      // What a previous process left on its way, and the approvals whose time ran out while it was stopped.
+      theDove.resume();
+      theDove.expire();
+      timers.push(setInterval(() => theDove.expire(), APPROVAL_SWEEP_MS));
+    }
 
     // Each workspace connects in the background: Slack being out of reach, or a token it refuses, must not hold the
     // server's start. The socket reconnects on its own, and every connection fills in what was missed.
     if (archive && slackConfig && !thinkingLoop.unavailable) {
-      const connector = options.slack?.connector ?? connectSlack;
-      for (const { name, botToken, appToken } of slackTokens) {
-        const { api, socket } = connector({ botToken, appToken });
+      for (const { name, api, socket } of slackConnections) {
         const workspace = new SlackWorkspace({
           name, api, socket, archive, reaction: slackConfig.reaction, backfillDays: slackConfig.backfillDays,
           maxImageBytes: slackConfig.maxImageBytes, now, log,
@@ -180,7 +208,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the
     // background: an agent that is down must not hold the server's start.
     void writeAgentList({ directory: join(dataDirectory, AGENT_LIST_DIRECTORY), config: config.a2a, client: a2aClient,
-      now: now(), timeZone: config.loop.timeZone }).then(
+      now: now(), timeZone: config.loop.timeZone, dove: theDove !== undefined }).then(
       ({ listed, unreachable }) => { log(`a2a: wrote the list of agents (${listed.length} listed, ${unreachable.length} out of reach)`); },
       () => { log('a2a: the list of agents could not be written'); },
     );
@@ -208,6 +236,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const registrations = new PushRegistrations(db, now);
     const connections = hub = new ConnectionHub({
       publicOrigin: config.publicOrigin, now, db, loop: thinkingLoop, streamBufferSize: options.streamBufferSize,
+      ...(theDove ? { approvals: { pending: () => theDove.pendingApprovals(), decide: input => theDove.decide(input),
+        subscribe: listener => theDove.subscribe(listener) } } : {}),
       // Connecting is a use of the session and renews it (ADR 0030).
       authenticate: request => {
         const token = bearerToken(request);
@@ -232,7 +262,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       apns = new ApnsClient({ teamId: config.apns.teamId, keyId: config.apns.keyId, topic: config.apns.topic, key: apnsKey, now,
         origins: options.apns?.origins });
       notifier = new PushNotifier({
-        db, loop: thinkingLoop, registrations, sender: apns, allowedUserId, isConnected: deviceId => connections.isConnected(deviceId),
+        db, loop: thinkingLoop, ...(theDove ? { approvals: theDove } : {}), registrations, sender: apns, allowedUserId, isConnected: deviceId => connections.isConnected(deviceId),
         log, retryDelaysMs: options.apns?.retryDelaysMs,
       });
     } else {

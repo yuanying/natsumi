@@ -6,6 +6,7 @@ import test from 'node:test';
 import type { Context } from '@earendil-works/pi-ai';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
 import { LOOP_DEFAULTS } from '../src/server/config.ts';
+import { LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME } from '../src/server/loop-tools.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop } from '../src/server/thinking-loop.ts';
@@ -41,6 +42,19 @@ class CountingSource implements UpdateSource {
   }
 }
 
+/** A dove that takes every request and answers with the line the test put in for each event. */
+class FakeDove {
+  readonly asked: string[] = [];
+  readonly lines = new Map<string, Record<string, unknown>>();
+  ask(message: string) {
+    this.asked.push(message);
+    return { ok: true, text: 'ポッポさんが投稿の依頼を受け付けました。' };
+  }
+  takeEventLine(eventId: string, receivedAt: string) {
+    return { ...this.lines.get(eventId) ?? { type: 'agent_reply', agent: 'poppo' }, received_at: receivedAt };
+  }
+}
+
 async function setup(t: test.TestContext, options: { shell?: boolean } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-slack-loop-')));
   const data = join(root, 'data');
@@ -55,6 +69,7 @@ async function setup(t: test.TestContext, options: { shell?: boolean } = {}) {
   model.auto = () => ({ text: '' });
   const source = new CountingSource();
   const lines = new Map<string, Record<string, unknown>>();
+  const dove = new FakeDove();
   const loop = await ThinkingLoop.open({
     db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
     runtime: fixtureRuntime,
@@ -65,13 +80,14 @@ async function setup(t: test.TestContext, options: { shell?: boolean } = {}) {
       eventLine: eventId => lines.get(eventId) ?? { type: 'slack_mention' },
       images: async () => [{ type: 'image', mimeType: 'image/png', data: PNG.toString('base64') }],
     },
+    dove,
   });
   t.after(async () => {
     await loop.close();
     db.close();
     await rm(root, { recursive: true, force: true });
   });
-  return { root, data, db, loop, model, source, lines };
+  return { root, data, db, loop, model, source, lines, dove };
 }
 
 const userMessages = (context: Context) => context.messages.filter(message => message.role === 'user');
@@ -135,5 +151,31 @@ test('view in the shell answers with the image, from the server, without the run
   assert.equal(result.isError, false);
   assert.deepEqual(result.content.filter(part => part.type === 'image').map(part => part.data), [PNG.toString('base64')]);
   second.finish();
+  await f.loop.idle();
+});
+
+test('natsumi has no tool that posts to Slack: a post is a request to the dove through ask_agent', async t => {
+  const f = await setup(t);
+  f.model.takeOver();
+  f.loop.ping();
+  const first = await f.model.next();
+  for (const name of [...LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME]) assert.doesNotMatch(name, /slack|post|chat|reaction|dove|poppo/i, name);
+  first.call('ask_agent', { agent: 'poppo', message: '返信先: work/#dev\n種類: 投稿\n---\nおはよう', continue: false });
+  first.finish();
+  const second = await f.model.next();
+  const result = second.context.messages.find(message => message.role === 'toolResult') as { content: { text?: string }[]; isError?: boolean };
+  assert.equal(result.isError, false);
+  assert.match(result.content[0]!.text!, /ポッポさん/);
+  assert.deepEqual(f.dove.asked, ['返信先: work/#dev\n種類: 投稿\n---\nおはよう']);
+  second.finish();
+  await f.loop.idle();
+});
+
+test('the dove\'s answer is an event of its own, read from the dove', async t => {
+  const f = await setup(t);
+  f.loop.raise('dove-reply', eventId => { f.dove.lines.set(eventId, { type: 'agent_reply', agent: 'poppo', result: 'sent', text: 'ポッポ！' }); });
+  const context = await until(() => f.model.contexts[0]);
+  const prompt = textOf(userMessages(context).at(-1)!);
+  assert.match(prompt, /"type":"agent_reply","agent":"poppo","result":"sent","text":"ポッポ！"/);
   await f.loop.idle();
 });

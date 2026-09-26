@@ -1,0 +1,212 @@
+import assert from 'node:assert/strict';
+import { createECDH } from 'node:crypto';
+import test from 'node:test';
+import WebSocket from 'ws';
+import { JEV_ISSUES, type JevClient, type JevJudgement } from '../src/server/jev.ts';
+import { openPush } from '../src/server/push-crypto.ts';
+import { apnsTestKey, FakeApns } from './support/fake-apns.ts';
+import { FakeSlack, tsAt } from './support/fake-slack.ts';
+import { login, PUBLIC_ORIGIN, startFixture, type Fixture } from './support/server-fixture.ts';
+
+/**
+ * The dove through the running server (ADR 0040, docs/client-contract.md): a draft Jev hands to the owner becomes an
+ * approval every device sees, the phone that is away is pushed, and the owner's decision over the socket sends it.
+ */
+
+interface Envelope { type: string; requestId?: string; seq: number; payload: Record<string, any> }
+
+class Client {
+  readonly messages: Envelope[] = [];
+  deviceId: string | undefined;
+  private readonly ws: WebSocket;
+  private counter = 0;
+  private constructor(ws: WebSocket) {
+    this.ws = ws;
+    ws.on('message', data => {
+      const envelope = JSON.parse(String(data)) as Envelope;
+      if (envelope.type !== 'conversation.thinking') this.messages.push(envelope);
+    });
+  }
+
+  static open(f: Fixture, token: string): Promise<Client> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(f.wsUrl, { headers: { authorization: `Bearer ${token}` } });
+      const client = new Client(ws);
+      ws.once('open', () => resolve(client));
+      ws.once('error', reject);
+    });
+  }
+
+  async until(predicate: (message: Envelope) => boolean, from = 0): Promise<Envelope> {
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const found = this.messages.slice(from).find(predicate);
+      if (found) return found;
+      if (Date.now() > deadline) throw new Error(`timed out; received ${this.messages.map(m => m.type).join(', ')}`);
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  }
+
+  async command(type: string, payload: Record<string, unknown>) {
+    const from = this.messages.length;
+    const requestId = `request-${++this.counter}`;
+    this.ws.send(JSON.stringify({ v: 1, requestId, deviceId: this.deviceId, type, payload }));
+    return this.until(message => message.requestId === requestId, from);
+  }
+
+  async sync() {
+    const reply = await this.command('session.sync', { resume: null });
+    this.deviceId = reply.payload.deviceId;
+    return reply;
+  }
+
+  close() {
+    const closed = new Promise(resolve => this.ws.once('close', resolve));
+    this.ws.close();
+    return closed;
+  }
+}
+
+class OwnerJev implements JevClient {
+  asked = 0;
+  async judge(): Promise<JevJudgement> {
+    this.asked += 1;
+    return { issues: JEV_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: index === 1 ? 0.5 : 0.01 })),
+      placement: { choice: 'thread', probabilities: { thread: 0.8, channel: 0.2 } } };
+  }
+}
+
+const SLACK = { workspaces: { work: { botTokenEnv: 'SLACK_BOT', appTokenEnv: 'SLACK_APP' } }, jev: { apiKeyEnv: 'JEV_API_KEY' } };
+
+async function withDove(fn: (f: Fixture, slack: FakeSlack, apns: FakeApns, jev: OwnerJev) => Promise<void>) {
+  const apns = await new FakeApns().start();
+  const slack = new FakeSlack();
+  slack.addChannel({ id: 'C1', name: 'dev', isIm: false });
+  const jev = new OwnerJev();
+  const f = await startFixture({ apns: { origin: apns.origin, pem: apnsTestKey().pem, retryDelaysMs: [1] },
+    slack: { section: SLACK, api: slack, jev } });
+  // natsumi answers a mention by asking the dove to reply to it, copying the reference the event gave her.
+  f.model.auto = context => {
+    const last = context.messages.at(-1);
+    const text = last?.role === 'user' ? JSON.stringify(last.content) : '';
+    const reference = /\\"reference\\":\\"([^\\]+)\\"/.exec(text)?.[1];
+    if (!reference) return {};
+    return { calls: [{ name: 'ask_agent', arguments: { agent: 'poppo', continue: false,
+      message: `返信先: ${reference}\n種類: 投稿\n表情: happy\n---\n架空の返事です。` } }] };
+  };
+  try { await fn(f, slack, apns, jev); } finally {
+    await f.cleanup();
+    await apns.close();
+  }
+}
+
+function keyPair() {
+  const ecdh = createECDH('prime256v1');
+  ecdh.generateKeys();
+  return { privateKey: ecdh.getPrivateKey(), publicKey: ecdh.getPublicKey().toString('base64') };
+}
+
+async function until<T>(check: () => T | undefined | false, timeout = 5_000): Promise<T> {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const value = check();
+    if (value) return value;
+    if (Date.now() > deadline) throw new Error('timed out');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
+test('a draft handed to the owner is an approval on every device and a push to the phone that is away, and her approval sends it', () =>
+  withDove(async (f, slack, apns) => {
+    const { token } = await login(f);
+    const phone = await Client.open(f, token);
+    await phone.sync();
+    const keys = keyPair();
+    await phone.command('push.register', { token: 'ab'.repeat(32), publicKey: keys.publicKey, environment: 'sandbox' });
+    await phone.close();
+    const mac = await Client.open(f, token);
+    const early = await mac.command('approval.decide', { approvalId: 'x', revision: 1, decision: 'approve' });
+    assert.deepEqual([early.type, early.payload.code], ['command.rejected', 'sync-required']);
+    const snapshot = await mac.sync();
+    assert.deepEqual(snapshot.payload.pendingApprovals, []);
+
+    await until(() => slack.started === 1);
+    slack.emit({ type: 'message', channel: 'C1', user: 'U1', text: '<@UBOT> 明日のレビュー大丈夫？', ts: tsAt('2026-09-25T05:32:05Z') });
+    const pending = await mac.until(message => message.type === 'approval.pending');
+    const approval = pending.payload;
+    assert.equal(approval.kind, 'slack-post');
+    assert.equal(approval.text, '架空の返事です。');
+    assert.equal(approval.target.channel, 'work/#dev');
+    assert.equal(approval.reason.verdict, 'owner');
+    assert.equal(slack.posts.length, 0);
+
+    const [alert] = await apns.waitFor(1);
+    assert.equal(alert!.headers['apns-push-type'], 'alert');
+    assert.deepEqual(alert!.body.aps.alert, { title: 'なつみ', body: '承認待ちがあります' });
+    assert.equal(alert!.body.aps.badge, 1);
+    assert.equal(alert!.body.kind, 'approval');
+    assert.equal(alert!.body.approvalId, approval.approvalId);
+    assert.deepEqual(JSON.parse(openPush({ devicePrivateKey: keys.privateKey, messageId: approval.approvalId, sealed: alert!.body.e }).toString()),
+      { text: '架空の返事です。', channel: 'work/#dev' });
+    assert.doesNotMatch(JSON.stringify(alert!.body), /架空の返事/, 'the draft is only in the sealed part');
+
+    const again = await mac.sync();
+    assert.deepEqual(again.payload.pendingApprovals, [approval]);
+
+    const stale = await mac.command('approval.decide', { approvalId: approval.approvalId, revision: 2, decision: 'approve' });
+    assert.deepEqual([stale.type, stale.payload.code], ['command.rejected', 'stale-revision']);
+    for (const payload of [{ approvalId: approval.approvalId, revision: 1, decision: 'maybe' },
+      { approvalId: approval.approvalId, revision: '1', decision: 'approve' },
+      { approvalId: approval.approvalId, revision: 1, decision: 'edit', text: '   ' },
+      { approvalId: approval.approvalId, revision: 1, decision: 'approve', placement: 'dm' }]) {
+      const invalid = await mac.command('approval.decide', payload);
+      assert.deepEqual([invalid.type, invalid.payload.code], ['command.rejected', 'invalid-request'], JSON.stringify(payload));
+    }
+
+    const accepted = await mac.command('approval.decide', { approvalId: approval.approvalId, revision: 1, decision: 'approve' });
+    assert.equal(accepted.type, 'command.accepted');
+    assert.deepEqual(accepted.payload, { approvalId: approval.approvalId, revision: 1, state: 'approved' });
+    const resolved = await mac.until(message => message.type === 'approval.resolved');
+    assert.equal(resolved.payload.delivery, 'sent');
+    assert.equal(resolved.payload.sentText, '架空の返事です。');
+    assert.deepEqual(slack.posts, [{ channel: 'C1', text: '架空の返事です。', threadTs: tsAt('2026-09-25T05:32:05Z'),
+      iconUrl: `${PUBLIC_ORIGIN}/avatar/happy.png` }]);
+
+    const pushes = await apns.waitFor(2);
+    const background = pushes[1]!;
+    assert.equal(background.headers['apns-push-type'], 'background');
+    assert.deepEqual(background.body, { aps: { 'content-available': 1 }, kind: 'approval-resolved', approvalId: approval.approvalId, badge: 0 });
+
+    const twice = await mac.command('approval.decide', { approvalId: approval.approvalId, revision: 1, decision: 'reject' });
+    assert.deepEqual(twice.payload, { approvalId: approval.approvalId, revision: 1, state: 'approved' });
+    assert.equal(slack.posts.length, 1);
+    await mac.close();
+  }));
+
+test('the icons are served without a login, one per feeling, and nothing else under /avatar', async () => {
+  const f = await startFixture();
+  try {
+    const icon = await fetch(`${f.base}/avatar/happy.png`);
+    assert.equal(icon.status, 200);
+    assert.equal(icon.headers.get('content-type'), 'image/png');
+    assert.match(icon.headers.get('cache-control') ?? '', /public/);
+    const body = Buffer.from(await icon.arrayBuffer());
+    assert.deepEqual([...body.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    for (const path of ['/avatar/angry.png', '/avatar/happy.webp', '/avatar/../package.json', '/avatar/%2e%2e%2fpackage.json', '/avatar/']) {
+      assert.equal((await fetch(`${f.base}${path}`)).status, 404, path);
+    }
+  } finally { await f.cleanup(); }
+});
+
+test('without Slack a snapshot still carries an empty list of approvals, and a decision names no approval there is', async () => {
+  const f = await startFixture();
+  try {
+    const { token } = await login(f);
+    const mac = await Client.open(f, token);
+    const snapshot = await mac.sync();
+    assert.deepEqual(snapshot.payload.pendingApprovals, []);
+    const unknown = await mac.command('approval.decide', { approvalId: 'approval-none', revision: 1, decision: 'approve' });
+    assert.deepEqual([unknown.type, unknown.payload.code], ['command.rejected', 'invalid-request']);
+    await mac.close();
+  } finally { await f.cleanup(); }
+});

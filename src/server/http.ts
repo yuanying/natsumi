@@ -1,6 +1,7 @@
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
+import { AVATAR_PATH, avatarImage } from './avatar.ts';
 import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
 import type { GitHubLogin, Outcome } from './github-login.ts';
@@ -83,6 +84,14 @@ async function route(request: IncomingMessage, response: ServerResponse, options
   const url = new URL(request.url ?? '/', 'http://request.invalid');
   const method = request.method;
 
+  const avatar = method === 'GET' ? AVATAR_PATH.exec(url.pathname) : null;
+  if (avatar) {
+    const image = await avatarImage(avatar[1]!);
+    if (!image) return json(response, 404, { error: 'not-found' });
+    // Slack fetches and keeps it; the art changes with a release, not by the minute.
+    response.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400', 'content-length': image.length }).end(image);
+    return;
+  }
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
   if (method === 'GET' && url.pathname === GITHUB_CALLBACK_PATH) return answer(response, await options.login.callback(url.searchParams));
   if (method === 'POST' && url.pathname === '/auth/session') {

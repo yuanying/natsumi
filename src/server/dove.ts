@@ -261,7 +261,7 @@ export class SlackDove {
     if (post.kind === 'reaction') return this.react(post);
     const target = this.target(post);
     const { judgeContext, thresholds } = this.options.config;
-    let judged: { verdict: 'send' | 'owner' | 'return'; issues: ScoredIssue[]; placement?: { choice: Placement; probabilities: Record<string, number> } }
+    let judged: { verdict: 'send' | 'owner' | 'return'; issues: ScoredIssue[]; placement?: { choice: Placement; probabilities?: Record<string, number> } }
       | undefined;
     const jev = this.options.jev;
     if (jev) {
@@ -284,7 +284,7 @@ export class SlackDove {
     const verdict = !judged ? 'no-verdict' : judged.verdict === 'return' && history.length >= MAX_RETURNS ? 'rewrite-limit' : judged.verdict;
     this.setPost(postId, {
       verdict, placement, ...(judged ? { scores: JSON.stringify(judged.issues) } : {}),
-      ...(judged?.placement ? { placement_probabilities: JSON.stringify(judged.placement.probabilities) } : {}),
+      ...(judged?.placement?.probabilities ? { placement_probabilities: JSON.stringify(judged.placement.probabilities) } : {}),
     });
     const flagged = (judged?.issues ?? []).filter(issue => issue.flagged).map(issue => issue.label);
     if (verdict === 'send') {
