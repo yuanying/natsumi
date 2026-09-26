@@ -393,7 +393,7 @@ test('schema 17 gives the images a size when it is known, and a reply its images
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 16));
   db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, created_at)
     VALUES ('image-old', '/work/old.png', 'image-old.png', 'image/png', 10, 'ab', 'x')`).run();
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [17]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 17)).applied, [17]);
   assert.deepEqual({ ...db.prepare("SELECT width, height FROM images WHERE image_id = 'image-old'").get() as object },
     { width: null, height: null }, 'an image taken before has no size');
   db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, width, height, created_at)
@@ -406,4 +406,12 @@ test('schema 17 gives the images a size when it is known, and a reply its images
   assert.throws(() => link.run('message-1', 1, 'image-new'), /constraint/i, 'one image in each place');
   assert.throws(() => link.run('message-missing', 2, 'image-new'), /constraint/i);
   assert.throws(() => link.run('message-1', 2, 'image-missing'), /constraint/i);
+}));
+
+test('schema 18 gives an agent reply what it says of the images the agent handed back, empty for the replies before', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 17));
+  db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES ('event-1', 'agent-reply', 'queued', 'x', 'x')`).run();
+  db.prepare(`INSERT INTO agent_replies (event_id, agent, status, text, created_at) VALUES ('event-1', 'wiki', 'completed', '答え', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 18)).applied, [18]);
+  assert.deepEqual({ ...db.prepare("SELECT files FROM agent_replies WHERE event_id = 'event-1'").get() as object }, { files: '' });
 }));
