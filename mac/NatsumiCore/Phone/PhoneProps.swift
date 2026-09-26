@@ -160,11 +160,13 @@ public struct PhoneMainProps: Equatable, Sendable {
     public var isComposing: Bool
     /// The history or the settings when one is open over it.
     public var page: PhonePageProps?
+    /// A picture opened large over everything, with 「閉じる」.
+    public var viewer: ImageViewerProps?
 
     public init(
         status: PhoneStatusProps, notices: PhoneNoticeProps?, balloon: PhoneBalloonProps?,
         character: PhoneCharacterProps, outgoing: [OutgoingRowProps], isComposing: Bool = false,
-        page: PhonePageProps? = nil, approvals: PhoneApprovalEntryProps? = nil
+        page: PhonePageProps? = nil, approvals: PhoneApprovalEntryProps? = nil, viewer: ImageViewerProps? = nil
     ) {
         self.status = status
         self.notices = notices
@@ -174,6 +176,7 @@ public struct PhoneMainProps: Equatable, Sendable {
         self.outgoing = outgoing
         self.isComposing = isComposing
         self.page = page
+        self.viewer = viewer
     }
 }
 
@@ -205,7 +208,13 @@ public enum PhoneProps {
             balloon: balloon(conversation, time: time),
             character: PhoneCharacterProps(avatar: state.avatar, expression: face(conversation, isComposing: state.isComposing)),
             outgoing: outgoing(conversation, isComposing: state.isComposing), isComposing: state.isComposing,
-            page: page(state, time: time), approvals: PhoneApprovalProps.entry(state))))
+            page: page(state, time: time), approvals: PhoneApprovalProps.entry(state), viewer: viewer(state))))
+    }
+
+    /// The picture opened large, while it is here to show.
+    static func viewer(_ state: PhoneState) -> ImageViewerProps? {
+        guard let id = state.viewedImage, case .loaded(let image) = state.images[id] else { return nil }
+        return ImageViewerProps(image: image, title: "なつみの画像")
     }
 
     /// Standing, she wears the face the server gives her. While the owner writes she is a face beside her reply, so
@@ -234,7 +243,9 @@ public enum PhoneProps {
     static func page(_ state: PhoneState, time: MessageTime) -> PhonePageProps? {
         switch state.page {
         case .history:
-            .history(PhoneHistoryProps(history: UIProps.history(state.conversation, time: time, avatar: state.avatar)))
+            .history(PhoneHistoryProps(history: UIProps.history(
+                state.conversation, time: time, avatar: state.avatar, images: state.images, strip: .phoneHistory,
+                openHelp: "タップで拡大")))
         case .settings:
             .settings(PhoneSettingsProps(
                 serverOrigin: state.serverOrigin ?? "", status: status(state.status),

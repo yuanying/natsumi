@@ -168,12 +168,17 @@ public struct PhoneApprovalDetailProps: Equatable, Sendable {
     /// Why the last decision was refused.
     public var message: String?
     public var result: PhoneApprovalResultProps?
+    /// The pictures that go with the post, small, while it waits (ADR 0044). They are let go of when it closes.
+    public var images: [ImageTileProps]
+    /// What stands in for the pictures of a closed approval.
+    public var imagesNote: String?
 
     public init(
         approvalId: String, channel: String, replyTo: PhoneReplyTargetProps?, placement: String,
         placementOptions: [PhonePlacementOptionProps], placementOdds: String?, text: String, face: Expression?,
         avatar: AvatarArt, reason: String, issues: [PhoneIssueProps], history: [PhonePastDraftProps], created: String?,
-        expires: String?, controls: PhoneApprovalControls, message: String?, result: PhoneApprovalResultProps?
+        expires: String?, controls: PhoneApprovalControls, message: String?, result: PhoneApprovalResultProps?,
+        images: [ImageTileProps] = [], imagesNote: String? = nil
     ) {
         self.approvalId = approvalId
         self.channel = channel
@@ -192,6 +197,8 @@ public struct PhoneApprovalDetailProps: Equatable, Sendable {
         self.controls = controls
         self.message = message
         self.result = result
+        self.images = images
+        self.imagesNote = imagesNote
     }
 }
 
@@ -278,7 +285,10 @@ enum PhoneApprovalProps {
                     flagged: flagged.isEmpty ? nil : flagged.joined(separator: "・"))
             },
             created: dates[0], expires: dates[1].map { "期限 \($0)" }, controls: controls, message: message,
-            result: book.closed[id].map { result($0.resolution) }))
+            result: book.closed[id].map { result($0.resolution) },
+            images: isPending ? ImageStrip.phoneApproval.tiles(approval.images, shelf: state.images, openHelp: "タップで拡大") : [],
+            imagesNote: isPending || approval.images.isEmpty
+                ? nil : "画像 \(approval.images.count) 枚（承認が閉じたので表示しません）"))
     }
 
     static func reason(_ verdict: ApprovalVerdict?) -> String {

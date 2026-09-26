@@ -23,9 +23,12 @@ public struct UIMediator {
 
     public mutating func handle(_ event: UIEvent) -> [UIEffect] {
         let conversation = state.conversation
+        let wasConnected = state.status == .connected
         let effects = decide(event)
+        // Coming back to the server is the time to try again for the pictures that could not be had.
+        if state.status == .connected, !wasConnected { state.images.retryUnavailable() }
         settle()
-        let all = effects + readSeenReplies()
+        let all = effects + readSeenReplies() + fetchShownImages()
         if case .historyRowVisibilityChanged = event {
             mayHaveChangedProps = state.conversation != conversation
         } else {
@@ -261,6 +264,20 @@ public struct UIMediator {
             // opens. The views are given http and https links only; anything else is refused here too (ADR 0038).
             return TextLinks.canOpen(url) ? [.openLink(url)] : []
 
+        case .imageClicked(let id):
+            // Like a link, looking at a picture reads nothing. Only a picture that came can be opened.
+            guard case .loaded = state.images[id] else { return [] }
+            state.viewedImage = id
+            return []
+
+        case .imageViewerCloseRequested:
+            state.viewedImage = nil
+            return []
+
+        case .imageFetched(let id, let fetch):
+            state.images.receive(id, fetch)
+            return []
+
         case .balloonTextClicked:
             // Opening a reply reads nothing: only the × tells the server anything.
             guard let last = UIProps.unreadReply(state.conversation) else { return [] }
@@ -311,6 +328,7 @@ public struct UIMediator {
             _ = state.session.stop()
             state.session = SessionMachine(deviceId: nil, makeRequestId: makeRequestId)
             state.hasSession = false
+            forgetImages()
             state.status = state.serverOrigin == nil ? .needsServer : .needsLogin
             return [.disconnect, .logout]
 
@@ -324,6 +342,7 @@ public struct UIMediator {
                 guard address.origin.absoluteString != state.serverOrigin else { return [] }
                 state.serverOrigin = address.origin.absoluteString
                 state.session = SessionMachine(deviceId: nil, makeRequestId: makeRequestId)
+                forgetImages()
                 return [.saveServerAddress(address)] + resume()
             } catch ServerAddressError.insecure {
                 state.settingsMessage = "http は localhost などのループバックだけで使えます。https の URL を入れてください"
@@ -443,6 +462,25 @@ public struct UIMediator {
         return apply(state.session.readReplies(through: id))
     }
 
+    /// Asks for the pictures the owner has in front of them and that are not here yet: those of the reply in the
+    /// balloon, and those of the rows of the history in sight (ADR 0045). Asked after every event, like the reading.
+    private mutating func fetchShownImages() -> [UIEffect] {
+        guard state.hasSession else { return [] }
+        let conversation = state.conversation
+        var ids = UIProps.shownReply(conversation, readingHistory: state.isReadingHistory)?.images.map(\.imageId) ?? []
+        if state.isConversationOpen, state.conversationWindow.showsHistory, !state.visibleHistoryIds.isEmpty {
+            ids += conversation.messages.filter { state.visibleHistoryIds.contains($0.messageId) }
+                .flatMap { $0.images.map(\.imageId) }
+        }
+        return state.images.request(ids).map { .fetchImage(imageId: $0) }
+    }
+
+    /// The owner logged out, or the session is gone: the pictures go with it (client-contract「会話の画像」).
+    private mutating func forgetImages() {
+        state.images = ImageShelf()
+        state.viewedImage = nil
+    }
+
     /// Passes the session machine's effects on as the mediator's own, and reads the connection's state off it.
     private mutating func apply(_ effects: [SessionEffect]) -> [UIEffect] {
         var out: [UIEffect] = []
@@ -455,6 +493,7 @@ public struct UIMediator {
             case .extendSession(let expiresAt): out.append(.extendSession(until: expiresAt))
             case .requireLogin:
                 state.hasSession = false
+                forgetImages()
                 out += [.disconnect, .clearSession]
             case .scheduleReconnect(let delay):
                 out += [.disconnect, .scheduleReconnect(after: delay)]
@@ -490,6 +529,9 @@ public struct UIMediator {
         case nil:
             break
         }
+
+        // The large picture goes when the picture does.
+        if state.viewedImage != nil, UIProps.viewer(state) == nil { state.viewedImage = nil }
 
         let ids = state.conversation.unacknowledgedNotificationIds
         if ids.contains(where: { !state.seenNoticeIds.contains($0) }) { state.noticesHidden = false }

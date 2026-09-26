@@ -124,6 +124,22 @@ public struct ImageStrip: Equatable, Sendable {
         self.spacing = spacing
     }
 
+    /// Under the reply in the balloon: small, so that the balloon stays a balloon, and within its text's width.
+    public static func balloon(width: CGFloat, textScale: Double) -> ImageStrip {
+        ImageStrip(height: 64 * textScale, maxWidth: max(width - 72 * textScale, 40), spacing: 6 * textScale)
+    }
+
+    /// In a row of the Mac's history: as wide as her bubble can be in the window.
+    public static func macHistory(windowWidth: CGFloat) -> ImageStrip {
+        ImageStrip(height: 120, maxWidth: max(windowWidth - 170, 80), spacing: 6)
+    }
+
+    /// In a row of the iPhone's history, which is narrower than any iPhone's screen less her face.
+    public static let phoneHistory = ImageStrip(height: 140, maxWidth: 220, spacing: 6)
+
+    /// On the page of an approval.
+    public static let phoneApproval = ImageStrip(height: 120, maxWidth: 300, spacing: 8)
+
     public func sizes(_ aspects: [CGFloat?]) -> [CGSize] {
         let widths = aspects.map { height * min(max($0 ?? 1, Self.aspectRange.lowerBound), Self.aspectRange.upperBound) }
         let room = max(maxWidth - spacing * CGFloat(max(widths.count - 1, 0)), 0)

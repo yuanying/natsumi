@@ -15,8 +15,11 @@ public struct PhoneMediator {
     }
 
     public mutating func handle(_ event: PhoneEvent) -> [PhoneEffect] {
+        let wasConnected = state.status == .connected
         let effects = decide(event) + readWhatIsSeen()
-        return effects + tidyNotifications()
+        // Coming back to the server is the time to try again for the pictures that could not be had.
+        if state.status == .connected, !wasConnected { state.images.retryUnavailable() }
+        return effects + fetchShownImages() + tidyNotifications()
     }
 
     private mutating func decide(_ event: PhoneEvent) -> [PhoneEffect] {
@@ -129,6 +132,7 @@ public struct PhoneMediator {
             guard address.origin.absoluteString != state.serverOrigin else { return [.startLogin] }
             state.serverOrigin = address.origin.absoluteString
             state.session = SessionMachine(deviceId: nil, makeRequestId: makeRequestId)
+            forgetImages()
             return [.saveServerAddress(address), .startLogin]
 
         // MARK: The main screen
@@ -186,6 +190,20 @@ public struct PhoneMediator {
             // As on the Mac: the browser opens and nothing is read (ADR 0038).
             return TextLinks.canOpen(url) ? [.openLink(url)] : []
 
+        case .imageTapped(let id):
+            // Only a picture that came can be opened; looking at it reads nothing.
+            guard case .loaded = state.images[id] else { return [] }
+            state.viewedImage = id
+            return []
+
+        case .imageViewerClosed:
+            state.viewedImage = nil
+            return []
+
+        case .imageFetched(let id, let fetch):
+            state.images.receive(id, fetch)
+            return []
+
         case .historyRowVisibilityChanged(let id, let isVisible):
             guard state.isReadingHistory else { return [] }
             if isVisible {
@@ -239,6 +257,7 @@ public struct PhoneMediator {
             state.hasSession = false
             state.status = state.serverOrigin == nil ? .needsServer : .needsLogin
             closePage()
+            forgetImages()
             return [.disconnect, .logout]
         }
     }
@@ -284,6 +303,34 @@ public struct PhoneMediator {
         return effects
     }
 
+    /// Lets go of the pictures of approvals that closed, and asks for the pictures the owner has in front of them:
+    /// those of the rows of the history in sight, and those of the approval that is open while it waits (ADR 0045).
+    private mutating func fetchShownImages() -> [PhoneEffect] {
+        let pending = state.approvals.pending
+        state.images.keepApprovalImages(Set(pending.flatMap { $0.images.map(\.imageId) }))
+        if state.viewedImage != nil, PhoneProps.viewer(state) == nil { state.viewedImage = nil }
+        guard state.hasSession else { return [] }
+        var ids: [String] = []
+        var approvalIds: [String] = []
+        switch state.page {
+        case .history where !state.visibleHistoryIds.isEmpty:
+            ids = state.conversation.messages.filter { state.visibleHistoryIds.contains($0.messageId) }
+                .flatMap { $0.images.map(\.imageId) }
+        case .approval(let id):
+            approvalIds = pending.first { $0.approvalId == id }?.images.map(\.imageId) ?? []
+        default:
+            break
+        }
+        return (state.images.request(ids) + state.images.request(approvalIds, forApproval: true))
+            .map { .fetchImage(imageId: $0) }
+    }
+
+    /// The owner logged out, or the session is gone: the pictures go with it (client-contract「会話の画像」).
+    private mutating func forgetImages() {
+        state.images = ImageShelf()
+        state.viewedImage = nil
+    }
+
     /// Keeps the badge and the delivered notifications in step with what the owner has read and checked, whenever
     /// that changes while synced (ADR 0029).
     private mutating func tidyNotifications() -> [PhoneEffect] {
@@ -319,6 +366,7 @@ public struct PhoneMediator {
             case .extendSession(let expiresAt): out.append(.extendSession(until: expiresAt))
             case .requireLogin:
                 state.hasSession = false
+                forgetImages()
                 out += [.disconnect, .clearSession]
             case .scheduleReconnect(let delay):
                 out += [.disconnect, .scheduleReconnect(after: delay)]

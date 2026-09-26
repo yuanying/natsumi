@@ -104,10 +104,13 @@ public struct ReplyProps: Equatable, Sendable {
     /// She is still handling what the owner said after sending this: what she is thinking, in one line under the
     /// text (ADR 0025). nil when she has finished, or when the owner closed the thought bubble for this handling.
     public var thinking: ThinkingProps?
+    /// The pictures she attached, small, under the text (ADR 0045). Their sizes are fixed before they come, so the
+    /// balloon does not change size when they do.
+    public var images: [ImageTileProps]
 
     public init(
         text: String, runs: [TextRun]? = nil, lineLimit: Int, isExpanded: Bool = false, showsHistoryLink: Bool,
-        unread: Int, help: String, thinking: ThinkingProps? = nil
+        unread: Int, help: String, thinking: ThinkingProps? = nil, images: [ImageTileProps] = []
     ) {
         self.text = text
         self.runs = runs ?? TextLinks.runs(in: text)
@@ -117,6 +120,7 @@ public struct ReplyProps: Equatable, Sendable {
         self.unread = unread
         self.help = help
         self.thinking = thinking
+        self.images = images
     }
 }
 
@@ -261,10 +265,12 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
     public var isUnread: Bool
     /// nil on the owner's messages.
     public var face: FaceProps?
+    /// The pictures she attached, small, under the text (ADR 0045).
+    public var images: [ImageTileProps]
 
     public init(
         messageId: String, text: String, time: String?, isOwner: Bool, isNotice: Bool, isUnread: Bool,
-        face: FaceProps? = nil
+        face: FaceProps? = nil, images: [ImageTileProps] = []
     ) {
         self.messageId = messageId
         self.text = text
@@ -274,6 +280,7 @@ public struct HistoryRowProps: Equatable, Sendable, Identifiable {
         self.isNotice = isNotice
         self.isUnread = isUnread
         self.face = face
+        self.images = images
     }
 
     public var id: String { messageId }
@@ -410,6 +417,8 @@ public struct RootProps: Equatable, Sendable {
     public var settings: SettingsProps
     public var menu: MenuProps
     public var isSettingsOpen: Bool
+    /// The picture opened large, in a window of its own; nil while there is none.
+    public var viewer: ImageViewerProps? = nil
 
     /// The same parameters with the line of thinking taken out: what the column is laid out from. The thought
     /// bubble, and the thinking row under a reply, hold one line at their own width whatever that line says, so a
@@ -444,14 +453,15 @@ public enum UIProps {
             character: character(state, stack: noticeStack(conversation)),
             balloon: balloon(
                 conversation, dismissed: state.isIndicatorDismissed, readingHistory: state.isReadingHistory,
-                expanded: state.expanded, placement: placement, scale: state.characterScale),
+                expanded: state.expanded, placement: placement, scale: state.characterScale, images: state.images),
             notices: notices(
                 conversation, hidden: state.noticesHidden, expanded: state.expanded, placement: placement,
                 scale: state.characterScale),
             conversation: state.isConversationOpen ? self.conversation(state, time: time) : nil,
             settings: settings(state),
             menu: menu(state),
-            isSettingsOpen: state.isSettingsOpen)
+            isSettingsOpen: state.isSettingsOpen,
+            viewer: viewer(state))
     }
 
     // MARK: - What the conversation says
@@ -515,7 +525,7 @@ public enum UIProps {
     /// the thought bubble (ADR 0017).
     public static func balloon(
         _ conversation: ConversationState, dismissed: Bool, readingHistory: Bool = false,
-        expanded: ExpandedCard? = nil, placement: ColumnPlacement, scale: CharacterScale
+        expanded: ExpandedCard? = nil, placement: ColumnPlacement, scale: CharacterScale, images: ImageShelf = ImageShelf()
     ) -> BalloonProps? {
         func props(
             body: BalloonProps.Body, outline: BalloonOutline, width: CGFloat, closeHelp: String
@@ -538,13 +548,14 @@ public enum UIProps {
         }
         let isExpanded = expanded == .reply(last.messageId)
         let shown = card(last.text, isExpanded: isExpanded, budget: placement.budget)
+        let width = isExpanded ? placement.expandedWidth : placement.width
         let reply = ReplyProps(
             text: shown.text, runs: TextLinks.runs(in: shown.text, isCut: shown.isCut), lineLimit: shown.lineLimit, isExpanded: isExpanded,
             showsHistoryLink: shown.showsHistoryLink, unread: conversation.unreadReplyCount,
-            help: isExpanded ? "クリックで畳む" : "クリックで全文を出す", thinking: thinking)
-        return props(
-            body: .reply(reply), outline: .speech, width: isExpanded ? placement.expandedWidth : placement.width,
-            closeHelp: "既読にして閉じる")
+            help: isExpanded ? "クリックで畳む" : "クリックで全文を出す", thinking: thinking,
+            images: ImageStrip.balloon(width: width, textScale: scale.textScale)
+                .tiles(last.images, shelf: images, openHelp: "クリックで拡大"))
+        return props(body: .reply(reply), outline: .speech, width: width, closeHelp: "既読にして閉じる")
     }
 
     /// What a card puts on the screen: the preview, or the whole text when the owner opened it, and whether the
@@ -618,7 +629,11 @@ public enum UIProps {
         return ConversationProps(
             frame: window.frame ?? CGRect(origin: .zero, size: window.size), foldedHeight: window.foldedHeight,
             status: statusRow(state.status),
-            history: window.showsHistory ? history(conversation, time: time, avatar: state.avatar) : nil,
+            history: window.showsHistory
+                ? history(
+                    conversation, time: time, avatar: state.avatar, images: state.images,
+                    strip: .macHistory(windowWidth: window.size.width))
+                : nil,
             failures: window.showsHistory ? [] : failures(conversation),
             toggleHelp: window.showsHistory ? "履歴をとじる（⌘L）" : "履歴をひらく（⌘L）")
     }
@@ -635,7 +650,9 @@ public enum UIProps {
     }
 
     public static func history(
-        _ conversation: ConversationState, time: MessageTime, avatar: AvatarArt = .placeholder
+        _ conversation: ConversationState, time: MessageTime, avatar: AvatarArt = .placeholder,
+        images: ImageShelf = ImageShelf(), strip: ImageStrip = .macHistory(windowWidth: ConversationWindow.default.size.width),
+        openHelp: String = "クリックで拡大"
     ) -> HistoryProps {
         let times = time.labels(conversation.messages.map(\.date))
         let unread = conversation.unreadFlags
@@ -647,7 +664,8 @@ public enum UIProps {
                     expression: message.expression, isLarge: index == newest, help: feelingHelp(message.expression))
                 return HistoryRowProps(
                     messageId: message.messageId, text: message.text, time: times[index],
-                    isOwner: message.role == .owner, isNotice: message.isNotice, isUnread: unread[index], face: face)
+                    isOwner: message.role == .owner, isNotice: message.isNotice, isUnread: unread[index], face: face,
+                    images: message.images.isEmpty ? [] : strip.tiles(message.images, shelf: images, openHelp: openHelp))
             },
             outgoing: conversation.outbox.map { item in
                 let failure: String? = switch item.status {
@@ -657,6 +675,12 @@ public enum UIProps {
                 return OutgoingRowProps(requestId: item.requestId, text: item.text, failure: failure)
             },
             isThinking: conversation.isThinking, avatar: avatar)
+    }
+
+    /// The picture opened large, while it is here to show.
+    static func viewer(_ state: UIState) -> ImageViewerProps? {
+        guard let id = state.viewedImage, case .loaded(let image) = state.images[id] else { return nil }
+        return ImageViewerProps(image: image, title: "なつみの画像")
     }
 
     /// What the face says when the pointer rests on it.

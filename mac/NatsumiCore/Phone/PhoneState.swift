@@ -21,6 +21,11 @@ public struct PhoneState {
     public internal(set) var isEditingApproval = false
     /// Where the owner chose to put the post of the approval that is open; nil until they choose.
     public internal(set) var approvalPlacement: ApprovalPlacement?
+    /// The pictures fetched for the history and the approvals: the history's until the owner logs out, an
+    /// approval's until it is no longer waiting (ADR 0045).
+    public internal(set) var images = ImageShelf()
+    /// The picture opened large over everything.
+    public internal(set) var viewedImage: String?
     /// The rows of the history in sight, by message ID, while the history is open.
     var visibleHistoryIds: Set<String> = []
     /// Where this iPhone's notifications go. It outlives a session: the next login registers the same (ADR 0029).

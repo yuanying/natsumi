@@ -62,6 +62,12 @@ public enum PhoneEvent: Equatable, Sendable {
     case historyRowVisibilityChanged(messageId: String, isVisible: Bool)
     /// A URL in what she or the owner wrote, in the balloon or the history (ADR 0038).
     case linkTapped(URL)
+    /// A small picture, in the history or on an approval: it opens large over everything (ADR 0045).
+    case imageTapped(imageId: String)
+    /// 「閉じる」 on the large picture.
+    case imageViewerClosed
+    /// What came of a `.fetchImage`.
+    case imageFetched(imageId: String, ImageFetch)
     case logoutRequested
 
     // MARK: The approvals
@@ -107,6 +113,8 @@ public enum PhoneEffect: Equatable, Sendable {
     case loadAvatar
     /// Open a link in the default browser (ADR 0038).
     case openLink(URL)
+    /// Fetch a picture with the session (`GET /v1/images/<imageId>`) and answer with `.imageFetched`.
+    case fetchImage(imageId: String)
 
     // MARK: Notifications (ADR 0029)
 

@@ -91,6 +91,15 @@ public enum UIEvent: Equatable, Sendable {
     /// A URL in what she or the owner wrote, in the balloon, a notice or the history (ADR 0038).
     case linkClicked(URL)
 
+    // MARK: The pictures (ADR 0045)
+
+    /// A small picture, in the balloon or the history: it opens large in a window of its own.
+    case imageClicked(imageId: String)
+    /// The window of the large picture was closed.
+    case imageViewerCloseRequested
+    /// What came of a `.fetchImage`.
+    case imageFetched(imageId: String, ImageFetch)
+
     // MARK: The conversation window
 
     case inputSubmitted(String)
