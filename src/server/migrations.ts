@@ -538,4 +538,14 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX conversation_message_images_image ON conversation_message_images (image_id);
     `,
   },
+  {
+    version: 18,
+    name: 'agent reply images',
+    sql: `
+      -- What an agent_reply event says of the images the agent handed back (ADR 0048), as JSON: where each was put in
+      -- /work and its description, and those not taken and why. Empty when there were none, and emptied with the text
+      -- once the event is in the Pi session (ADR 0008). The copies themselves are rows of images.
+      ALTER TABLE agent_replies ADD COLUMN files TEXT NOT NULL DEFAULT '';
+    `,
+  },
 ];
