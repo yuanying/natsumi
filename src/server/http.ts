@@ -8,6 +8,8 @@ import type { GitHubLogin, Outcome } from './github-login.ts';
 import type { SessionStore } from './sessions.ts';
 
 const MAX_BODY_BYTES = 8 * 1024;
+/** `/v1/images/<imageId>`: the ID is the server's own, of letters, digits and hyphens. */
+const IMAGE_PATH = /^\/v1\/images\/([A-Za-z0-9-]{1,128})$/;
 
 export interface ListenerOptions {
   listen: ListenConfig;
@@ -17,6 +19,8 @@ export interface ListenerOptions {
   hub: ConnectionHub;
   allowedUserId: number;
   log: (line: string) => void;
+  /** The images the server took from /work (ADR 0044), which the devices fetch by ID with the session. */
+  images: { read(imageId: string): Promise<{ mimeType: string; data: Buffer } | undefined> };
 }
 
 export interface Listener {
@@ -90,6 +94,17 @@ async function route(request: IncomingMessage, response: ServerResponse, options
     if (!image) return json(response, 404, { error: 'not-found' });
     // Slack fetches and keeps it; the art changes with a release, not by the minute.
     response.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400', 'content-length': image.length }).end(image);
+    return;
+  }
+  if (method === 'GET' && url.pathname.startsWith('/v1/images/')) {
+    // The session first, so that nothing about an image is told to whoever has none. A fetch is a use and renews it.
+    const token = bearerToken(request);
+    const session = token ? options.sessions.verify(token, options.allowedUserId) : undefined;
+    if (!session || !options.sessions.renew(session.sessionId)) return json(response, 401, { error: 'unauthorized' });
+    const id = IMAGE_PATH.exec(url.pathname)?.[1];
+    const image = id ? await options.images.read(id) : undefined;
+    if (!image) return json(response, 404, { error: 'not-found' });
+    response.writeHead(200, { 'content-type': image.mimeType, 'content-length': image.data.length }).end(image.data);
     return;
   }
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));

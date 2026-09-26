@@ -26,6 +26,8 @@ export class FakeSlack implements SlackApi, SlackSocket {
   emojiCalls = 0;
   /** What the dove posted, as `chat.postMessage` was called. */
   readonly posts: { channel: string; text: string; threadTs?: string; iconUrl: string }[] = [];
+  /** What the dove uploaded, one entry per files.uploadV2 (its three calls taken as one). */
+  readonly uploads: { channel: string; files: { filename: string; data: Buffer }[]; threadTs?: string; initialComment?: string }[] = [];
   readonly historyCalls: { channel: string; oldest: string }[] = [];
   readonly downloads: string[] = [];
   /** Calls that fail as Slack would refuse them, by `<call> <argument>` (`history C2`, `userName U3`, `download <url>`). */
@@ -117,6 +119,12 @@ export class FakeSlack implements SlackApi, SlackSocket {
     this.check('postMessage', channel);
     this.posts.push({ channel, text, ...(options.threadTs ? { threadTs: options.threadTs } : {}), iconUrl: options.iconUrl });
     return `${1_800_000_000 + this.posts.length}.000100`;
+  }
+
+  async uploadFiles(channel: string, files: { filename: string; data: Buffer }[], options: { threadTs?: string; initialComment?: string }): Promise<void> {
+    this.check('uploadFiles', channel);
+    this.uploads.push({ channel, files: files.map(file => ({ filename: file.filename, data: Buffer.from(file.data) })),
+      ...(options.threadTs ? { threadTs: options.threadTs } : {}), ...(options.initialComment ? { initialComment: options.initialComment } : {}) });
   }
 
   async download(url: string, maxBytes: number): Promise<Buffer | undefined> {

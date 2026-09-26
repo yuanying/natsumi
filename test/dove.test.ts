@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { ConversationStore } from '../src/server/conversation-store.ts';
 import { SlackDove, type DoveConfig } from '../src/server/dove.ts';
 import { JUDGE_ISSUES, JudgeError, type JudgeClient, type Judgement } from '../src/server/judge.ts';
+import { ImageStore } from '../src/server/images.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
-import { FakeSlack, tsAt } from './support/fake-slack.ts';
+import { FakeSlack, PNG, tsAt } from './support/fake-slack.ts';
 
 /**
  * The dove (ADR 0012, ADR 0039, ADR 0040), against a stand-in Slack and a stand-in Jev: natsumi's request is checked
@@ -21,7 +22,7 @@ const ORIGIN = 'https://natsumi.example.test';
 const DAY = 86_400_000;
 const CONFIG: DoveConfig = {
   thresholds: { owner: 0.3, return: 0.7 }, approvalDays: 7, placementFollowing: 2,
-  judgeContext: { messages: 5, chars: 500 },
+  judgeContext: { messages: 5, chars: 500 }, images: { maxBytes: 1024, maxCount: 2 },
 };
 
 /** A Jev that answers what the test queued, and records what it was asked. */
@@ -57,6 +58,11 @@ async function setup(t: test.TestContext, options: { jev?: boolean } = {}) {
     mentionContext: { messages: 5, chars: 500 } });
   archive.addChannel('work', 'C1', { name: 'dev', isIm: false });
   await archive.record('work', 'C1', { ts: PARENT, speaker: '山田', own: false, text: '明日のレビュー、大丈夫そう？', files: [], edited: false }, false);
+  // natsumi's /work, as the server sees it in the data directory, with one image she drew.
+  const work = join(root, 'work');
+  await mkdir(join(work, 'images'), { recursive: true });
+  await writeFile(join(work, 'images', 'cat.png'), PNG);
+  const images = new ImageStore(db, join(root, 'images'));
   const slack = new FakeSlack();
   const jev = new FakeJev();
   const store = new ConversationStore(db, () => clock.now);
@@ -66,6 +72,7 @@ async function setup(t: test.TestContext, options: { jev?: boolean } = {}) {
   const open = () => {
     const dove = new SlackDove({
       db, archive, workspaces: { work: slack }, ...(options.jev === false ? {} : { judge: jev }), config: CONFIG, publicOrigin: ORIGIN,
+      workDirectory: work, images,
       now: () => clock.now, log: line => { logs.push(line); },
       raise: record => {
         events.push(store.transaction(transaction => {
@@ -85,7 +92,7 @@ async function setup(t: test.TestContext, options: { jev?: boolean } = {}) {
     await rm(root, { recursive: true, force: true });
   });
   const lines = () => events.map(id => dove.takeEventLine(id, '2026-09-25T06:00:00.000Z'));
-  return { root, db, clock, archive, slack, jev, dove, events, clientEvents, logs, lines, open };
+  return { root, work, images, db, clock, archive, slack, jev, dove, events, clientEvents, logs, lines, open };
 }
 
 const post = (body: string, { to = 'work/#dev 2026-09-25 14:32:05 山田', expression }: { to?: string; expression?: string } = {}) =>
@@ -514,4 +521,159 @@ test('an event line is handed over once: its text is emptied from the record aft
   assert.match(String(line.text), /./);
   const row = f.db.prepare('SELECT text FROM dove_replies').get() as { text: string };
   assert.equal(row.text, '');
+});
+
+// ADR 0044: images named under `画像:`, taken and copied at once, sent with files.uploadV2's three calls.
+const withImages = (body: string, images: string[], to = 'work/#dev 2026-09-25 14:32:05 山田') =>
+  `返信先: ${to}\n種類: 投稿\n${images.map(image => `画像: ${image}\n`).join('')}---\n${body}`;
+
+test('images alone are sent at once, with neither Jev nor the owner, placed by the server\'s rule', async t => {
+  const f = await setup(t);
+  const outcome = await f.dove.ask(withImages('', ['/work/images/cat.png']));
+  assert.equal(outcome.ok, true);
+  assert.match(outcome.text, /画像/);
+  await f.dove.idle();
+  assert.equal(f.jev.asked.length, 0, 'Jev is not asked about images');
+  assert.equal(f.clientEvents.length, 0, 'nothing waits for the owner');
+  assert.equal(f.slack.posts.length, 0);
+  // A top-level message with nothing after it: the reply goes to the channel, as without a verdict.
+  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }] }]);
+  const [line] = f.lines();
+  assert.equal(line!.result, 'sent');
+  assert.deepEqual(line!.images, ['/work/images/cat.png']);
+  assert.equal(line!.draft, undefined, 'no draft to show');
+  assertNoIds(line!);
+  const row = f.db.prepare('SELECT verdict, state, placement, text FROM dove_posts').get() as Record<string, string | null>;
+  assert.deepEqual({ ...row }, { verdict: null, state: 'sent', placement: 'channel', text: '' });
+});
+
+test('images alone into a thread go to the thread, as the server\'s rule has it for a reply in one', async t => {
+  const f = await setup(t);
+  const reply = tsAt('2026-09-25T05:40:10Z');
+  await f.archive.record('work', 'C1', { ts: reply, threadTs: PARENT, speaker: '佐藤', own: false, text: '絵をお願い', files: [], edited: false }, false);
+  await f.dove.ask(withImages('', ['/work/images/cat.png'], 'work/#dev 2026-09-25 14:40:10 佐藤'));
+  await f.dove.idle();
+  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT }]);
+});
+
+test('with a body, only the body is judged, and a pass sends the images with the body as their comment', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(SEND());
+  await f.dove.ask(withImages('描いてみました。', ['/work/images/cat.png']));
+  await f.dove.idle();
+  assert.equal(f.jev.asked.length, 1);
+  assert.equal(f.jev.asked[0]!.state.draft, '描いてみました。');
+  assert.doesNotMatch(JSON.stringify(f.jev.asked[0]!.state), /cat\.png|\/work\//, 'Jev is shown nothing of the images');
+  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT,
+    initialComment: '描いてみました。' }]);
+  assert.equal(f.slack.posts.length, 0);
+  const [line] = f.lines();
+  assert.equal(line!.result, 'sent');
+  assert.equal(line!.draft, '描いてみました。');
+  assert.deepEqual(line!.images, ['/work/images/cat.png']);
+});
+
+test('a body the judge hands to the owner takes its images to the approval, and what is sent is the copy', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(withImages('描いてみました。', ['/work/images/cat.png']));
+  await f.dove.idle();
+  const [pending] = f.clientEvents;
+  assert.equal(pending!.type, 'approval.pending');
+  const images = pending!.payload.images as { imageId: string; mimeType: string; bytes: number }[];
+  assert.equal(images.length, 1);
+  assert.deepEqual(Object.keys(images[0]!).sort(), ['bytes', 'imageId', 'mimeType']);
+  assert.equal(images[0]!.mimeType, 'image/png');
+  assert.equal(images[0]!.bytes, PNG.length);
+  assert.doesNotMatch(JSON.stringify(pending!.payload), /\/work\/|cat\.png/, 'the owner is shown the image, not where it was');
+  assert.deepEqual(f.dove.pendingApprovals(), [pending!.payload]);
+
+  assert.deepEqual(await f.images.read(images[0]!.imageId), { mimeType: 'image/png', data: PNG });
+
+  // She draws over the file after asking: the owner approved the copy, and the copy is what goes.
+  await writeFile(join(f.work, 'images', 'cat.png'), Buffer.concat([PNG, Buffer.from('redrawn')]));
+  f.dove.decide({ approvalId: pending!.payload.approvalId, revision: 1, decision: 'approve', deviceId: 'd1' });
+  await f.dove.idle();
+  assert.deepEqual(f.slack.uploads, [{ channel: 'C1', files: [{ filename: 'cat.png', data: PNG }], threadTs: PARENT,
+    initialComment: '描いてみました。' }]);
+});
+
+test('an approval lists only its own images, and one without images has no field for them', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER(), OWNER());
+  await f.dove.ask(withImages('一枚目', ['/work/images/cat.png']));
+  await f.dove.ask(post('画像なし'));
+  await f.dove.idle();
+  const [withImage, without] = f.clientEvents.map(event => event.payload);
+  assert.equal(without!.images, undefined);
+  const listed = (withImage!.images as { imageId: string }[]).map(image => image.imageId);
+  const recorded = (f.db.prepare('SELECT image_id FROM dove_post_images ORDER BY rowid').all() as { image_id: string }[]).map(row => row.image_id);
+  assert.deepEqual(listed, recorded);
+});
+
+test('what is sent and where is recorded: the copy\'s path, its size and its type, in the place she named it', async t => {
+  const f = await setup(t);
+  await f.dove.ask(withImages('', ['/work/images/cat.png']));
+  await f.dove.idle();
+  const rows = f.db.prepare(`SELECT p.position, i.source, i.file, i.mime_type, i.bytes, i.sha256 FROM dove_post_images p
+    JOIN images i ON i.image_id = p.image_id`).all() as Record<string, unknown>[];
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.position, 0);
+  assert.equal(rows[0]!.source, '/work/images/cat.png');
+  assert.equal(rows[0]!.mime_type, 'image/png');
+  assert.equal(rows[0]!.bytes, PNG.length);
+  assert.match(String(rows[0]!.sha256), /^[0-9a-f]{64}$/);
+  assert.deepEqual(await readFile(join(f.root, 'images', String(rows[0]!.file))), PNG);
+});
+
+for (const [name, images, pattern] of [
+  ['an image outside /work', ['/sources/slack/work/dev/files/a.png'], /\/work/],
+  ['an image that is not there', ['/work/images/none.png'], /見つかりません/],
+  ['more images than the limit', ['/work/images/cat.png', '/work/images/cat.png', '/work/images/cat.png'], /2 枚まで/],
+] as const) {
+  test(`${name} is refused at once, and nothing is asked or recorded`, async t => {
+    const f = await setup(t);
+    const outcome = await f.dove.ask(withImages('描きました', [...images]));
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.text, /^頼んでいません。/);
+    assert.match(outcome.text, pattern);
+    await f.dove.idle();
+    assert.equal((f.db.prepare('SELECT COUNT(*) AS n FROM dove_posts').get() as { n: number }).n, 0);
+    assert.equal(f.jev.asked.length, 0);
+    assert.equal(f.slack.uploads.length, 0);
+  });
+}
+
+test('an image too large is refused at once with the limit', async t => {
+  const f = await setup(t);
+  await writeFile(join(f.work, 'images', 'large.png'), Buffer.concat([PNG, Buffer.alloc(2048)]));
+  const outcome = await f.dove.ask(withImages('', ['/work/images/large.png']));
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.text, /大きすぎ/);
+});
+
+test('Slack refusing the upload is told to natsumi as not sent', async t => {
+  const f = await setup(t);
+  f.slack.fail('uploadFiles', 'C1', 'files.completeUploadExternal', 'ratelimited');
+  await f.dove.ask(withImages('', ['/work/images/cat.png']));
+  await f.dove.idle();
+  const [line] = f.lines();
+  assert.equal(line!.result, 'not_sent');
+  assert.match(String(line!.text), /Slack に断られた/);
+  assert.ok(f.logs.some(line => line.includes('files.completeUploadExternal: ratelimited')));
+});
+
+// ADR 0044: the devices are given only the images of an approval, never those that went out without one.
+test('only the images of an approval are shown to the devices', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(withImages('見てください', ['/work/images/cat.png']));
+  await f.dove.ask(withImages('', ['/work/images/cat.png']));
+  await f.dove.idle();
+  const approved = (f.clientEvents[0]!.payload.images as { imageId: string }[])[0]!.imageId;
+  const alone = (f.db.prepare(`SELECT p.image_id FROM dove_post_images p JOIN dove_posts d ON d.post_id = p.post_id
+    WHERE d.text = ''`).get() as { image_id: string }).image_id;
+  assert.equal(f.dove.showsImage(approved), true);
+  assert.equal(f.dove.showsImage(alone), false);
+  assert.equal(f.dove.showsImage('image-unknown'), false);
 });

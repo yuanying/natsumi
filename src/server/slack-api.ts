@@ -6,8 +6,8 @@ import { ErrorCode, WebClient } from '@slack/web-api';
  * Mode connection it listens on with the app token. Everything past this file works on the shapes below, so the
  * tests put a stand-in here and never touch the network.
  *
- * Only the bot's own tokens are used. Nothing here reads as the owner. The one call that posts, `postMessage`, is the
- * dove's alone (ADR 0040): natsumi has no way to it but a request the dove judged.
+ * Only the bot's own tokens are used. Nothing here reads as the owner. The calls that post, `postMessage` and
+ * `uploadFiles`, are the dove's alone (ADR 0040, ADR 0044): natsumi has no way to them but a request to the dove.
  */
 
 /** A file attached to a message, as far as the server needs it. */
@@ -57,6 +57,11 @@ export interface SlackApi {
   customEmoji(): Promise<string[]>;
   /** Posts as the bot, in a thread when `threadTs` is given, under the icon at `iconUrl`. Returns the new message's ts. */
   postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string }): Promise<string>;
+  /**
+   * Posts images as the bot, as one message with the comment when given, in a thread when `threadTs` is given: the three
+   * calls of `files.uploadV2` (ADR 0044). Slack takes no icon here, so the bot's own is shown.
+   */
+  uploadFiles(channel: string, files: { filename: string; data: Buffer }[], options: { threadTs?: string; initialComment?: string }): Promise<void>;
   /** A file's bytes, or undefined when it is larger than `maxBytes`. */
   download(url: string, maxBytes: number): Promise<Buffer | undefined>;
 }
@@ -159,9 +164,11 @@ function botName(raw: Record<string, unknown>): string | undefined {
 }
 
 /** The official SDKs: they keep the socket alive, reconnect, and wait out Slack's rate limits on the Web API. */
-export const connectSlack: SlackConnector = ({ botToken, appToken }) => {
+export function connectSlack({ botToken, appToken }: { botToken: string; appToken: string }, options: { apiUrl?: string } = {}):
+  ReturnType<SlackConnector> {
   // The SDKs log to the console on their own; only their errors are let through, and natsumi's own log says the rest.
-  const web = new WebClient(botToken, { logLevel: LogLevel.ERROR });
+  // `apiUrl` is for the tests, which answer the Web API on loopback.
+  const web = new WebClient(botToken, { logLevel: LogLevel.ERROR, ...(options.apiUrl ? { slackApiUrl: options.apiUrl } : {}) });
   const socketClient = new SocketModeClient({ appToken, logLevel: LogLevel.ERROR });
   const api: SlackApi = {
     async whoAmI() {
@@ -224,6 +231,31 @@ export const connectSlack: SlackConnector = ({ botToken, appToken }) => {
         unfurl_links: false, unfurl_media: false, ...(threadTs ? { thread_ts: threadTs } : {}) }));
       return String(answer.ts ?? '');
     },
+    async uploadFiles(channel, files, { threadTs, initialComment }) {
+      // 1. A URL for each file. 2. Its bytes to that URL, which is Slack's own and signed: the token is not sent there.
+      // 3. One completion that shares them all in the channel, as one message.
+      const targets = await Promise.all(files.map(async file => {
+        const answer = await calling('files.getUploadURLExternal', () =>
+          web.files.getUploadURLExternal({ filename: file.filename, length: file.data.length }));
+        if (!answer.upload_url || !answer.file_id) throw new SlackCallError('files.getUploadURLExternal', 'no_upload_url');
+        return { url: answer.upload_url, id: answer.file_id, file };
+      }));
+      for (const { url, file } of targets) {
+        let response: Response;
+        try {
+          response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Uint8Array(file.data) });
+        } catch (error) {
+          const cause = (error as { cause?: { code?: unknown } }).cause;
+          throw new SlackCallError('files.upload', plain(cause?.code) ?? 'request_error');
+        }
+        await response.arrayBuffer().catch(() => undefined);
+        if (!response.ok) throw new SlackCallError('files.upload', `http_${response.status}`);
+      }
+      const [first, ...rest] = targets.map(({ id, file }) => ({ id, title: file.filename }));
+      if (!first) return;
+      await calling('files.completeUploadExternal', () => web.files.completeUploadExternal({ files: [first, ...rest], channel_id: channel,
+        ...(initialComment ? { initial_comment: initialComment } : {}), ...(threadTs ? { thread_ts: threadTs } : {}) }));
+    },
     async download(url, maxBytes) {
       let response: Response;
       try { response = await fetch(url, { headers: { authorization: `Bearer ${botToken}` } }); } catch (error) {
@@ -255,7 +287,7 @@ export const connectSlack: SlackConnector = ({ botToken, appToken }) => {
     async stop() { await socketClient.disconnect(); },
   };
   return { api, socket };
-};
+}
 
 function conversation(raw: Record<string, unknown>): SlackConversation {
   return {

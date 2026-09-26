@@ -27,7 +27,7 @@ export async function resolveDataDirectory(flag: string | undefined, cwd: string
  * Creates the initial layout. Existing files and directories are never overwritten or re-permissioned.
  * `memory/` is only made here; what goes in it belongs to the memory repository (ADR 0018), personality.md included.
  * `work/` and `home/` are the workspace container's `/work` and `/home/natsumi` (ADR 0019): the server makes them
- * and then never looks inside, so that boundary can be said in one sentence. `agents/` holds the list of agents the
+ * and then looks inside only to copy an image she asks the dove to post from /work (ADR 0044). `agents/` holds the list of agents the
  * server writes on every start, which the workspace sees read-only as `/manual/agents` (ADR 0036). `sources/` holds
  * what she reads besides memory, such as the Slack channels, which the workspace sees read-only as `/sources` (ADR 0039).
  */

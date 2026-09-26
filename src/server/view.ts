@@ -6,13 +6,16 @@ import { isWithin } from './paths.ts';
 
 /**
  * `view <path>` in the shell (ADR 0039): the server answers it itself, putting the image into the tool result, so
- * natsumi looks at a picture only when she wants to and no tool is added. Only what is under `/sources` is shown —
- * a place she reads and never writes, so nothing she makes can point the server anywhere else — only images, and
- * only up to a size.
+ * natsumi looks at a picture only when she wants to and no tool is added. Only what is under `/sources`, which she
+ * reads and never writes, and `/work`, where she puts the images she draws (ADR 0044), is shown — a link that leads
+ * out of its own place is refused, so nothing she makes can point the server anywhere else — only images, and only
+ * up to a size.
  */
 
 /** Where the workspace sees the sources, which is `sources/` in the data directory. */
 export const SOURCES_PATH = '/sources';
+/** Where the workspace sees its working directory, which is `work/` in the data directory. */
+export const WORK_PATH = '/work';
 /** The largest image `view` shows. */
 export const VIEW_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -33,20 +36,23 @@ export function imageType(head: Buffer): string | undefined {
   return undefined;
 }
 
-/** Reads the image at a workspace path under `/sources`, mapped onto `sourcesDirectory` on the server. */
-export async function viewImage(path: string, sourcesDirectory: string): Promise<ToolOutcome & { images?: ImageContent[] }> {
+/** Reads the image at a workspace path under `/sources` or `/work`, mapped onto those directories on the server. */
+export async function viewImage(path: string, places: { sources: string; work: string }): Promise<ToolOutcome & { images?: ImageContent[] }> {
   const refuse = (text: string) => ({ ok: false, text: `表示していません。${text}` });
-  if (!path.startsWith('/')) return refuse('view には /sources/ から始まる絶対パスを書いてください。');
+  const outside = 'view で見られるのは /sources/ と /work/ の下のファイルだけです。';
+  if (!path.startsWith('/')) return refuse('view には /sources/ か /work/ から始まる絶対パスを書いてください。');
   const normalized = posix.normalize(path);
-  if (!normalized.startsWith(`${SOURCES_PATH}/`)) return refuse('view で見られるのは /sources/ の下のファイルだけです。');
+  const place = normalized.startsWith(`${SOURCES_PATH}/`) ? { prefix: SOURCES_PATH, directory: places.sources }
+    : normalized.startsWith(`${WORK_PATH}/`) ? { prefix: WORK_PATH, directory: places.work } : undefined;
+  if (!place) return refuse(outside);
   let real: string;
   let root: string;
   try {
-    root = await realpath(sourcesDirectory);
-    real = await realpath(posix.join(root, normalized.slice(SOURCES_PATH.length + 1)));
+    root = await realpath(place.directory);
+    real = await realpath(posix.join(root, normalized.slice(place.prefix.length + 1)));
   } catch { return refuse(`${normalized} が見つかりません。`); }
-  // A link that leads out of the sources is refused as if it were outside, and says nothing of where it leads.
-  if (!isWithin(real, root)) return refuse('view で見られるのは /sources/ の下のファイルだけです。');
+  // A link that leads out of its place is refused as if it were outside, and says nothing of where it leads.
+  if (!isWithin(real, root)) return refuse(outside);
   let handle;
   try { handle = await open(real, 'r'); } catch { return refuse(`${normalized} が見つかりません。`); }
   try {

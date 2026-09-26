@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { ErrorCode } from '@slack/web-api';
-import { callError, describeFailure, SlackCallError, toSlackMessage } from '../src/server/slack-api.ts';
+import { callError, connectSlack, describeFailure, SlackCallError, toSlackMessage } from '../src/server/slack-api.ts';
 
 /** How a failure of Slack's Web API reads in the log: the call, and Slack's own code, never what was asked for. */
 
@@ -39,4 +41,72 @@ test('a message\'s reactions are read with who put them on, and a message withou
     { name: '+1', users: ['U1', 'U2'], count: 5 }, { name: 'tada', count: 1 }, { users: ['U1'], count: 1 }] });
   assert.deepEqual(message.reactions, [{ name: '+1', users: ['U1', 'U2'], count: 5 }, { name: 'tada', users: [], count: 1 }]);
   assert.equal(toSlackMessage({ ts: '1.000100', user: 'U1', text: 'x' }).reactions, undefined);
+});
+
+/** Slack's Web API on loopback, as far as files.uploadV2 goes: the upload URL, the upload, and completing it. */
+async function fakeWebApi(t: test.TestContext, options: { uploadStatus?: number; complete?: Record<string, unknown> } = {}) {
+  const calls: { path: string; authorization?: string; body: Buffer }[] = [];
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', chunk => chunks.push(chunk));
+    request.on('end', () => {
+      const body = Buffer.concat(chunks);
+      calls.push({ path: request.url ?? '', ...(request.headers.authorization ? { authorization: request.headers.authorization } : {}), body });
+      const json = (value: unknown) => response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(value));
+      if (request.url === '/api/files.getUploadURLExternal') {
+        const id = `F${calls.filter(call => call.path === request.url).length}`;
+        return json({ ok: true, upload_url: `${base}/upload/${id}`, file_id: id });
+      }
+      if (request.url?.startsWith('/upload/')) return response.writeHead(options.uploadStatus ?? 200).end('OK');
+      if (request.url === '/api/files.completeUploadExternal') return json(options.complete ?? { ok: true, files: [] });
+      json({ ok: false, error: 'unknown_method' });
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const { api } = connectSlack({ botToken: 'xoxb-fixture', appToken: 'xapp-fixture' }, { apiUrl: `${base}/api/` });
+  return { calls, api };
+}
+
+// ADR 0044: files.uploadV2's three steps, each image uploaded to the URL Slack gave for it, then one message for all.
+test('images are uploaded in three steps: a URL for each, the bytes to it, and one completion with the comment and the thread', async t => {
+  const f = await fakeWebApi(t);
+  const cat = Buffer.from('cat-bytes');
+  const dog = Buffer.from('dog-bytes-longer');
+  await f.api.uploadFiles('C1', [{ filename: 'cat.png', data: cat }, { filename: 'dog.jpg', data: dog }],
+    { initialComment: '描いたよ', threadTs: '1790000000.000100' });
+  assert.deepEqual(f.calls.map(call => call.path.replace(/F\d/, 'F')), [
+    '/api/files.getUploadURLExternal', '/api/files.getUploadURLExternal', '/upload/F', '/upload/F', '/api/files.completeUploadExternal']);
+  const asked = f.calls.slice(0, 2).map(call => Object.fromEntries(new URLSearchParams(call.body.toString())));
+  assert.deepEqual(asked.map(form => [form.filename, form.length]), [['cat.png', String(cat.length)], ['dog.jpg', String(dog.length)]]);
+  assert.ok(f.calls.slice(0, 2).every(call => call.authorization === 'Bearer xoxb-fixture'));
+  const uploaded = Object.fromEntries(f.calls.slice(2, 4).map(call => [call.path, call.body.toString()]));
+  assert.deepEqual(uploaded, { '/upload/F1': 'cat-bytes', '/upload/F2': 'dog-bytes-longer' });
+  assert.ok(f.calls.slice(2, 4).every(call => call.authorization === undefined), 'the token goes to Slack\'s API only, not to the upload URL');
+  const completed = Object.fromEntries(new URLSearchParams(f.calls[4]!.body.toString()));
+  assert.deepEqual(JSON.parse(completed.files!), [{ id: 'F1', title: 'cat.png' }, { id: 'F2', title: 'dog.jpg' }]);
+  assert.equal(completed.channel_id, 'C1');
+  assert.equal(completed.initial_comment, '描いたよ');
+  assert.equal(completed.thread_ts, '1790000000.000100');
+});
+
+test('without a comment or a thread, completing names only the files and the channel', async t => {
+  const f = await fakeWebApi(t);
+  await f.api.uploadFiles('C1', [{ filename: 'cat.png', data: Buffer.from('x') }], {});
+  const completed = Object.fromEntries(new URLSearchParams(f.calls.at(-1)!.body.toString()));
+  assert.deepEqual(Object.keys(completed).filter(key => key !== 'token').sort(), ['channel_id', 'files']);
+});
+
+test('an upload that fails stops before completing, and says which step failed', async t => {
+  const f = await fakeWebApi(t, { uploadStatus: 500 });
+  await assert.rejects(f.api.uploadFiles('C1', [{ filename: 'cat.png', data: Buffer.from('x') }], {}),
+    (error: unknown) => error instanceof SlackCallError && describeFailure(error) === 'files.upload: http_500');
+  assert.ok(!f.calls.some(call => call.path === '/api/files.completeUploadExternal'));
+});
+
+test('Slack refusing the completion is named by the call and its code', async t => {
+  const f = await fakeWebApi(t, { complete: { ok: false, error: 'channel_not_found' } });
+  await assert.rejects(f.api.uploadFiles('C1', [{ filename: 'cat.png', data: Buffer.from('x') }], {}),
+    (error: unknown) => error instanceof SlackCallError && describeFailure(error) === 'files.completeUploadExternal: channel_not_found');
 });

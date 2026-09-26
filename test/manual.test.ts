@@ -57,3 +57,32 @@ test('the Slack page says how to ask the dove and names every answer it gives', 
   }
   assert.doesNotMatch(page, /今はまだ Slack に書き込めません|書き込む手段がありません/);
 });
+
+// ADR 0044: the page on drawing names what the image holds, and her own look as the owner wrote it.
+test('the page on images says how to draw with the default params, where to put the result, and how she looks', async () => {
+  const page = await read('manual/images.md');
+  for (const word of ['sdctl txt2img --prompt ', '/work/images', 'view ', '画像:', 'anima_mignolia_v10', 'kutara_aki_anima.v3', '-o ']) {
+    assert.ok(page.includes(word), word);
+  }
+  // The defaults come from the image's environment (sdctl v0.3.1): no flag for them, and nothing to throw away.
+  assert.doesNotMatch(page, /--params/);
+  assert.doesNotMatch(page, /\/dev\/null/);
+  const dockerfile = await read('Dockerfile');
+  assert.match(dockerfile, /^COPY docker\/sdctl\/anima\.yaml \/etc\/sdctl\/anima\.yaml$/m);
+  assert.match(dockerfile, /^ENV SDCTL_OUTPUT_DIR=\/work\/images$/m);
+  // Her own look, as the owner wrote it, line breaks and all.
+  assert.ok(page.includes([
+    '<lora:kutara_aki_anima.v3:1> ,',
+    'masterpiece, newest,',
+    'woman, low ponytail, freckles,',
+    '',
+    'black glasses,',
+    'black business suit,  collared white shirt, large breasts,',
+  ].join('\n')));
+});
+
+test('the Slack page says how to name images for the dove', async () => {
+  const page = await read('manual/slack.md');
+  assert.ok(page.includes('画像: /work/'));
+  assert.ok(page.includes('/manual/images.md'));
+});

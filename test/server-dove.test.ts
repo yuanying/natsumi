@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import test from 'node:test';
 import WebSocket from 'ws';
 import { JUDGE_ISSUES, type JudgeClient, type Judgement } from '../src/server/judge.ts';
 import { openPush } from '../src/server/push-crypto.ts';
 import { apnsTestKey, FakeApns } from './support/fake-apns.ts';
-import { FakeSlack, tsAt } from './support/fake-slack.ts';
+import { FakeSlack, PNG, tsAt } from './support/fake-slack.ts';
 import { login, PUBLIC_ORIGIN, startFixture, type Fixture } from './support/server-fixture.ts';
 
 /**
@@ -212,3 +214,44 @@ test('without Slack a snapshot still carries an empty list of approvals, and a d
     await mac.close();
   } finally { await f.cleanup(); }
 });
+
+// ADR 0044, docs/client-contract.md: an approval lists its images, and each is fetched by its ID over HTTPS with the session.
+test('an approval with an image lists it, and the image is fetched only with a live session', () =>
+  withDove(async (f, slack) => {
+    await mkdir(join(f.data, 'work', 'images'), { recursive: true });
+    await writeFile(join(f.data, 'work', 'images', 'cat.png'), PNG);
+    f.model.auto = context => {
+      const last = context.messages.at(-1);
+      const text = last?.role === 'user' ? JSON.stringify(last.content) : '';
+      const reference = /\\"reference\\":\\"([^\\]+)\\"/.exec(text)?.[1];
+      if (!reference) return {};
+      return { calls: [{ name: 'ask_agent', arguments: { agent: 'poppo', continue: false,
+        message: `返信先: ${reference}\n種類: 投稿\n画像: /work/images/cat.png\n---\n描いてみました。` } }] };
+    };
+    const { token } = await login(f);
+    const mac = await Client.open(f, token);
+    await mac.sync();
+    await until(() => slack.started === 1);
+    slack.emit({ type: 'message', channel: 'C1', user: 'U1', text: '<@UBOT> 猫の絵を描いて', ts: tsAt('2026-09-25T05:32:05Z') });
+    const pending = await mac.until(message => message.type === 'approval.pending');
+    const { images } = pending.payload as { images: { imageId: string; mimeType: string; bytes: number }[] };
+    assert.deepEqual(images.map(image => [image.mimeType, image.bytes]), [['image/png', PNG.length]]);
+    const path = `/v1/images/${images[0]!.imageId}`;
+
+    const image = await fetch(`${f.base}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get('content-type'), 'image/png');
+    assert.equal(image.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(Buffer.from(await image.arrayBuffer()), PNG);
+
+    assert.equal((await f.fetch(path)).status, 401, 'no session');
+    assert.deepEqual((await f.fetch(path, { headers: { authorization: 'Bearer not-a-session' } })).json(), { error: 'unauthorized' });
+    for (const other of ['/v1/images/image-unknown', '/v1/images/..%2f..%2fstate.sqlite', `/v1/images/${images[0]!.imageId}/x`]) {
+      const answer = await f.fetch(other, { headers: { authorization: `Bearer ${token}` } });
+      assert.equal(answer.status, 404, other);
+      assert.deepEqual(answer.json(), { error: 'not-found' });
+    }
+    await mac.close();
+    await f.fetch('/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+    assert.equal((await f.fetch(path, { headers: { authorization: `Bearer ${token}` } })).status, 401, 'not after logging out');
+  }));

@@ -8,17 +8,21 @@ import { PNG } from './support/fake-slack.ts';
 
 /**
  * `view <path>` in the shell (Q7 of the Slack grill): the server answers it itself, with the image as the tool result.
- * Only what is under /sources is shown, only images, and only up to a size.
+ * Only what is under /sources and /work is shown (/work since ADR 0044, for the images she draws), only images, and
+ * only up to a size.
  */
 
 async function setup(t: test.TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-view-')));
   const sources = join(root, 'sources');
+  const work = join(root, 'work');
   await mkdir(join(sources, 'slack', 'work', 'dev', 'files'), { recursive: true });
+  await mkdir(join(work, 'images'), { recursive: true });
+  await writeFile(join(work, 'images', 'cat.png'), PNG);
   await writeFile(join(sources, 'slack', 'work', 'dev', 'files', 'a.png'), PNG);
   await writeFile(join(root, 'secret.png'), PNG);
   t.after(() => rm(root, { recursive: true, force: true }));
-  return { root, sources };
+  return { root, sources, work, places: { sources, work } };
 }
 
 test('only a lone view with one path is the server\'s to answer', () => {
@@ -33,18 +37,28 @@ test('only a lone view with one path is the server\'s to answer', () => {
 
 test('an image under /sources comes back as the image itself', async t => {
   const f = await setup(t);
-  const outcome = await viewImage('/sources/slack/work/dev/files/a.png', f.sources);
+  const outcome = await viewImage('/sources/slack/work/dev/files/a.png', f.places);
   assert.equal(outcome.ok, true);
   assert.deepEqual(outcome.images, [{ type: 'image', mimeType: 'image/png', data: PNG.toString('base64') }]);
   assert.match(outcome.text, /\/sources\/slack\/work\/dev\/files\/a\.png/);
 });
 
-test('a path outside /sources, one that climbs out, or one that is linked out is refused', async t => {
+test('an image she drew under /work comes back as the image itself', async t => {
+  const f = await setup(t);
+  const outcome = await viewImage('/work/images/cat.png', f.places);
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(outcome.images, [{ type: 'image', mimeType: 'image/png', data: PNG.toString('base64') }]);
+  assert.match(outcome.text, /\/work\/images\/cat\.png/);
+});
+
+test('a path outside /sources and /work, one that climbs out, or one that is linked out of its own place is refused', async t => {
   const f = await setup(t);
   await symlink(join(f.root, 'secret.png'), join(f.sources, 'slack', 'link.png'));
-  for (const path of ['/memory/a.png', '/work/a.png', 'sources/slack/work/dev/files/a.png', '/sources/../secret.png',
-    '/sources/slack/../../secret.png', '/sources/slack/link.png']) {
-    const outcome = await viewImage(path, f.sources);
+  await symlink(join(f.root, 'secret.png'), join(f.work, 'link.png'));
+  await symlink(f.sources, join(f.work, 'sources'));
+  for (const path of ['/memory/a.png', '/home/natsumi/a.png', 'sources/slack/work/dev/files/a.png', '/sources/../secret.png',
+    '/sources/slack/../../secret.png', '/sources/slack/link.png', '/work/../secret.png', '/work/link.png', '/work/sources/slack/work/dev/files/a.png']) {
+    const outcome = await viewImage(path, f.places);
     assert.equal(outcome.ok, false, path);
     assert.equal(outcome.images, undefined, path);
     assert.doesNotMatch(outcome.text, new RegExp(f.root), 'the server\'s own paths are never told');
@@ -55,8 +69,8 @@ test('what is missing, not an image, or too large is refused with the reason', a
   const f = await setup(t);
   await writeFile(join(f.sources, 'slack', 'note.png'), 'not really an image');
   await writeFile(join(f.sources, 'slack', 'big.png'), Buffer.concat([PNG, Buffer.alloc(VIEW_MAX_BYTES)]));
-  assert.match((await viewImage('/sources/slack/none.png', f.sources)).text, /見つかりません/);
-  assert.match((await viewImage('/sources/slack/note.png', f.sources)).text, /画像ではありません/);
-  assert.match((await viewImage('/sources/slack/big.png', f.sources)).text, /大きすぎます/);
-  assert.match((await viewImage('/sources/slack', f.sources)).text, /ファイルではありません/);
+  assert.match((await viewImage('/sources/slack/none.png', f.places)).text, /見つかりません/);
+  assert.match((await viewImage('/sources/slack/note.png', f.places)).text, /画像ではありません/);
+  assert.match((await viewImage('/sources/slack/big.png', f.places)).text, /大きすぎます/);
+  assert.match((await viewImage('/sources/slack', f.places)).text, /ファイルではありません/);
 });

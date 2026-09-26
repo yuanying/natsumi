@@ -20,13 +20,14 @@ import { parseRegistration, PushNotifier, PushRegistrations } from './push.ts';
 import { readSecret, readTlsFiles } from './secrets.ts';
 import { SessionStore } from './sessions.ts';
 import { SlackDove } from './dove.ts';
+import { IMAGE_DIRECTORY, ImageStore } from './images.ts';
 import { HttpJevClient } from './jev.ts';
 import { LogprobJudgeClient } from './logprob-judge.ts';
 import type { JudgeClient } from './judge.ts';
 import { SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
 import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
-import { SOURCES_DIRECTORY } from './paths.ts';
+import { SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import type { UpdateSource } from './updates.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
@@ -154,6 +155,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const a2aClient = config.a2a ? new SdkA2AClient({ tokenFile: config.a2a.tokenFile }) : undefined;
     // What she reads of Slack, written under sources/slack whether or not it is counted in the updates (ADR 0039).
     const slackConfig = config.slack;
+    // The images she hands the server from /work (ADR 0044), fetched by the devices by their IDs.
+    const images = new ImageStore(db, join(dataDirectory, STATE_DIRECTORY, IMAGE_DIRECTORY));
     const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),
       timeZone: config.loop.timeZone, now, mentionContext: slackConfig.mentionContext }) : undefined;
     await archive?.prepare();
@@ -169,8 +172,10 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       db, archive, workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
       ...(judge ? { judge } : {}),
       config: { thresholds: slackConfig.judge?.thresholds ?? JUDGE_DEFAULTS.thresholds, approvalDays: slackConfig.approvalExpiryDays,
-        placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext },
-      publicOrigin: config.publicOrigin, now, log, raise: record => raiseInto?.raise('dove-reply', record),
+        placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext, images: slackConfig.postImages },
+      publicOrigin: config.publicOrigin, workDirectory: join(dataDirectory, WORK_DIRECTORY),
+      images,
+      now, log, raise: record => raiseInto?.raise('dove-reply', record),
     }) : undefined;
     if (slackConfig) {
       log(slackConfig.judge ? `slack: drafts are judged by ${slackConfig.judge.method}`
@@ -277,7 +282,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     }
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
-      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log });
+      openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log,
+        // Only what an approval shows, for now: a line of the conversation may show images the same way later.
+        images: { read: async imageId => theDove?.showsImage(imageId) ? images.read(imageId) : undefined } });
 
     const started = isoAt(Date.now());
     const status: ServerStatus = { state: 'running', pid: process.pid, startedAt: started, updatedAt: started, schemaVersion: version };
