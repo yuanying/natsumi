@@ -204,9 +204,13 @@ export interface SlackConfig {
 }
 
 export const SLACK_DEFAULTS = {
-  reaction: 'eyes', backfillDays: 3, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
+  reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
 };
-const MAX_SLACK_BACKFILL_DAYS = 30;
+/**
+ * A year: the channels natsumi is invited to are quiet, so a long first fill-in is cheap, and the files are kept
+ * rather than cleared anyway. Beyond a year a typo would mean days of paging through history at Slack's rate limit.
+ */
+const MAX_SLACK_BACKFILL_DAYS = 365;
 const MAX_SLACK_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_MENTION_CONTEXT_MESSAGES = 20;
 const MIN_MENTION_CONTEXT_CHARS = 50;

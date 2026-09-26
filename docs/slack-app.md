@@ -72,4 +72,5 @@ token は natsumi のコンテナにだけ渡し、作業環境（natsumi-worksp
 natsumi を起動すると、ログに `slack (<名前>): connecting` が出ます。
 token が違うか App の設定が足りないと `could not start` が出ます。
 つながると、招待したチャンネルが data directory の `sources/slack/<名前>/` に書かれ、`sources/slack/INDEX.md` に並びます。
+初めて見るチャンネルは、既定で 90 日前から埋めます（`slack.backfillDays`、1〜365 日）。発言の多いチャンネルでは最初の接続に時間がかかるので、必要なら短くします。
 bot にメンションすると 👀 が付き、natsumi に出来事として届きます。

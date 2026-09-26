@@ -329,7 +329,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | --- | --- | --- | --- |
    | `slack.workspaces.<名前>` | 必須 | | ワークスペースごとの `botTokenEnv` か `botTokenFile`、`appTokenEnv` か `appTokenFile`。名前は英小文字・数字・ハイフンで 32 文字まで。natsumi が読むパスと参照（`work/#dev`）に使います |
    | `slack.reaction` | | `eyes` | メンションと DM を受け取ったときにサーバーが付けるリアクション（コロンなしの絵文字名） |
-   | `slack.backfillDays` | | 3 | 初めて見るチャンネルを何日前から埋めるか（1〜30） |
+   | `slack.backfillDays` | | 90 | 初めて見るチャンネルを何日前から埋めるか（1〜365） |
    | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと画像でない添付は「添付あり（取り込まず）」とだけ書きます |
    | `slack.mentionContext.messages` / `.chars` | | 5 / 500 | メンションの出来事に添える前の発言の件数（0〜20）と、1 件あたりの文字数 |
    | `slack.updates` | | `true` | 合図（ping・self_check）の `updates` に Slack の件数を載せるか |

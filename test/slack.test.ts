@@ -3,6 +3,7 @@ import { mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { SLACK_DEFAULTS } from '../src/server/config.ts';
 import { ConversationStore } from '../src/server/conversation-store.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
@@ -33,7 +34,7 @@ async function setup(t: test.TestContext, options: { backfillDays?: number; maxI
   const events: string[] = [];
   const logs: string[] = [];
   const workspace = new SlackWorkspace({
-    name: 'work', api: slack, socket: slack, archive, reaction: 'eyes', backfillDays: options.backfillDays ?? 3,
+    name: 'work', api: slack, socket: slack, archive, reaction: 'eyes', backfillDays: options.backfillDays ?? SLACK_DEFAULTS.backfillDays,
     maxImageBytes: options.maxImageBytes ?? 1024 * 1024, now, log: line => { logs.push(line); },
     // What the loop does with a new event: the row and the caller's own records, in one transaction.
     raise: record => {

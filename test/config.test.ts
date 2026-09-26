@@ -469,7 +469,7 @@ test('Slack is off unless the slack section is given, and has defaults for the r
   assert.equal('slack' in parseConfig(base()), false);
   assert.deepEqual(parseConfig({ ...base(), slack: slack() }).slack, {
     workspaces: { work: { botToken: { env: 'NATSUMI_SLACK_WORK_BOT_TOKEN' }, appToken: { file: '/run/secrets/slack-work-app-token' } } },
-    reaction: 'eyes', backfillDays: 3, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
+    reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
   });
   const tuned = parseConfig({ ...base(), slack: { ...slack(), reaction: 'white_check_mark', backfillDays: 1, maxImageBytes: 1048576,
     mentionContext: { messages: 3, chars: 200 }, updates: false } }).slack;
@@ -500,8 +500,9 @@ test('each Slack workspace is a short lower-case name, and there is at least one
 
 test('the Slack limits are checked', () => {
   for (const reaction of ['', ':eyes:', 'Eyes', 'a b']) rejects({ ...base(), slack: { ...slack(), reaction } }, 'slack.reaction');
-  for (const backfillDays of [0, 31, 1.5, '3']) rejects({ ...base(), slack: { ...slack(), backfillDays } }, 'slack.backfillDays');
+  for (const backfillDays of [0, 366, 1.5, '3']) rejects({ ...base(), slack: { ...slack(), backfillDays } }, 'slack.backfillDays');
   for (const maxImageBytes of [0, 1023, 20 * 1024 * 1024 + 1]) rejects({ ...base(), slack: { ...slack(), maxImageBytes } }, 'slack.maxImageBytes');
+  assert.equal(parseConfig({ ...base(), slack: { ...slack(), backfillDays: 365 } }).slack?.backfillDays, 365);
   rejects({ ...base(), slack: { ...slack(), mentionContext: { messages: 21 } } }, 'slack.mentionContext.messages');
   rejects({ ...base(), slack: { ...slack(), mentionContext: { chars: 10 } } }, 'slack.mentionContext.chars');
   rejects({ ...base(), slack: { ...slack(), updates: 'yes' } }, 'slack.updates');
