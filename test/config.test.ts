@@ -193,7 +193,7 @@ test('an OpenAI-compatible endpoint is chosen explicitly, with its key reference
   const endpoint = { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY' };
   const compatible = { ...pi(), model: { provider: 'natsumi-compatible', id: 'fixture-model' }, compatible: endpoint };
   assert.deepEqual(parseConfig({ ...base(), pi: compatible }).pi.compatible,
-    { baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' } });
+    { baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' }, contextWindow: 128000 });
   const { apiKeyEnv: _key, ...noKey } = endpoint;
   assert.deepEqual(parseConfig({ ...base(), pi: { ...compatible, compatible: { ...noKey, apiKeyFile: '/run/secrets/pi-api-key' } } }).pi.compatible?.apiKey,
     { file: '/run/secrets/pi-api-key' });
@@ -210,6 +210,37 @@ test('an OpenAI-compatible endpoint is chosen explicitly, with its key reference
   rejects({ ...base(), pi: { ...pi(), compatible: endpoint } }, 'pi.model.provider', /natsumi-compatible/);
   const { compatible: _endpoint, ...withoutEndpoint } = compatible;
   rejects({ ...base(), pi: withoutEndpoint }, 'pi.compatible', /required/);
+});
+
+// The window is what Pi believes the model can hold; the endpoint's own may be far larger (a llama.cpp slot).
+test('a compatible endpoint\'s context window is 128000 unless set, and must be a positive integer', () => {
+  const compatible = (endpoint: Record<string, unknown>) => ({ ...base(), pi: { ...pi(),
+    model: { provider: 'natsumi-compatible', id: 'fixture-model' },
+    compatible: { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY', ...endpoint } } });
+  assert.equal(parseConfig(compatible({})).pi.compatible?.contextWindow, 128000);
+  assert.equal(parseConfig(compatible({ contextWindow: 262144 })).pi.compatible?.contextWindow, 262144);
+  for (const tokens of [0, -1, 1.5, '262144', null, true]) {
+    rejects(compatible({ contextWindow: tokens }), 'pi.compatible.contextWindow', /integer/);
+  }
+});
+
+// Compaction runs only between turns, so the context must still fit when a turn starts just under the threshold:
+// the turn's own growth, the longest reply, and the margin Pi keeps below the window when it sizes a request.
+test('a compaction threshold the context window cannot hold through one more turn is refused at startup', () => {
+  const config = (contextWindow: number | undefined, compactionThreshold: number) => ({ ...base(), pi: { ...pi(),
+    model: { provider: 'natsumi-compatible', id: 'fixture-model' },
+    compatible: { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY',
+      ...(contextWindow === undefined ? {} : { contextWindow }) } },
+    loop: { compactionThreshold } });
+  // Room above the threshold: a turn's growth (32768), the longest reply (16384) and Pi's margin (4096).
+  const room = 32768 + 16384 + 4096;
+  assert.equal(parseConfig(config(undefined, 60000)).loop.compactionThreshold, 60000);
+  assert.equal(parseConfig(config(128000, 128000 - room)).loop.compactionThreshold, 128000 - room);
+  rejects(config(128000, 128000 - room + 1), 'loop.compactionThreshold', /pi\.compatible\.contextWindow/);
+  rejects(config(undefined, 128000), 'loop.compactionThreshold', /pi\.compatible\.contextWindow/);
+  assert.equal(parseConfig(config(262144, 128000)).loop.compactionThreshold, 128000);
+  // A subscription model's window comes from Pi's own model definition, which the config does not know.
+  assert.equal(parseConfig({ ...base(), loop: { compactionThreshold: 200000 } }).loop.compactionThreshold, 200000);
 });
 
 test('the connection and GitHub sections are required', () => {

@@ -37,6 +37,8 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      `model` でモデルを選びます。専用領域で login した Pi のサブスクリプション（例: `openai-codex`）か、
      `"provider": "natsumi-compatible"` と `compatible`（自分で動かす OpenAI 互換エンドポイントの `baseUrl` と、
      API key の参照 `apiKeyEnv` か `apiKeyFile`）の組です。両者の間で自動の切り替えはしません。
+     `compatible.contextWindow` は、Pi に伝えるそのモデルの context の大きさ（tokens、既定 128000）です。
+     エンドポイントの 1 スロットの大きさ以下にします。サブスクリプションのモデルでは、Pi のモデル定義の値を使います。
      `thinking` は既定で `"on"`（思考あり）で、`"off"` にもできます。
    - `publicOrigin`: クライアントが使う origin（例: `https://natsumi.example.net:8443`）。https に限ります。
    - `listen`: 待ち受けアドレス・ポート・TLS。`"host": "::"` で IPv4 と IPv6 の両方で待ち受けます。
@@ -47,6 +49,9 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `loop`（省略可）: 本人のタイムゾーン `timeZone`（例: `Asia/Tokyo`、既定 `UTC`）、夜の切り替えの時刻 `nightlyRotationAt`
      （既定 `"04:00"`、`false` で自動では切り替えない）、compaction の上限 `compactionThreshold`（既定 60000 tokens）と、
      要約せずに残す直近の量 `compactionKeepRecent`（既定 20000 tokens）。
+     compaction はターンの間にしか走らないので、互換エンドポイントでは `compactionThreshold` に 53248 tokens
+     （1 ターンの伸び 32768、1 回の返事の上限 16384、Pi が窓の手前に空ける 4096）を足した量が `contextWindow` を超えると
+     起動を拒みます。上限を上げるときは窓も上げてください（例: 上限 128000 には窓 181248 以上）。
      起きている時間帯 `awakeHours`（既定 `{ "start": "08:00", "end": "23:00" }`）、合図までの静かな時間 `pingIntervalMinutes`
      （既定 30 分、`false` で合図を出さない）、自分で予約する確認の上限 `selfCheck`（最短の先 `minDelayMinutes` 既定 5 分、
      最も遠い先 `maxDelayDays` 既定 7 日、同時に待たせる件数 `maxPending` 既定 5 件、1 日の件数 `maxPerDay` 既定 20 件）、

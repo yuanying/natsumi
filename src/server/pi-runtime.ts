@@ -19,7 +19,8 @@ export async function createModelRuntime(pi: PiConfig, env: Record<string, strin
     if (pi.compatible) {
       // Resolved once at startup from the server's own reference; a rotated key takes effect on restart.
       const key = await readSecret(pi.compatible.apiKey, 'pi.compatible.apiKey', env);
-      return { runtime: await compatibleRuntimeWithKey(pi.agentDirectory, { baseUrl: pi.compatible.baseUrl, model: pi.model.id }, key), target };
+      return { runtime: await compatibleRuntimeWithKey(pi.agentDirectory, { baseUrl: pi.compatible.baseUrl, model: pi.model.id,
+        contextWindow: pi.compatible.contextWindow }, key), target };
     }
     return { runtime: await subscriptionRuntime(pi.agentDirectory, pi.authPath, pi.model.provider), target };
   } catch {

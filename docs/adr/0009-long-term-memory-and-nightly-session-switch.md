@@ -1,7 +1,7 @@
 # 0009. 長期記憶と、夜の session の切り替え
 
 - Date: 2026-09-15
-- Status: Accepted（記憶を shell で探すツールと、shell を許さないという点は [ADR 0011](0011-memory-shell-in-a-confined-container.md) で追加・置き換え、夜の切り替えと予約・合図の関係は [ADR 0014](0014-self-checks-and-pings.md) で具体化、記憶の置き方・記憶のツール・性格の扱い・引き継ぎの持ち方は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で大部分を置き換え、引き継ぎを SQLite に保存する点と、再起動のときに SQLite の記録から同じ system prompt を作り直せるという点は [ADR 0020](0020-limits-at-write-time-and-a-nightly-menu.md) で置き換え）
+- Status: Accepted（記憶を shell で探すツールと、shell を許さないという点は [ADR 0011](0011-memory-shell-in-a-confined-container.md) で追加・置き換え、夜の切り替えと予約・合図の関係は [ADR 0014](0014-self-checks-and-pings.md) で具体化、記憶の置き方・記憶のツール・性格の扱い・引き継ぎの持ち方は [ADR 0018](0018-memory-in-git-and-the-nightly-rebuild.md) で大部分を置き換え、引き継ぎを SQLite に保存する点と、再起動のときに SQLite の記録から同じ system prompt を作り直せるという点は [ADR 0020](0020-limits-at-write-time-and-a-nightly-menu.md) で置き換え。2026-09-26: 互換エンドポイントの context の窓を設定にし、上限との組み合わせを起動時に検査することを「追記」の節に加えた）
 
 ## Context
 
@@ -161,3 +161,18 @@ Pi に次の 4 つを足す。
 - compaction の要約の見出しは Pi の英語の定型のままで、日本語で書くのは指示による。
 - 記憶の検索結果は、そのまま思考の context に入る。Slack 連携を加えるときは、本人の私的な記憶が Slack への投稿に漏れないかを別に検討する。
 - 時刻の判定の仕組みは最小限で、スケジューラーと自発的な確認（Q9）の実装で統合する。
+
+## 追記（2026-09-26）: 互換エンドポイントの context の窓と上限の組み合わせ
+
+上限を既定より大きくすると、Pi に伝える context の窓（互換エンドポイントでは 128000 tokens の固定だった）を
+ターンの途中で超える。compaction はターンの間にしか走らず、Pi の自動の compaction は無効なので、ターンの途中で
+窓に近づいても要約は入らない。Pi は窓の残りに合わせて 1 回の返事の上限を縮めるので、返事や思考が途中で切れる。
+エンドポイント自身の大きさを超えれば、要求そのものが拒まれる。
+
+- 互換エンドポイントの窓を `pi.compatible.contextWindow`（既定 128000 tokens）で設定できるようにする。
+  サブスクリプションのモデルの窓は、Pi のモデル定義のままとする。
+- 互換エンドポイントでは、上限に 1 ターンの伸び（32768 tokens）、1 回の返事の上限（16384 tokens）、
+  Pi が窓の手前に空ける量（4096 tokens）を足した量が窓を超える設定を、起動時に拒む。警告にとどめると、
+  ふつうの日にターンが途中で失敗する設定のまま動き始めてしまう。
+- 1 ターンの伸びは、ふつうのターンのモデル呼び出しと shell の出力から見積もった目安であり、上界ではない。
+- 上限の既定の 6 万 tokens は変えない。既定の窓 128000 tokens と組み合わせても検査を通る。

@@ -2,7 +2,7 @@ import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { InMemoryCredentialStore } from '@earendil-works/pi-ai';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { COMPATIBLE_PROVIDER, type CompatibleEndpoint } from './compatible.ts';
+import { COMPATIBLE_MAX_TOKENS, COMPATIBLE_PROVIDER, type CompatibleEndpoint, DEFAULT_CONTEXT_WINDOW } from './compatible.ts';
 import { isLoopbackHost } from './loopback.ts';
 
 /** A runtime that uses only the OAuth login stored at `authPath` for `provider`. No API key route exists here. */
@@ -49,9 +49,8 @@ export function compatibleProvider(endpoint: CompatibleEndpoint): Parameters<Mod
       // Images too: a Slack mention's pictures ride beside its event, and `view` answers with one (ADR 0039). Pi sends
       // a tool result's image as a user message after it, which Chat Completions takes.
       id: endpoint.model, name: endpoint.model, reasoning: true, input: ['text', 'image'],
-      // Pi caps a compaction summary at the smaller of this and its own summary budget (80% of a 16384-token reserve),
-      // and thinking spends the same tokens. At 4096 a summary stopped at the cap and no compaction ever succeeded.
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 16_384,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: endpoint.contextWindow ?? DEFAULT_CONTEXT_WINDOW, maxTokens: COMPATIBLE_MAX_TOKENS,
       // Qwen-style chat templates: Pi's thinking level becomes chat_template_kwargs.enable_thinking (off → false).
       compat: { supportsDeveloperRole: false, supportsReasoningEffort: false, supportsStore: false, maxTokensField: 'max_tokens',
         thinkingFormat: 'qwen-chat-template' },
