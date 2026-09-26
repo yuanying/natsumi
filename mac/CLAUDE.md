@@ -23,12 +23,12 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 
 - 画面に出るものはすべて `Component` として木に属し、根は `RootComponent` ひとつである。
   親が子を作り、子は親を弱く持つ。`adopt` で親子にし、木の形は生涯変わらない。
-- 5 つの部品（キャラクター・返事の吹き出し・知らせの束・会話のウインドウ・設定）が Root の直下の子である。
+- 6 つの部品（キャラクター・返事の吹き出し・知らせの束・会話のウインドウ・設定・画像の拡大の窓）が Root の直下の子である。
   部品の中でイベントを出す部分は、さらにその子にする。
   **キャラクター・吹き出し・知らせの束は、Root が持つ 1 枚の透明なウインドウ（舞台）の中の View として描く**
   （ADR 0016）。この 3 つのコンポーネントはウインドウを持たず、Props から自分の View を作って Root に渡す。
-  会話のウインドウと設定は自分のウインドウを持つ。いまある子は、キャラクターの印、
-  吹き出しの本文・×・「続きは履歴で」、知らせのカード・×・「続きは履歴で」、会話のウインドウの文字の欄・履歴のひらく⇔とじるのボタンである。
+  会話のウインドウと設定と画像の拡大の窓は自分のウインドウを持つ。いまある子は、キャラクターの印、
+  吹き出しの本文・×・「続きは履歴で」・縮小画像、知らせのカード・×・「続きは履歴で」、会話のウインドウの文字の欄・履歴のひらく⇔とじるのボタンである。
 - **木の外から個々のコンポーネントを掴まない。** アプリが持ってよいのは Root だけで、`AppDelegate` もそれしか持たない。
   新しいパネルを足すときは、Root の子として作り、Root から描画パラメータを渡す。
 - メニューバーの scene だけは SwiftUI の都合で値を渡せないので、`MenuBarModel` が最後に渡された
@@ -59,7 +59,7 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 - **途中で握りつぶしてよいのは、自分の描画パラメータだけで完結するものに限る。** 既定は「握りつぶさない」。
   `Component.handle` の既定は `false` であり、いまこれを `true` にしているのは Root だけである。
   握りつぶす箇所を作るなら、理由をコメントに書く。
-- サーバーから来る出来事（envelope・接続の状態・ログインの結果・アバターの読み込み）も、同じ `UIEvent` の形で
+- サーバーから来る出来事（envelope・接続の状態・ログインの結果・アバターの読み込み・画像の取得の結果）も、同じ `UIEvent` の形で
   Root から Mediator へ入れる。**入口を 2 本にしない。**
 - イベントは 1 件ずつ順に裁定する。効果が次のイベントを生むので、Root は入れ子にせずに待ち行列に積む。
   パネルが画面に出ていないと成り立たない効果（入力欄に焦点を移す、設定を出す）だけは、
@@ -72,7 +72,10 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 - `UIState` から Props を導出する。**Mediator の外で Props を作らない。**
 - `UIEffect` は外の世界への指示である。**実行するのは Root だけ**であり、Mediator は実行しない。
   結果が要るものは、Root がイベントにして返す（`.resumeSession` には `.sessionResumed`、
-  `.loadAvatar` には `.avatarLoaded`、`.startLogin` には `.loginFinished` が返る）。
+  `.loadAvatar` には `.avatarLoaded`、`.startLogin` には `.loginFinished`、`.fetchImage` には `.imageFetched` が返る）。
+- 会話と承認の画像（ADR 0045）は、どれを取りに行くかを Mediator が決め（吹き出しの返事と、履歴で見えている行と、iPhone の開いている承認）、
+  取った画像は `UIState`・`PhoneState` の `ImageShelf` に ID ごとに持つ。縮めた画像は ID で等しさを比べるので、Props に入れても比較は軽い。
+  ログアウトで捨て、承認の画像は承認が閉じたら捨てる。
 - 接続と同期は `SessionMachine` の担当であり、これは別の関心事として残す。
   Mediator はソケットの出来事をそのまま渡し、返ってきた `SessionEffect` を自分の `UIEffect` として出す。
 - 乱数（requestId）は生成器を差し込む形にし、テストでは決まった値を返す。Mediator の中で `UUID()` を呼ばない。
@@ -101,13 +104,15 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `NatsumiCore/UI/HistoryReading.swift` | 会話のウインドウで見えた返事のどこまでを既読にするか（`HistoryReading`） |
 | `NatsumiCore/UI/TextLinks.swift` | 本文の中の URL をリンクにする分け方（`TextLinks`・`TextRun`）（ADR 0038） |
 | `NatsumiCore/UI/MessageTime.swift` | 履歴の行に添える時刻の書き方（`MessageTime`）。今と暦は Root が渡す |
+| `NatsumiCore/UI/ImageShelf.swift` | 取った画像を ID ごとに持つ `ImageShelf`、縮小画像の大きさ（`ImageStrip`）と Props（`ImageTileProps`・`ImageViewerProps`）（ADR 0045） |
+| `NatsumiCore/Protocol/ImageAPI.swift` | 画像の取得の組み立てと答えの読み方（`ImageAPI`・`ImageFetch`）、読んで縮めた画像（`LoadedImage`） |
 | `NatsumiCore/UI/StageProps.swift` | 舞台の描画パラメータ（`StageProps`・`StageTransition`）と舞台の座標への変換 |
 | `NatsumiCore/Keyboard/` | どこからでも会話のウインドウを出すショートカット（`HotKey`） |
 | `NatsumiCore/Overlay/` | 配置の計算（`OverlayLayout`）、大きさ（`CharacterScale`・`OverlaySettings`）、会話のウインドウの大きさと置き場所（`ConversationWindow`・`ConversationPlacement`）、走っての移動とポインタを避ける規則（`CharacterRun`・`PointerDodge`） |
 | `Natsumi/Components/` | Root と各部品のコンポーネント、`OverlayPanel` と hosting view、キャラクターのマウスの受け口（`CharacterMouseArea`） |
 | `Natsumi/Views/` | SwiftUI の Passive View、舞台（`StageView`）、`Comic` の見た目 |
 | `Natsumi/Adapters/` | Mac だけの OS に触る部分（グローバルなショートカットの登録） |
-| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン）と、本文のリンクの描き方（`LinkedText`） |
+| `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン・画像の取得の `ImageFetcher`）と、本文のリンクの描き方（`LinkedText`）、縮小画像の描き方（`ImageTileView`・`ImageStripView`） |
 | `NatsumiCore/Phone/` | iPhone の `PhoneEvent`・`PhoneEffect`・`PhoneState`・`PhoneMediator`・`PhoneProps`、承認の画面の Props（`PhoneApprovalProps`）（ADR 0041） |
 | `NatsumiCore/Session/ApprovalBook.swift` | 承認待ちの一覧と、送っている本人の決定（ADR 0041） |
 | `NatsumiPhone/Components/` | iPhone の Root（`PhoneRootComponent`）と各画面のコンポーネント、Props の受け渡しの箱（`ScreenModel`） |
