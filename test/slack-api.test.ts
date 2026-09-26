@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ErrorCode } from '@slack/web-api';
-import { callError, describeFailure, SlackCallError } from '../src/server/slack-api.ts';
+import { callError, describeFailure, SlackCallError, toSlackMessage } from '../src/server/slack-api.ts';
 
 /** How a failure of Slack's Web API reads in the log: the call, and Slack's own code, never what was asked for. */
 
@@ -32,4 +32,11 @@ test('a failure that is not Slack\'s is named by its kind, and its code when it 
   assert.equal(describeFailure(Object.assign(new Error('EACCES: /data/secret'), { code: 'EACCES' })), 'Error: EACCES');
   assert.equal(describeFailure(new TypeError('something with text')), 'TypeError');
   assert.equal(describeFailure('a string'), 'error');
+});
+
+test('a message\'s reactions are read with who put them on, and a message without the field has none said', () => {
+  const message = toSlackMessage({ ts: '1.000100', user: 'U1', text: 'x', reactions: [
+    { name: '+1', users: ['U1', 'U2'], count: 5 }, { name: 'tada', count: 1 }, { users: ['U1'], count: 1 }] });
+  assert.deepEqual(message.reactions, [{ name: '+1', users: ['U1', 'U2'], count: 5 }, { name: 'tada', users: [], count: 1 }]);
+  assert.equal(toSlackMessage({ ts: '1.000100', user: 'U1', text: 'x' }).reactions, undefined);
 });
