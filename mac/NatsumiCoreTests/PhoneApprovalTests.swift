@@ -58,7 +58,7 @@ struct PhoneApprovalTests {
         _ = mediator.handle(.approvalsOpenRequested)
         let rows = try! #require(list(mediator)).rows
         #expect(rows == [PhoneApprovalRowProps(
-            approvalId: "a1", channel: "work/#dev", text: "明日の 10 時で大丈夫です。", reason: "ポッポさんが回した",
+            approvalId: "a1", channel: "work/#dev", text: "明日の 10 時で大丈夫です。", reason: "判定で回った",
             time: "14:30", status: nil)])
 
         _ = mediator.handle(.approvalOpenRequested(approvalId: "a1"))
@@ -98,10 +98,10 @@ struct PhoneApprovalTests {
             PhonePlacementOptionProps(title: "スレッド", placement: .thread, isSelected: true),
             PhonePlacementOptionProps(title: "チャンネル", placement: .channel, isSelected: false),
         ])
-        #expect(props.placementOdds == "ポッポさんの見立て: スレッド 70%・チャンネル 30%")
+        #expect(props.placementOdds == "判定の見立て: スレッド 70%・チャンネル 30%")
         #expect(props.text == "明日の 10 時で大丈夫です。")
         #expect(props.face == .happy)
-        #expect(props.reason == "ポッポさんが、本人に確かめてほしいと判定しました")
+        #expect(props.reason == "判定が「本人に回す」になりました")
         #expect(props.issues == [
             PhoneIssueProps(name: "promise", label: "本人に代わる約束・期限", score: 0.82, percent: "82%", flagged: true),
             PhoneIssueProps(name: "missing-context", label: "スレッドに無い情報", score: 0.12, percent: "12%", flagged: false),
@@ -125,7 +125,7 @@ struct PhoneApprovalTests {
         #expect(props.placement == "チャンネルに投稿")
         #expect(props.placementOptions == [])
         #expect(props.placementOdds == nil)
-        #expect(props.reason == "ポッポさんの判定がありませんでした")
+        #expect(props.reason == "判定がありませんでした")
         #expect(props.issues == [])
     }
 

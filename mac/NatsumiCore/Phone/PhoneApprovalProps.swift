@@ -72,7 +72,7 @@ public struct PhonePlacementOptionProps: Equatable, Identifiable, Sendable {
     public var id: String { placement.rawValue }
 }
 
-/// One of the dove's issues with the draft.
+/// One of the judge's issues with the draft.
 public struct PhoneIssueProps: Equatable, Identifiable, Sendable {
     public var name: String
     public var label: String
@@ -152,7 +152,7 @@ public struct PhoneApprovalDetailProps: Equatable, Sendable {
     public var placement: String
     /// The choice between the thread and the channel; empty when there is none to make.
     public var placementOptions: [PhonePlacementOptionProps]
-    /// How likely the dove found each place, when it said.
+    /// How likely the judge found each place, when it said.
     public var placementOdds: String?
     public var text: String
     /// The face on the post's icon, when there is one.
@@ -265,7 +265,7 @@ enum PhoneApprovalProps {
                 }
                 : [],
             placementOdds: approval.reason.placementOdds.map {
-                "ポッポさんの見立て: スレッド \(percent($0.thread))・チャンネル \(percent($0.channel))"
+                "判定の見立て: スレッド \(percent($0.thread))・チャンネル \(percent($0.channel))"
             },
             text: approval.text, face: approval.expression, avatar: state.avatar, reason: reason(approval.reason.verdict),
             issues: approval.reason.issues.map {
@@ -283,8 +283,8 @@ enum PhoneApprovalProps {
 
     static func reason(_ verdict: ApprovalVerdict?) -> String {
         switch verdict {
-        case .owner: "ポッポさんが、本人に確かめてほしいと判定しました"
-        case .noVerdict: "ポッポさんの判定がありませんでした"
+        case .owner: "判定が「本人に回す」になりました"
+        case .noVerdict: "判定がありませんでした"
         case .rewriteLimit: "同じ返信先で 3 回目の突き返しになりました"
         case nil: "本人の確認が要ります"
         }
@@ -292,7 +292,7 @@ enum PhoneApprovalProps {
 
     static func shortReason(_ verdict: ApprovalVerdict?) -> String {
         switch verdict {
-        case .owner: "ポッポさんが回した"
+        case .owner: "判定で回った"
         case .noVerdict: "判定なし"
         case .rewriteLimit: "3 回目の突き返し"
         case nil: "確認が要る"

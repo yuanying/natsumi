@@ -5,8 +5,8 @@
 
 ## Context
 
-natsumi が Slack に出したい投稿のうち、ポッポさんが本人に回したもの・判定できなかったもの・同じ返信先で 3 回目に突き返されたものは、
-本人の承認を待つ（[ADR 0040](0040-the-dove-sends-what-jev-passes.md)）。承認の画面は iPhone に置くと決めていた（Mac は後で）。
+natsumi が Slack に出したい投稿のうち、判定が本人に回したもの・判定できなかったもの・同じ返信先で 3 回目に突き返されたものは、
+本人の承認を待つ（[ADR 0040](0040-the-dove-sends-what-the-judge-passes.md)）。承認の画面は iPhone に置くと決めていた（Mac は後で）。
 サーバーとの形は [クライアント契約](../client-contract.md) の「Slack の投稿の承認」と「iPhone への通知」にある。
 
 承認は、送る本文・返信先・置き場所の全体に結び付く（[ADR 0002](0002-client-events-and-approvals.md)）。本人が見たものと違うものを

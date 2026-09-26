@@ -123,7 +123,7 @@ function startingApprovals(): Approval[] {
   ];
 }
 
-/** The approval that arrives after the first sync: a direct message the dove handed to the owner. */
+/** The approval that arrives after the first sync: a direct message the judge handed to the owner. */
 function laterApproval(): Approval {
   return {
     approvalId: 'approval-dm', revision: 1, kind: 'slack-post', createdAt: new Date().toISOString(), expiresAt: fromNow(7),

@@ -47,7 +47,7 @@ enum Fixture {
         return envelope("session.snapshot", seq: seq, stream: stream, requestId: requestId, payload: payload)
     }
 
-    /// An approval of a Slack post as the server writes it, with made-up values: a reply in a thread that the dove
+    /// An approval of a Slack post as the server writes it, with made-up values: a reply in a thread that the judge
     /// handed to the owner, with one issue over the threshold.
     static func approval(
         _ id: String, revision: Int = 1, text: String = "明日の 10 時で大丈夫です。", channel: String = "work/#dev",

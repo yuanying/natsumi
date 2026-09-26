@@ -7,15 +7,15 @@ public enum ApprovalPlacement: String, Equatable, Sendable {
 
 /// Why the post was handed to the owner (client-contract「Slack の投稿の承認」).
 public enum ApprovalVerdict: String, Equatable, Sendable {
-    /// The dove handed it to the owner.
+    /// The judge handed it to the owner.
     case owner
-    /// The dove could not judge it.
+    /// There was no verdict: the judge could not be asked, or its answer could not be read.
     case noVerdict = "no-verdict"
     /// It was sent back for the third time for the same line.
     case rewriteLimit = "rewrite-limit"
 }
 
-/// One of the dove's issues with a draft, with its score from 0 to 1.
+/// One of the judge's issues with a draft, with its score from 0 to 1.
 public struct ApprovalIssue: Equatable, Sendable {
     public let name: String
     public let label: String
@@ -60,7 +60,7 @@ public struct ApprovalTarget: Equatable, Sendable {
     }
 }
 
-/// How likely the dove found each place.
+/// How likely the judge found each place.
 public struct ApprovalPlacementOdds: Equatable, Sendable {
     public let thread: Double
     public let channel: Double
@@ -76,7 +76,7 @@ public struct ApprovalReason: Equatable, Sendable {
     public let verdict: ApprovalVerdict?
     /// Empty when there was no verdict.
     public let issues: [ApprovalIssue]
-    /// nil when there was no verdict, or the dove gave no odds.
+    /// nil when there was no verdict, or the judge gave no odds.
     public let placementOdds: ApprovalPlacementOdds?
 
     public init(verdict: ApprovalVerdict?, issues: [ApprovalIssue], placementOdds: ApprovalPlacementOdds?) {

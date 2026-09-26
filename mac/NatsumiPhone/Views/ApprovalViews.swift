@@ -343,7 +343,7 @@ struct ApprovalEditor: View {
     }
 }
 
-/// One of the dove's issues: its name, a bar for its score, and the score. A flagged one stands out.
+/// One of the judge's issues: its name, a bar for its score, and the score. A flagged one stands out.
 struct IssueView: View {
     let props: PhoneIssueProps
 

@@ -719,14 +719,20 @@ iPhone の TestFlight アプリが新しいビルドを自動で入れます（[
 
 GitHub もモデルも使わずに画面を確かめるための、偽のサーバーがあります。`http://localhost:8787` で待ち受け、
 ログインは GitHub を通さずに通り、架空の会話と知らせを返し、送ったメッセージには少し考えてから返事をします。
+Slack の投稿の承認待ちも架空のものを 2 件持ち、最初の同期から `--approval-delay` 秒（既定 8 秒、0 で送らない）後に 1 件を
+`approval.pending` で足します。承認・修正・却下には契約どおりに答え（承認と修正は少し後に `delivery: sent` で閉じ、却下はその場で閉じます）、
+閉じた承認への 2 回目の決定には最初の状態を、違う revision には `stale-revision` を返します。ログアウトすると承認待ちは最初の 2 件に戻ります。
 
 ```sh
 npm ci
-npm run fake-server -- [--port 8787] [--reply-delay 5] [--short]
+npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8]
 ```
 
+偽のサーバーそのもののテストは `test/fake-server.test.ts` にあり、`npm test` で走ります。
+
 シミュレータのアプリでは、サーバーに `http://localhost:8787` を入れてログインします。
-UI テスト `NatsumiPhoneUITests` は、この偽のサーバーを相手にログイン・返事・履歴・設定・ログアウトまでを辿り、画面を撮ります
+UI テスト `NatsumiPhoneUITests` は、この偽のサーバーを相手にログイン・返事・履歴・設定・ログアウトまでと、
+承認待ちの件数・一覧・1 件の画面から承認・修正・却下までを辿り、画面を撮ります
 （偽のサーバーを先に起動してください。別のポートで動かすときは `TEST_RUNNER_NATSUMI_SERVER` に URL を渡します）。撮った画面は結果の bundle に添付され、`TEST_RUNNER_NATSUMI_SCREENSHOTS` に
 ディレクトリを渡すとそこにも書き出されます。
 
