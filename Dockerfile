@@ -24,6 +24,11 @@ COPY runner/ ./
 RUN go test ./... \
   && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/natsumi-workspace-runner .
 
+# sdctl, which natsumi draws with (ADR 0044). Its releases carry no binary, so it is built from its source at a fixed
+# version, static like the runner.
+FROM golang:1.27 AS sdctl
+RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.3.0
+
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
 FROM debian:bookworm-slim AS workspace
@@ -38,6 +43,10 @@ RUN groupadd --gid 1000 natsumi \
   && chown natsumi:natsumi /work /home/natsumi
 # Outside PATH, so running it by its path gives nothing bash does not already have.
 COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-workspace-runner
+# sdctl and its default params (ADR 0044). It reaches the image server through the relay that SDCTL_URL names, which
+# the environment gives; the params are baked in, so changing them is a new image.
+COPY --from=sdctl /out/sdctl /usr/local/bin/sdctl
+COPY docker/sdctl/anima.yaml /etc/sdctl/anima.yaml
 # natsumi's manual (ADR 0036), read-only like the rest of the root. The list of agents the server writes on every
 # start is mounted over /manual/agents.
 COPY manual/ /manual/
