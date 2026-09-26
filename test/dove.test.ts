@@ -20,7 +20,7 @@ import { FakeSlack, tsAt } from './support/fake-slack.ts';
 const ORIGIN = 'https://natsumi.example.test';
 const DAY = 86_400_000;
 const CONFIG: DoveConfig = {
-  thresholds: { owner: 0.3, return: 0.7 }, approvalDays: 7, reactions: ['eyes', '+1', 'pray'], placementFollowing: 2,
+  thresholds: { owner: 0.3, return: 0.7 }, approvalDays: 7, placementFollowing: 2,
   judgeContext: { messages: 5, chars: 500 },
 };
 
@@ -284,7 +284,7 @@ test('two messages of the same second by the same speaker are turned back with h
   assert.doesNotMatch(outcome.text, /\d{10}\.\d{6}/);
   assert.match(outcome.text, /書き出し/);
   f.jev.answers.push(SEND());
-  assert.equal(f.dove.ask(post('そちらへの返事', { to: 'work/#dev 2026-09-25 14:32:05 山田 「もう一つ」' })).ok, true);
+  assert.equal((await f.dove.ask(post('そちらへの返事', { to: 'work/#dev 2026-09-25 14:32:05 山田 「もう一つ」' }))).ok, true);
   await f.dove.idle();
   assert.deepEqual(f.slack.posts.map(sent => sent.threadTs), [tsAt('2026-09-25T05:32:05Z', '000200')]);
 });
@@ -419,9 +419,11 @@ test('a decision that comes after the time is up expires the approval rather tha
   assert.equal(f.slack.posts.length, 0);
 });
 
-test('a reaction from the list is put on at once, with neither Jev nor the owner', async t => {
+const reaction = (name: string) => `返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n${name}`;
+
+test('a standard emoji is put on at once, with neither Jev nor the owner', async t => {
   const f = await setup(t);
-  const outcome = await f.dove.ask('返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n:+1:');
+  const outcome = await f.dove.ask(reaction(':+1:'));
   assert.equal(outcome.ok, true);
   await f.dove.idle();
   assert.deepEqual(f.slack.reactions, [{ channel: 'C1', ts: PARENT, name: '+1' }]);
@@ -432,13 +434,42 @@ test('a reaction from the list is put on at once, with neither Jev nor the owner
   assertNoIds(reacted!);
 });
 
-test('a reaction not on the list is refused, and the refusal names the list', async t => {
+test('any emoji that exists may be asked for: a standard one, one with a skin tone, a custom one and an alias (ADR 0042)', async t => {
   const f = await setup(t);
-  const outcome = await f.dove.ask('返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\nfire');
+  f.slack.emoji.set('lgtm', 'https://emoji.example.test/lgtm.png');
+  f.slack.emoji.set('了解', 'https://emoji.example.test/ryokai.png');
+  f.slack.emoji.set('thanks', 'alias:pray');
+  for (const name of ['fire', ':thumbsup::skin-tone-3:', 'lgtm', ':了解:', 'thanks']) {
+    assert.equal((await f.dove.ask(reaction(name))).ok, true, name);
+  }
+  await f.dove.idle();
+  assert.deepEqual(f.slack.reactions.map(({ name }) => name), ['fire', 'thumbsup::skin-tone-3', 'lgtm', '了解', 'thanks']);
+  assert.equal(f.jev.asked.length, 0);
+  assert.equal(f.clientEvents.length, 0);
+});
+
+test('an emoji that is nowhere is refused at once, and the refusal says how to find one', async t => {
+  const f = await setup(t);
+  const outcome = await f.dove.ask(reaction('no_such_emoji'));
   assert.equal(outcome.ok, false);
-  assert.match(outcome.text, /eyes.*\+1.*pray/);
+  assert.match(outcome.text, /no_such_emoji/);
+  assert.match(outcome.text, /\/manual\/slack\.md/);
   await f.dove.idle();
   assert.deepEqual(f.slack.reactions, []);
+  assert.equal(f.lines().length, 0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM dove_posts').get()!.n, 0);
+});
+
+test('without emoji:read, a standard emoji is still put on and a custom one is refused, with one line in the log', async t => {
+  const f = await setup(t);
+  f.slack.emoji.set('lgtm', 'https://emoji.example.test/lgtm.png');
+  f.slack.fail('customEmoji', '', 'emoji.list', 'missing_scope', 'emoji:read');
+  assert.equal((await f.dove.ask(reaction('lgtm'))).ok, false);
+  assert.equal((await f.dove.ask(reaction('eyes'))).ok, true);
+  await f.dove.idle();
+  assert.deepEqual(f.slack.reactions.map(({ name }) => name), ['eyes']);
+  assert.deepEqual(f.logs.filter(line => line.includes('emoji')),
+    ['slack (work): the custom emoji could not be read (emoji.list: missing_scope, needed emoji:read)']);
 });
 
 test('Slack refusing the post, or the message having been deleted, is told to natsumi as not sent', async t => {

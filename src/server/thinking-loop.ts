@@ -143,7 +143,7 @@ export interface SlackEvents {
 
 /** The side of the dove the loop talks to: a request, and the line of each answer. */
 export interface DoveEvents {
-  ask(message: string): ToolOutcome;
+  ask(message: string): ToolOutcome | Promise<ToolOutcome>;
   takeEventLine(eventId: string, receivedAt: string): Record<string, unknown>;
 }
 

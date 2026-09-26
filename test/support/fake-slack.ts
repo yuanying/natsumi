@@ -21,6 +21,9 @@ export class FakeSlack implements SlackApi, SlackSocket {
   readonly users = new Map<string, string>([['U1', '山田'], ['U2', '佐藤'], ['UBOT', 'natsumi']]);
   readonly files = new Map<string, Buffer>();
   readonly reactions: { channel: string; ts: string; name: string }[] = [];
+  /** The workspace's custom emoji as `emoji.list` answers: an image's URL, or `alias:<name>`. */
+  readonly emoji = new Map<string, string>();
+  emojiCalls = 0;
   /** What the dove posted, as `chat.postMessage` was called. */
   readonly posts: { channel: string; text: string; threadTs?: string; iconUrl: string }[] = [];
   readonly historyCalls: { channel: string; oldest: string }[] = [];
@@ -102,6 +105,12 @@ export class FakeSlack implements SlackApi, SlackSocket {
   async addReaction(channel: string, ts: string, name: string): Promise<void> {
     this.check('addReaction', ts);
     this.reactions.push({ channel, ts, name });
+  }
+
+  async customEmoji(): Promise<string[]> {
+    this.emojiCalls += 1;
+    this.check('customEmoji', '');
+    return [...this.emoji.keys()];
   }
 
   async postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string }): Promise<string> {

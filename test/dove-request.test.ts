@@ -27,6 +27,17 @@ test('a reaction names the emoji as its body, with or without colons', () => {
   } });
 });
 
+test('a reaction may name a skin tone or a custom emoji of any letters, and the colons around it are dropped', () => {
+  const body = (text: string) => {
+    const parsed = parseDoveRequest(`返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n${text}`);
+    return parsed.ok ? parsed.request.body : parsed.text;
+  };
+  assert.equal(body(':thumbsup::skin-tone-2:'), 'thumbsup::skin-tone-2');
+  assert.equal(body('thumbsup::skin-tone-2'), 'thumbsup::skin-tone-2');
+  assert.equal(body(':了解:'), '了解');
+  assert.equal(body('looks-good'), 'looks-good');
+});
+
 test('a speaker whose name has spaces is kept whole', () => {
   assert.deepEqual(parseReference('work/#dev 2026-09-25 14:32:05 Taro Yamada'),
     { workspace: 'work', channel: '#dev', at: { date: '2026-09-25', time: '14:32:05' }, speaker: 'Taro Yamada' });
@@ -50,6 +61,7 @@ for (const [name, message, pattern] of [
   ['a reference with a time and no speaker', '返信先: work/#dev 2026-09-25 14:32:05\n種類: 投稿\n---\nこんにちは', /発言者/],
   ['an empty body', '返信先: work/#dev\n種類: 投稿\n---\n  \n', /本文/],
   ['a reaction with two emoji', '返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n+1 eyes', /絵文字/],
+  ['a reaction with two emoji side by side', '返信先: work/#dev 2026-09-25 14:32:05 山田\n種類: リアクション\n---\n:+1::eyes:', /絵文字/],
   ['a reaction to a channel', '返信先: work/#dev\n種類: リアクション\n---\n+1', /発言/],
 ] as const) {
   test(`${name} is turned back with what to fix`, () => {

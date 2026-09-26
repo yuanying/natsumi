@@ -8,16 +8,17 @@ import { isoAt } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { describeFailure, SlackCallError, type SlackApi } from './slack-api.ts';
 import type { ResolvedTarget, SlackArchive } from './slack-archive.ts';
+import { SlackEmoji } from './slack-emoji.ts';
 
 /**
- * The dove, ポッポさん (ADR 0012, ADR 0039, ADR 0040): the only way anything natsumi writes reaches Slack.
+ * The dove, ポッポさん (ADR 0012, ADR 0039, ADR 0040, ADR 0042): the only way anything natsumi writes reaches Slack.
  *
  * She asks through `ask_agent` with the agent `poppo`, and the tool only says the request was taken. The request is
  * read and its target matched against the record at once, so a request out of shape never goes further. Then, in the
  * background, the draft is judged by Jev over what surrounds its target, and the server's rule on the scores decides:
  * send it now, hand it to the owner, or turn it back to natsumi with the reasons. The third return on the same target
- * goes to the owner instead, with the drafts before it. A reaction from the server's list is put on with neither Jev
- * nor the owner. Whatever happens comes back to her as an `agent_reply` event from `poppo`, in the server's words,
+ * goes to the owner instead, with the drafts before it. A reaction with any emoji that exists is put on with neither
+ * Jev nor the owner. Whatever happens comes back to her as an `agent_reply` event from `poppo`, in the server's words,
  * naming no ID (ADR 0024).
  *
  * What the owner decides is final and is taken once: a second answer gets the first one back (ADR 0002). Only what she
@@ -38,8 +39,6 @@ export interface DoveConfig {
   thresholds: Thresholds;
   /** How long an approval waits for the owner. */
   approvalDays: number;
-  /** The reactions natsumi may ask for, by Slack's emoji name. */
-  reactions: string[];
   /** Without a verdict, a reply to a top-level message goes to the channel while at most this many came after it. */
   placementFollowing: number;
   /** What Jev is shown around the target: how many messages, and the characters each keeps. */
@@ -100,6 +99,7 @@ const FAILURE_WORDS: Record<Failure, string> = {
 export class SlackDove {
   private readonly options: SlackDoveOptions;
   private readonly db: DatabaseSync;
+  private readonly emoji: SlackEmoji;
   private readonly listeners = new Set<(event: { type: string; payload: Record<string, unknown> }) => void>();
   private chain: Promise<void> = Promise.resolve();
   private closed = false;
@@ -107,7 +107,11 @@ export class SlackDove {
   constructor(options: SlackDoveOptions) {
     this.options = options;
     this.db = options.db;
+    this.emoji = new SlackEmoji({ workspaces: options.workspaces, now: options.now, ...(options.log ? { log: options.log } : {}) });
   }
+
+  /** Reads each workspace's custom emoji, so that a missing `emoji:read` shows in the log at the start (ADR 0042). */
+  warmEmoji(): Promise<void> { return this.emoji.warm(); }
 
   /** `approval.pending` and `approval.resolved`, for every device. */
   subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void {
@@ -125,9 +129,10 @@ export class SlackDove {
 
   /**
    * A request from natsumi. Refused here, at once, when it is out of shape, names nothing the record has, fails the
-   * mechanical check, or asks for a reaction off the list; taken otherwise, and carried out in the background.
+   * mechanical check, or asks for a reaction with an emoji Slack does not have; taken otherwise, and carried out in the
+   * background.
    */
-  ask(message: string): ToolOutcome {
+  async ask(message: string): Promise<ToolOutcome> {
     const refuse = (text: string): ToolOutcome => ({ ok: false, text: text.startsWith('頼んでいません。') ? text : `頼んでいません。${text}` });
     const parsed = parseDoveRequest(message);
     if (!parsed.ok) return refuse(parsed.text);
@@ -137,8 +142,8 @@ export class SlackDove {
     }
     const resolved = this.options.archive.resolve(target);
     if (!resolved.ok) return refuse(resolved.text);
-    if (kind === 'reaction' && !this.options.config.reactions.includes(body)) {
-      return refuse(`リアクション「${body}」は付けられません。付けられるのは ${this.options.config.reactions.join('・')} です。`);
+    if (kind === 'reaction' && !await this.emoji.exists(target.workspace, body)) {
+      return refuse(`リアクション「${body}」は付けられません。その名前の絵文字は、標準の絵文字にも ${target.workspace} のカスタム絵文字にもありません。名前の確かめ方は /manual/slack.md にあります。`);
     }
     if (kind === 'post') {
       const check = checkOutgoingText(body);
@@ -363,7 +368,7 @@ export class SlackDove {
     this.fail(post, delivered);
   }
 
-  /** A reaction from the list: no judge and no owner (ADR 0039). */
+  /** A reaction: no judge and no owner (ADR 0039, ADR 0042). */
   private async react(post: PostRow): Promise<void> {
     this.setPost(post.post_id, { state: 'sending' });
     const api = this.options.workspaces[post.workspace];

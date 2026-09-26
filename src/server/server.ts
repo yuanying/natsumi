@@ -169,7 +169,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       db, archive, workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
       ...(judge ? { judge } : {}),
       config: { thresholds: slackConfig.judge?.thresholds ?? JUDGE_DEFAULTS.thresholds, approvalDays: slackConfig.approvalExpiryDays,
-        reactions: slackConfig.reactions, placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext },
+        placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext },
       publicOrigin: config.publicOrigin, now, log, raise: record => raiseInto?.raise('dove-reply', record),
     }) : undefined;
     if (slackConfig) {
@@ -191,6 +191,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       // What a previous process left on its way, and the approvals whose time ran out while it was stopped.
       theDove.resume();
       theDove.expire();
+      void theDove.warmEmoji();
       timers.push(setInterval(() => theDove.expire(), APPROVAL_SWEEP_MS));
     }
 
