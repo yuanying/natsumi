@@ -367,3 +367,158 @@ test('a live event that fails, or a reaction Slack refuses, is logged with the c
   assert.equal(f.events.length, 1, 'the mention is still an event');
   assertNoIds(f.logs);
 });
+
+/** A reaction event as Slack sends it over Socket Mode. */
+function reaction(type: 'reaction_added' | 'reaction_removed', fields: { user: string; reaction: string; ts: string; channel?: string }) {
+  return { type, user: fields.user, reaction: fields.reaction, item_user: 'U1',
+    item: { type: 'message', channel: fields.channel ?? 'C1', ts: fields.ts }, event_ts: tsAt('2026-09-25T05:40:00Z') };
+}
+
+test('a reaction is written under the message it is on, by name, and taking it off writes the day again', async t => {
+  const f = await setup(t);
+  const ts = tsAt(AT);
+  const reply = tsAt('2026-09-25T05:33:00Z');
+  f.slack.emit(message({ text: '明日リリースします', ts }));
+  f.slack.emit(message({ user: 'U2', text: 'スレッドの返信', ts: reply, thread_ts: ts }));
+  await f.workspace.idle();
+  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: '+1', ts }));
+  f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: 'tada', ts }));
+  f.slack.emit(reaction('reaction_added', { user: 'UBOT', reaction: '+1', ts }));
+  f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: 'eyes', ts: reply }));
+  await f.workspace.idle();
+  let text = await f.read('work/dev/2026-09-25.md');
+  assert.match(text, /^明日リリースします\nリアクション: :\+1: 佐藤・natsumi、:tada: 山田$/m, text);
+  assert.match(text, /^ {2}スレッドの返信\n {2}リアクション: :eyes: 山田$/m, text);
+  f.slack.emit(reaction('reaction_removed', { user: 'U2', reaction: '+1', ts }));
+  f.slack.emit(reaction('reaction_removed', { user: 'U1', reaction: 'eyes', ts: reply }));
+  await f.workspace.idle();
+  text = await f.read('work/dev/2026-09-25.md');
+  assert.match(text, /^リアクション: :\+1: natsumi、:tada: 山田$/m, text);
+  assert.doesNotMatch(text, /:eyes:/);
+  assert.doesNotMatch(text, /\b(?:U1|U2|UBOT|C1)\b|\d{10}\.\d{6}/, 'no Slack ID in the file');
+});
+
+test('the same reaction event sent again changes nothing and is counted once', async t => {
+  const f = await setup(t);
+  const ts = tsAt(AT);
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: 'まとめました', ts }));
+  await f.workspace.idle();
+  const added = reaction('reaction_added', { user: 'U2', reaction: '+1', ts });
+  f.slack.emit(added);
+  f.slack.emit(added);
+  await f.workspace.idle();
+  const text = await f.read('work/dev/2026-09-25.md');
+  assert.match(text, /^リアクション: :\+1: 佐藤$/m, text);
+  assert.deepEqual(f.archive.take()?.reactions_on_mine, { 'work/#dev': 1 });
+});
+
+test('updates count only the reactions others put on her own posts, and not those taken off before they were shown', async t => {
+  const f = await setup(t);
+  f.slack.addChannel({ id: 'C2', name: 'random', isIm: false });
+  const mine = tsAt(AT);
+  const theirs = tsAt('2026-09-25T05:33:00Z');
+  const mineElsewhere = tsAt('2026-09-24T05:00:00Z');
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '自分の投稿', ts: mine }));
+  f.slack.emit(message({ text: '人の発言', ts: theirs }));
+  f.slack.emit(message({ channel: 'C2', user: 'UBOT', bot_id: 'BBOT', text: '前日の自分の投稿', ts: mineElsewhere }));
+  await f.workspace.idle();
+  f.archive.take();
+  f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: '+1', ts: mine }));
+  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: 'tada', ts: mine }));
+  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: 'eyes', ts: mine }));
+  f.slack.emit(reaction('reaction_removed', { user: 'U2', reaction: 'eyes', ts: mine }));
+  f.slack.emit(reaction('reaction_added', { user: 'UBOT', reaction: 'pray', ts: mine }));
+  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: '+1', ts: theirs }));
+  f.slack.emit(reaction('reaction_added', { channel: 'C2', user: 'U1', reaction: 'bow', ts: mineElsewhere }));
+  await f.workspace.idle();
+  const taken = f.archive.take();
+  assert.deepEqual(taken, {
+    reactions_on_mine: { 'work/#dev': 2, 'work/#random': 1 },
+    files: ['/sources/slack/work/dev/2026-09-25.md', '/sources/slack/work/random/2026-09-24.md'],
+  });
+  assert.doesNotMatch(JSON.stringify(taken), /\b(?:U1|U2|UBOT|C1|C2)\b|\d{10}\.\d{6}/, 'no Slack ID in the updates');
+  assert.equal(f.archive.take(), undefined);
+  f.slack.emit(reaction('reaction_removed', { user: 'U1', reaction: '+1', ts: mine }));
+  await f.workspace.idle();
+  assert.equal(f.archive.take(), undefined, 'a reaction taken off is never counted');
+});
+
+test('new messages and reactions on her posts are counted side by side', async t => {
+  const f = await setup(t);
+  const mine = tsAt(AT);
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '自分の投稿', ts: mine }));
+  f.slack.emit(message({ text: '次の発言', ts: tsAt('2026-09-25T05:33:00Z') }));
+  f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: '+1', ts: mine }));
+  await f.workspace.idle();
+  assert.deepEqual(f.archive.take(), {
+    new: { 'work/#dev': 1 }, reactions_on_mine: { 'work/#dev': 1 }, files: ['/sources/slack/work/dev/2026-09-25.md'],
+  });
+});
+
+test('a reaction on a message not recorded, or on something that is not a message, is let go', async t => {
+  const f = await setup(t);
+  f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: '+1', ts: tsAt('2026-09-01T00:00:00Z') }));
+  f.slack.emit(reaction('reaction_added', { channel: 'C9', user: 'U1', reaction: '+1', ts: tsAt(AT) }));
+  f.slack.emit({ type: 'reaction_added', user: 'U1', reaction: '+1', item: { type: 'file', file: 'F1' }, event_ts: tsAt(AT) });
+  await f.workspace.idle();
+  assert.deepEqual(f.logs, []);
+  assert.equal(f.archive.take(), undefined);
+  await assert.rejects(f.read('work/dev/2026-09-01.md'));
+});
+
+test('a fill-in takes in the reactions on what it fills in, with those Slack only counted said as a number', async t => {
+  const f = await setup(t, { backfillDays: 2 });
+  const parent = tsAt('2026-09-25T05:00:00Z');
+  f.slack.post('C1', { ts: parent, user: 'UBOT', botId: 'BBOT', text: '止まっている間の自分の投稿', files: [],
+    reactions: [{ name: '+1', users: ['U1', 'U2'], count: 2 }, { name: 'tada', users: ['U1'], count: 4 }] });
+  f.slack.post('C1', { ts: tsAt('2026-09-25T05:01:00Z'), threadTs: parent, user: 'U2', text: '返信', files: [],
+    reactions: [{ name: 'eyes', users: ['UBOT'], count: 1 }] });
+  f.slack.connect();
+  await f.workspace.idle();
+  const text = await f.read('work/dev/2026-09-25.md');
+  assert.match(text, /^止まっている間の自分の投稿\nリアクション: :\+1: 山田・佐藤、:tada: 山田・ほか 3 人$/m, text);
+  assert.match(text, /^ {2}返信\n {2}リアクション: :eyes: natsumi$/m, text);
+  assert.deepEqual(f.archive.take()?.reactions_on_mine, { 'work/#dev': 3 }, 'those Slack did not name are not counted');
+});
+
+test('a reaction taken off by someone Slack only counted comes off the number', async t => {
+  const f = await setup(t, { backfillDays: 2 });
+  const ts = tsAt(AT);
+  f.slack.post('C1', { ts, user: 'U2', text: '人気の発言', files: [], reactions: [{ name: 'tada', users: ['U1'], count: 3 }] });
+  f.slack.connect();
+  await f.workspace.idle();
+  f.slack.emit(reaction('reaction_removed', { user: 'U3', reaction: 'tada', ts }));
+  await f.workspace.idle();
+  assert.match(await f.read('work/dev/2026-09-25.md'), /^リアクション: :tada: 山田・ほか 1 人$/m);
+});
+
+test('a reacting person whose name cannot be looked up is written under a stand-in name, and the log carries no ID', async t => {
+  const f = await setup(t);
+  const ts = tsAt(AT);
+  f.slack.emit(message({ text: '発言', ts }));
+  await f.workspace.idle();
+  f.slack.fail('userName', 'U3', 'users.info', 'user_not_found');
+  f.slack.emit(reaction('reaction_added', { user: 'U3', reaction: '+1', ts }));
+  await f.workspace.idle();
+  assert.match(await f.read('work/dev/2026-09-25.md'), /^リアクション: :\+1: someone$/m);
+  assert.ok(f.logs.includes('slack (work): a name could not be looked up (users.info: user_not_found)'), f.logs.join('\n'));
+  assertNoIds(f.logs);
+});
+
+test('a deleted message keeps none of its reactions in the file or the count', async t => {
+  const f = await setup(t);
+  const ts = tsAt(AT);
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: '消す投稿', ts }));
+  f.slack.emit(message({ user: 'U2', text: '返信', ts: tsAt('2026-09-25T05:33:00Z'), thread_ts: ts }));
+  f.slack.emit(reaction('reaction_added', { user: 'U1', reaction: '+1', ts }));
+  await f.workspace.idle();
+  f.archive.take();
+  f.slack.emit(reaction('reaction_added', { user: 'U2', reaction: 'tada', ts }));
+  f.slack.emit({ type: 'message', subtype: 'message_deleted', channel: 'C1', channel_type: 'channel',
+    ts: tsAt('2026-09-25T05:36:00Z'), deleted_ts: ts });
+  await f.workspace.idle();
+  const text = await f.read('work/dev/2026-09-25.md');
+  assert.match(text, /（この発言は削除されました）/);
+  assert.doesNotMatch(text, /リアクション/);
+  assert.equal(f.archive.take(), undefined);
+});

@@ -13,6 +13,12 @@ import { ErrorCode, WebClient } from '@slack/web-api';
 /** A file attached to a message, as far as the server needs it. */
 export interface SlackFile { id: string; name: string; mimetype: string; size: number; url: string }
 
+/**
+ * A reaction on a message as `conversations.history` and `replies` report it: its name, who put it on, and how many
+ * did. Slack may name fewer people than it counts.
+ */
+export interface SlackReaction { name: string; users: string[]; count: number }
+
 /** A message as the server records it. `threadTs` is set on a reply, and on a parent equals its own `ts`. */
 export interface SlackMessage {
   ts: string;
@@ -28,6 +34,8 @@ export interface SlackMessage {
   edited?: boolean;
   /** How many replies a parent has, as `conversations.history` reports it. */
   replyCount?: number;
+  /** Its reactions, when Slack said: the Web API leaves the field out of a message with none, and an event of it. */
+  reactions?: SlackReaction[];
 }
 
 /** A channel the bot is in, or a direct message with one person (`user`). */
@@ -132,7 +140,17 @@ export function toSlackMessage(raw: Record<string, unknown>): SlackMessage {
     ...(string('subtype') ? { subtype: string('subtype') } : {}),
     ...(raw.edited ? { edited: true } : {}),
     ...(typeof raw.reply_count === 'number' ? { replyCount: raw.reply_count } : {}),
+    ...(Array.isArray(raw.reactions) ? { reactions: reactions(raw.reactions) } : {}),
   };
+}
+
+function reactions(raw: unknown[]): SlackReaction[] {
+  return raw.flatMap(item => {
+    const reaction = (item ?? {}) as { name?: unknown; users?: unknown; count?: unknown };
+    if (typeof reaction.name !== 'string' || reaction.name === '') return [];
+    const users = Array.isArray(reaction.users) ? reaction.users.filter((user): user is string => typeof user === 'string') : [];
+    return [{ name: reaction.name, users, count: typeof reaction.count === 'number' ? reaction.count : users.length }];
+  });
 }
 
 function botName(raw: Record<string, unknown>): string | undefined {

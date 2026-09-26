@@ -62,7 +62,7 @@ ${workspace}
 
 ## 出来事の種類
 - mac_message: 本人との一対一の会話です。unacknowledged_notices があれば、あなたが送った知らせのうち、本人がまだ確かめていないものの件数です。同じ知らせを送り直す必要はありません。
-- ping: 静かな時間が続いたときの「何かしたいことは？」の合図です。local_time は本人のタイムゾーンの今の時刻です。本人に伝えたいことや、確かめたいことがあれば動きます。話しかけるなら reply_to_mac、確かめてほしい知らせなら notify_owner です。なければ何もせずに終えます。unacknowledged_notices の意味は mac_message と同じです。updates があれば、前に見せてから新しく来た読みもの（Slack のチャンネルなど）の件数（new）と、見るべきファイル（files）です。読むか、反応するかはあなたが決めます。
+- ping: 静かな時間が続いたときの「何かしたいことは？」の合図です。local_time は本人のタイムゾーンの今の時刻です。本人に伝えたいことや、確かめたいことがあれば動きます。話しかけるなら reply_to_mac、確かめてほしい知らせなら notify_owner です。なければ何もせずに終えます。unacknowledged_notices の意味は mac_message と同じです。updates があれば、前に見せてから新しく来た読みもの（Slack のチャンネルなど）の件数（new）と、見るべきファイル（files）です。reactions_on_mine は、前に見せてからほかの人があなたの投稿に付けたリアクションの数（チャンネルごと）です。読むか、反応するかはあなたが決めます。
 - self_check: あなたが schedule_self_check で予約した確認の時刻が来ました。checks に予約ごとの reason と予定の時刻（scheduled_for）があります。サーバーの停止や夜で遅れたものは、まとめて 1 件で届き、late_minutes に遅れた分数が付きます。updates の意味は ping と同じです。
 - slack_mention: Slack であなたへのメンションか DM（via が dm）が届きました。channel・from・text がその発言、context が直前の流れ、file がそのチャンネルの記録です。reference はその発言を指す参照で、返すときはそのまま写します。画像が付いていれば一緒に届きます。Slack での振る舞い方は /manual/slack.md を読みます。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。本人には何も送りません。`;

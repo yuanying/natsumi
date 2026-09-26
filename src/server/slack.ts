@@ -1,7 +1,7 @@
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Transaction } from './conversation-store.ts';
-import type { ArchivedMessage, ChannelRow, SlackArchive } from './slack-archive.ts';
+import type { ArchivedMessage, ArchivedReaction, ChannelRow, Reactor, SlackArchive } from './slack-archive.ts';
 import { describeFailure, toSlackMessage, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from './slack-api.ts';
 import { imageType } from './view.ts';
 
@@ -34,7 +34,10 @@ export interface SlackWorkspaceOptions {
  * Slack's own retries and its twin `app_mention` event make no second event: one message makes one, whichever way
  * and however often it comes.
  *
- * On every (re)connection each channel is filled in from its last recorded message. What happens here happens in
+ * A reaction put on or taken off a recorded message is recorded too (ADR 0043); one on anything else is let go.
+ *
+ * On every (re)connection each channel is filled in from its last recorded message, with the reactions on what it
+ * fills in. What happens here happens in
  * order, one thing at a time, so a fill-in and the live events never write the same day at once.
  *
  * A failure is closed where it happens: a conversation Slack refuses is skipped and the rest are filled in, and a
@@ -84,6 +87,7 @@ export class SlackWorkspace {
   }
 
   private async handle(event: Record<string, unknown>): Promise<void> {
+    if (event.type === 'reaction_added' || event.type === 'reaction_removed') return this.reacted(event);
     if (event.type !== 'message' && event.type !== 'app_mention') return;
     const channelId = typeof event.channel === 'string' ? event.channel : undefined;
     if (!channelId) return;
@@ -102,6 +106,20 @@ export class SlackWorkspace {
     }
     if (!SPOKEN.has(subtype)) return;
     await this.receive(channel, toSlackMessage(event), { live: true, mayRaise: true });
+  }
+
+  /**
+   * A reaction put on or taken off. Only one on a message already recorded counts: a message older than the records
+   * or in a channel never seen is not fetched for it.
+   */
+  private async reacted(event: Record<string, unknown>): Promise<void> {
+    const item = event.item && typeof event.item === 'object' ? event.item as Record<string, unknown> : {};
+    const { archive, name } = this.options;
+    if (item.type !== 'message' || typeof item.channel !== 'string' || typeof item.ts !== 'string') return;
+    if (typeof event.reaction !== 'string' || event.reaction === '' || typeof event.user !== 'string') return;
+    if (!archive.has(name, item.channel, item.ts)) return;
+    if (event.type === 'reaction_removed') return archive.unreact(name, item.channel, item.ts, event.reaction, event.user);
+    await archive.react(name, item.channel, item.ts, event.reaction, await this.reactor(event.user));
   }
 
   /**
@@ -177,7 +195,9 @@ export class SlackWorkspace {
       // Without its parent the reply still stands, on its own.
       try { await this.fetchParent(channel, reply, message.ts); } catch (error) { this.report('a thread could not be fetched', error); }
     }
-    const isNew = await archive.record(name, channel.channel_id, { ...await this.archived(channel, message), ...(reply ? { threadTs: reply } : {}) }, true);
+    // What the Web API answers says every reaction; a live event says none.
+    const fetched = how.live ? message : { ...message, reactions: message.reactions ?? [] };
+    const isNew = await archive.record(name, channel.channel_id, { ...await this.archived(channel, fetched), ...(reply ? { threadTs: reply } : {}) }, true);
     if (!how.mayRaise || !(isNew || how.live) || !this.forHer(channel, message)) return isNew;
     if (archive.hasMention(name, channel.channel_id, message.ts)) return isNew;
     this.options.raise((eventId, transaction) => archive.recordMention(eventId, name, channel.channel_id, message.ts, transaction));
@@ -192,7 +212,8 @@ export class SlackWorkspace {
     const thread = await this.options.api.replies(channel.channel_id, threadTs);
     const parent = thread.find(message => message.ts === threadTs);
     if (parent && parent.ts !== except) {
-      await this.options.archive.record(this.options.name, channel.channel_id, await this.archived(channel, parent), false);
+      await this.options.archive.record(this.options.name, channel.channel_id,
+        await this.archived(channel, { ...parent, reactions: parent.reactions ?? [] }), false);
     }
   }
 
@@ -220,7 +241,23 @@ export class SlackWorkspace {
     return {
       ts: message.ts, speaker, own, text: await this.plainText(message.text), edited: message.edited === true,
       files: await this.files(channel, message),
+      ...(message.reactions ? { reactions: await this.reactions(message.reactions) } : {}),
     };
+  }
+
+  private async reactions(reactions: NonNullable<SlackMessage['reactions']>): Promise<ArchivedReaction[]> {
+    const archived: ArchivedReaction[] = [];
+    for (const reaction of reactions) {
+      const people: Reactor[] = [];
+      for (const user of new Set(reaction.users)) people.push(await this.reactor(user));
+      archived.push({ name: reaction.name, people, others: Math.max(0, reaction.count - people.length) });
+    }
+    return archived;
+  }
+
+  /** Someone who put a reaction on, under the name their messages are recorded under. */
+  private async reactor(userId: string): Promise<Reactor> {
+    return { userId, name: await this.userName(userId), countable: userId !== this.self!.userId };
   }
 
   /** Slack's markup as natsumi reads it: names instead of IDs, links with their address. */
