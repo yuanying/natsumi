@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { compatibleRuntimeWithKey } from '../src/pi/auth.ts';
+import { routesRuntime } from '../src/pi/auth.ts';
 import { COMPATIBLE_PROVIDER } from '../src/pi/compatible.ts';
 import { COMPATIBLE_PROVIDER as CONFIG_COMPATIBLE_PROVIDER, ConfigError, parseConfig } from '../src/server/config.ts';
 
@@ -37,9 +37,9 @@ async function inTemporaryRoot(body: (root: string) => Promise<void>) {
 
 test('a plaintext loopback endpoint the config accepts is one the runtime opens', async () => {
   for (const baseUrl of LOOPBACK) {
-    assert.equal(parseConfig(base(baseUrl)).pi.compatible?.baseUrl, baseUrl);
+    assert.equal(parseConfig(base(baseUrl)).pi.routes[0]!.compatible?.baseUrl, baseUrl);
     await inTemporaryRoot(async root => {
-      const runtime = await compatibleRuntimeWithKey(root, { baseUrl, model: 'fixture-model' }, 'fixture-key');
+      const runtime = await routesRuntime(root, { compatible: [{ provider: COMPATIBLE_PROVIDER, endpoint: { baseUrl, model: 'fixture-model' }, apiKey: 'fixture-key' }] });
       assert.ok(runtime.getModel(COMPATIBLE_PROVIDER, 'fixture-model'));
     });
   }
@@ -54,7 +54,7 @@ test('a plaintext endpoint off loopback is refused by the config and by the runt
       return true;
     });
     await inTemporaryRoot(async root => {
-      await assert.rejects(compatibleRuntimeWithKey(root, { baseUrl, model: 'fixture-model' }, 'fixture-key'), /https/);
+      await assert.rejects(routesRuntime(root, { compatible: [{ provider: COMPATIBLE_PROVIDER, endpoint: { baseUrl, model: 'fixture-model' }, apiKey: 'fixture-key' }] }), /https/);
     });
   }
 });

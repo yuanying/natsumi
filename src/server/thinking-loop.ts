@@ -4,6 +4,8 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-works/pi-coding-agent';
+import { routeReady } from '../pi/auth.ts';
+import { COMPATIBLE_PROVIDER } from '../pi/compatible.ts';
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
 import { SdkA2AClient, type A2AClient } from './a2a-client.ts';
 import { AgentRequests } from './agent-requests.ts';
@@ -14,6 +16,7 @@ import { ConversationStore, type EventKind, type EventState, type MessageRow,
   type RotationRow, type Transaction } from './conversation-store.ts';
 import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownImage, type ImageLimits, type ShownImage,
   type TakenImage } from './images.ts';
+import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REVIEW_INSTRUCTIONS,
   WORKSPACE_SECTION } from './prompts.ts';
@@ -100,7 +103,24 @@ export type LoopSnapshot = {
   unreadReplyCount: number;
   /** Every notice the owner has not checked, oldest first, including those older than `messages`. */
   unacknowledgedNotificationIds: string[];
+  /** The model routes, the one in use and the one chosen (ADR 0046). */
+  modelRoutes: RouteStatus;
 };
+
+/** One model route as the loop uses it (ADR 0046): the model, and when a session on it is compacted. */
+export interface LoopRoute {
+  name: string;
+  target: PiTarget;
+  compactionThreshold: number;
+  /** Whether it is the owner's own endpoint, reached with a key rather than a login. */
+  compatible: boolean;
+}
+
+/** The owner asked for a route: what is chosen now, and the route still in use until the next turn. */
+export type ChooseRouteOutcome =
+  | { kind: 'accepted'; chosen: string; current: string }
+  | { kind: 'rejected'; code: 'unknown-route' | 'route-unavailable' }
+  | { kind: 'unavailable'; code: UnavailableCode };
 
 export interface LoopOptions {
   /** Handed straight to the stores the loop opens on it; the loop itself never reads a table. */
@@ -108,7 +128,10 @@ export interface LoopOptions {
   dataDirectory: string;
   sessionDirectory: string;
   agentDirectory: string;
+  /** The model when there are no `routes`: one route named `default`, compacted at `loop.compactionThreshold`. */
   target: PiTarget;
+  /** The routes the owner switches between by hand (ADR 0046); `target` is then unused. */
+  routes?: { list: LoopRoute[]; defaultRoute: string };
   thinking: 'on' | 'off';
   runtime: () => Promise<ModelRuntime>;
   /** Called with every Pi session before its first prompt. Tests replace the model stream here. */
@@ -229,6 +252,18 @@ export class ThinkingLoop {
   private memoryNotice = '';
   /** What the persistent places hold, when they are past the warning; it waits for the next prompt (ADR 0019). */
   private workspaceNotice = '';
+  /** The routes, the default, the route the session is on (unset until it is open) and the route chosen (ADR 0046). */
+  private readonly routes: { list: LoopRoute[]; defaultRoute: string };
+  private route: LoopRoute | undefined;
+  private chosen: string;
+  /** Whether each route could be used when last looked at, for snapshots, which cannot wait. */
+  private readiness = new Map<string, boolean>();
+  /** The status last told to the devices and written for the command line. */
+  private published = '';
+  /** A route that was chosen and found not ready, logged once until the choice changes. */
+  private refusedRoute: string | undefined;
+  /** A choice came in: the next unit of work follows it even when no event is waiting. */
+  private routeWanted = false;
 
   private constructor(options: LoopOptions) {
     this.options = options;
@@ -270,6 +305,10 @@ export class ThinkingLoop {
     });
     this.activityAt = this.now();
     this.avatar = { expression: 'neutral', by: 'server', changedAt: this.activityAt };
+    this.routes = options.routes ?? { defaultRoute: 'default', list: [{ name: 'default', target: options.target,
+      compactionThreshold: loop.compactionThreshold,
+      compatible: options.target.provider === COMPATIBLE_PROVIDER || options.target.provider.startsWith(`${COMPATIBLE_PROVIDER}-`) }] };
+    this.chosen = this.routes.defaultRoute;
   }
 
   /**
@@ -392,7 +431,49 @@ export class ThinkingLoop {
       avatar: { expression: this.avatar.expression },
       ...this.readState.position(),
       unacknowledgedNotificationIds: this.readState.unacknowledgedNotificationIds(),
+      modelRoutes: this.routeStatus(),
     };
+  }
+
+  /** The model routes as the owner is shown them (ADR 0046). */
+  routeStatus(): RouteStatus {
+    return {
+      defaultRoute: this.routes.defaultRoute, current: this.route?.name ?? null, chosen: this.chosen,
+      routes: this.routes.list.map(({ name, target }): RouteView =>
+        ({ name, provider: target.provider, model: target.model, ready: this.readiness.get(name) ?? false })),
+    };
+  }
+
+  /**
+   * The owner chose a route (ADR 0046). It is recorded where the command line records it too, and the session moves
+   * to it between turns: at once when idle, otherwise when the turn in progress ends. Never automatically (ADR 0004).
+   */
+  async chooseRoute(input: { route: string; deviceId: string }): Promise<ChooseRouteOutcome> {
+    const unavailable = this.unavailable;
+    if (unavailable) return { kind: 'unavailable', code: unavailable };
+    const route = this.routes.list.find(candidate => candidate.name === input.route);
+    if (!route) return { kind: 'rejected', code: 'unknown-route' };
+    if (!(await this.isReady(route))) return { kind: 'rejected', code: 'route-unavailable' };
+    await writeRouteChoice(this.options.dataDirectory, route.name, this.now());
+    this.chosen = route.name;
+    this.routeWanted = true;
+    this.pump();
+    return { kind: 'accepted', chosen: route.name, current: this.route!.name };
+  }
+
+  /**
+   * Looks again at the choice the command line may have written and at which routes are ready. A new choice is
+   * followed between turns, as `chooseRoute`'s is; waits only for that, never for a turn.
+   */
+  async refreshRoutes(): Promise<void> {
+    if (this.unavailable || !this.session) return;
+    const chosen = await this.readChoice();
+    if (chosen !== this.chosen || chosen !== this.route?.name) {
+      this.routeWanted = true;
+      if (!this.running) { this.pump(); await this.running; return; }
+    }
+    this.chosen = chosen;
+    await this.publishRoutes();
   }
 
   /** Whether a line of the conversation shows the image, so that the devices may fetch it (ADR 0045). */
@@ -511,6 +592,16 @@ export class ThinkingLoop {
   private async start() {
     const { sessionDirectory } = this.options;
     try { this.modelRuntime = await this.options.runtime(); } catch { return this.fail('pi-unavailable'); }
+    // The chosen route, as it was left: a restart does not undo a switch (ADR 0046). One that is not ready is not
+    // replaced by another; natsumi cannot talk until it is, or until another is chosen and the server restarted.
+    this.chosen = await this.readChoice();
+    const route = this.routes.list.find(candidate => candidate.name === this.chosen)!;
+    if (!(await this.isReady(route))) {
+      this.log(`thinking loop: the model route ${route.name} is not ready`);
+      await this.publishRoutes();
+      return this.fail('pi-unavailable');
+    }
+    this.route = route;
     this.closeInterruptedReviews();
     const row = this.store.conversation();
     let created: AgentSession | undefined;
@@ -537,18 +628,21 @@ export class ThinkingLoop {
     } catch (error) {
       created?.dispose();
       this.session = undefined;
+      this.route = undefined;
+      await this.publishRoutes();
       return this.fail(error instanceof PiSessionRestoreError ? 'conversation-restore-failed' : 'pi-unavailable');
     }
     this.attach(this.session);
+    await this.publishRoutes();
     this.recover();
     this.pump();
   }
 
   private async sessionOptions(): Promise<Omit<PiSessionOptions, 'file' | 'expectedSessionId'>> {
-    const { dataDirectory, sessionDirectory, agentDirectory, target } = this.options;
+    const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
     const tools = createLoopTools(this.host());
     return {
-      cwd: dataDirectory, agentDir: agentDirectory, sessionDir: sessionDirectory, modelRuntime: this.modelRuntime!, target,
+      cwd: dataDirectory, agentDir: agentDirectory, sessionDir: sessionDirectory, modelRuntime: this.modelRuntime!, target: this.route!.target,
       systemPrompt: await this.systemPrompt(),
       thinkingLevel: this.options.thinking === 'on' ? 'medium' as const : 'off' as const,
       tools: { names: tools.map(tool => tool.name), definitions: tools },
@@ -659,9 +753,15 @@ export class ThinkingLoop {
   private pump() {
     if (this.running || this.closing || this.unavailableCode || !this.session) { this.settle(); return; }
     const eventId = this.queue.shift();
-    if (!eventId) { this.settle(); return; }
-    const kind = this.store.eventKind(eventId);
-    const work = kind === 'nightly-review' ? this.runRotation(eventId) : this.runTurn([eventId], 'events').then(() => this.maintain());
+    if (!eventId && !this.routeWanted) { this.settle(); return; }
+    this.routeWanted = false;
+    // Every unit of work starts on the chosen route, so a switch always falls between turns (ADR 0046).
+    const work = (async () => {
+      await this.followRoute();
+      if (!eventId) return;
+      if (this.store.eventKind(eventId) === 'nightly-review') await this.runRotation(eventId);
+      else { await this.runTurn([eventId], 'events'); await this.maintain(); }
+    })();
     this.running = work.finally(() => {
       this.running = undefined;
       this.activityAt = this.now();
@@ -846,12 +946,84 @@ export class ThinkingLoop {
       { sessionId: created.sessionId, sessionFile: relative(this.options.sessionDirectory, created.sessionFile!) });
   }
 
+  /**
+   * Between turns: moves the session to the chosen route (ADR 0046). The same session goes on under the new model,
+   * which is handed the conversation so far; a model's own thinking reaches another model as plain text. A route
+   * that is not ready is not moved to, and nothing is tried in its place (ADR 0004). A session already past the new
+   * route's threshold is compacted on the new route before the next turn.
+   */
+  private async followRoute() {
+    const session = this.session;
+    if (this.closing || !session || !this.route) return;
+    this.chosen = await this.readChoice();
+    if (this.chosen === this.route.name) { this.refusedRoute = undefined; await this.publishRoutes(); return; }
+    const next = this.routes.list.find(candidate => candidate.name === this.chosen)!;
+    const model = this.modelRuntime!.getModel(next.target.provider, next.target.model);
+    if (!model || !(await this.isReady(next))) {
+      if (this.refusedRoute !== next.name) this.log(`thinking loop: the model route ${next.name} is not ready; staying on ${this.route.name}`);
+      this.refusedRoute = next.name;
+      await this.publishRoutes();
+      return;
+    }
+    try {
+      await session.setModel(model);
+    } catch {
+      if (this.refusedRoute !== next.name) this.log(`thinking loop: the model route ${next.name} is not ready; staying on ${this.route.name}`);
+      this.refusedRoute = next.name;
+      await this.publishRoutes();
+      return;
+    }
+    // Pi picks a thinking level for the model it moves to; natsumi's is the configured one on every route.
+    session.setThinkingLevel(this.options.thinking === 'on' ? 'medium' : 'off');
+    this.route = next;
+    this.refusedRoute = undefined;
+    this.compactionRetryAbove = undefined;
+    this.log(`thinking loop: now on the model route ${next.name}`);
+    await this.publishRoutes();
+    await this.maintain();
+  }
+
+  /** The chosen route's name. One no longer in the config gives way to the default, and the record says so (ADR 0046). */
+  private async readChoice(): Promise<string> {
+    const { dataDirectory } = this.options;
+    const { defaultRoute, list } = this.routes;
+    const chosen = await readRouteChoice(dataDirectory);
+    if (chosen === undefined) return defaultRoute;
+    if (list.some(route => route.name === chosen)) return chosen;
+    this.log(`thinking loop: the chosen model route ${chosen} is not in the config; back to the default ${defaultRoute}`);
+    try { await writeRouteChoice(dataDirectory, defaultRoute, this.now()); } catch { /* read again, and logged again, next time */ }
+    return defaultRoute;
+  }
+
+  private async isReady(route: LoopRoute): Promise<boolean> {
+    let ready = false;
+    try { ready = await routeReady(this.modelRuntime!, route.target, route.compatible); } catch { ready = false; }
+    this.readiness.set(route.name, ready);
+    return ready;
+  }
+
+  /** Tells the devices and writes for the command line what changed about the routes, if anything did. */
+  private async publishRoutes() {
+    if (this.modelRuntime) for (const route of this.routes.list) await this.isReady(route);
+    const status = this.routeStatus();
+    const text = JSON.stringify(status);
+    if (text === this.published) return;
+    const first = this.published === '';
+    this.published = text;
+    // Written before the devices hear of it, so the command line is never behind them.
+    try { await writeRouteStatus(this.options.dataDirectory, status, this.now()); } catch (error) {
+      // A data directory without the server's state directory is a test's; the server always has one.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.log('thinking loop: the model routes could not be written for the command line');
+    }
+    if (!first) this.emit('model.routes', status);
+  }
+
   /** Between turns: compacts a session past its limit, so compaction never cuts into a turn (ADR 0009). */
   private async maintain() {
     const session = this.session;
     if (this.closing || !session) return;
     const tokens = session.getContextUsage()?.tokens;
-    const limit = this.options.loop.compactionThreshold;
+    const limit = this.route!.compactionThreshold;
     if (tokens === undefined || tokens === null || tokens <= limit) return;
     if (this.compactionRetryAbove !== undefined && tokens <= this.compactionRetryAbove) return;
     try {

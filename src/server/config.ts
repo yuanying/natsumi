@@ -26,13 +26,34 @@ export interface PiConfig {
   agentDirectory: string;
   sessionDirectory: string;
   authPath: string;
-  model: { provider: string; id: string };
-  /** Present only for the `natsumi-compatible` provider. Without it the OAuth login at `authPath` is the only route. */
-  compatible?: CompatibleConfig;
+  /**
+   * The model routes the owner may choose between, in the config's order (ADR 0046). A config with only `pi.model` is
+   * one route named `default`. Every route is chosen by hand; none is ever tried in place of another (ADR 0004).
+   */
+  routes: ModelRoute[];
+  /** The route used until the owner chooses another, and the one the dove's judge borrows from (ADR 0040). */
+  defaultRoute: string;
   /** Whether the model thinks before it acts. On by default (ADR 0008). */
   thinking: 'on' | 'off';
   /** Voice is unsupported until its method and billing terms are verified (ADR 0004). */
   voiceEnabled: false;
+}
+
+/** One named way to a model: the model in Pi, its endpoint when it is the owner's own, and when to compact on it. */
+export interface ModelRoute {
+  name: string;
+  model: { provider: string; id: string };
+  /** Present only for a `natsumi-compatible` provider. Without it the OAuth login at `authPath` is the only way in. */
+  compatible?: CompatibleConfig;
+  /** Past this many context tokens the session is compacted between turns: the route's own, or `loop.compactionThreshold`. */
+  compactionThreshold: number;
+}
+
+/** The name a config with only `pi.model` gives its one route. */
+export const SINGLE_ROUTE_NAME = 'default';
+
+export function defaultRoute(pi: PiConfig): ModelRoute {
+  return pi.routes.find(route => route.name === pi.defaultRoute)!;
 }
 
 /** An OpenAI-compatible Chat Completions endpoint the owner runs (ADR 0004). */
@@ -298,7 +319,7 @@ const SECTIONS = {
   apns: parseApns,
   a2a: parseA2A,
   slack: parseSlack,
-} satisfies { [K in keyof ServerConfig]: Section<ServerConfig[K]> };
+} satisfies { [K in keyof ServerConfig]: Section<unknown> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
 const RENAMED_LOOP_KEYS: Record<string, string> = {
@@ -324,12 +345,14 @@ export function parseConfig(raw: unknown): ServerConfig {
     if (MOVED[key]) throw new ConfigError(key, MOVED[key]);
     if (!(key in SECTIONS)) throw new ConfigError(key, 'unknown setting');
   }
+  const pi = SECTIONS.pi(required(root, 'pi', ''), 'pi');
+  const loop = SECTIONS.loop(root.loop ?? {}, 'loop');
   const config: ServerConfig = {
-    pi: SECTIONS.pi(required(root, 'pi', ''), 'pi'),
+    pi: resolveRoutes(pi, loop),
     publicOrigin: SECTIONS.publicOrigin(required(root, 'publicOrigin', ''), 'publicOrigin'),
     listen: SECTIONS.listen(required(root, 'listen', ''), 'listen'),
     github: SECTIONS.github(required(root, 'github', ''), 'github'),
-    loop: SECTIONS.loop(root.loop ?? {}, 'loop'),
+    loop,
     ...(root.apns === undefined ? {} : { apns: SECTIONS.apns(root.apns, 'apns') }),
     ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
     ...(root.slack === undefined ? {} : { slack: SECTIONS.slack(root.slack, 'slack') }),
@@ -338,7 +361,6 @@ export function parseConfig(raw: unknown): ServerConfig {
     const judge = parseJudge((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
     if (judge) config.slack.judge = judge;
   }
-  if (config.pi.compatible) checkContextRoom(config.pi.compatible.contextWindow, config.loop.compactionThreshold);
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
   }
@@ -351,35 +373,88 @@ export function parseConfig(raw: unknown): ServerConfig {
   return config;
 }
 
-function parsePi(value: unknown, path: string): PiConfig {
+/** Written by the owner; `compactionThreshold` is filled in from the loop once it is known (see parseConfig). */
+type ParsedRoute = Omit<ModelRoute, 'compactionThreshold'> & { compactionThreshold?: number; path: string };
+type ParsedPi = Omit<PiConfig, 'routes'> & { routes: ParsedRoute[] };
+
+const ROUTE_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+function parsePi(value: unknown, path: string): ParsedPi {
   const pi = object(value, path);
-  onlyKeys(pi, path, ['agentDirectory', 'sessionDirectory', 'authPath', 'model', 'compatible', 'thinking', 'voiceEnabled']);
-  const modelPath = `${path}.model`;
-  const model = object(required(pi, 'model', path), modelPath);
-  onlyKeys(model, modelPath, ['provider', 'id']);
+  onlyKeys(pi, path, ['agentDirectory', 'sessionDirectory', 'authPath', 'model', 'compatible', 'routes', 'defaultRoute', 'thinking',
+    'voiceEnabled']);
   const voice = required(pi, 'voiceEnabled', path);
   if (voice !== false) throw new ConfigError(`${path}.voiceEnabled`, 'voice is not supported; set false');
   const thinking = pi.thinking === undefined ? 'on' : pi.thinking;
   if (thinking !== 'on' && thinking !== 'off') throw new ConfigError(`${path}.thinking`, 'must be "on" or "off"');
-  const provider = nonEmptyString(required(model, 'provider', modelPath), `${modelPath}.provider`);
-  // The route is chosen explicitly and never falls back: the compatible provider and its endpoint come together.
-  let compatible: CompatibleConfig | undefined;
-  if (pi.compatible !== undefined) {
-    if (provider !== COMPATIBLE_PROVIDER) {
-      throw new ConfigError(`${modelPath}.provider`, `must be ${COMPATIBLE_PROVIDER} when ${path}.compatible is set`);
+  let routes: ParsedRoute[];
+  let defaultRoute: string;
+  if (pi.routes !== undefined) {
+    if (pi.model !== undefined || pi.compatible !== undefined) {
+      throw new ConfigError(`${path}.routes`, `cannot be combined with ${path}.model or ${path}.compatible`);
     }
-    compatible = parseCompatible(pi.compatible, `${path}.compatible`);
-  } else if (provider === COMPATIBLE_PROVIDER) {
-    throw new ConfigError(`${path}.compatible`, `is required for the ${COMPATIBLE_PROVIDER} provider`);
+    const routesPath = `${path}.routes`;
+    const table = object(pi.routes, routesPath);
+    routes = Object.entries(table).map(([name, route]) => {
+      const routePath = `${routesPath}.${name}`;
+      if (!ROUTE_NAME.test(name)) throw new ConfigError(routePath, 'a route name is lowercase letters, digits and hyphens, up to 32');
+      const fields = object(route, routePath);
+      onlyKeys(fields, routePath, ['model', 'compatible', 'compactionThreshold']);
+      const threshold = fields.compactionThreshold === undefined ? undefined
+        : compactionThreshold(fields.compactionThreshold, `${routePath}.compactionThreshold`);
+      return { name, ...parseRoute(fields, routePath), ...(threshold === undefined ? {} : { compactionThreshold: threshold }),
+        path: routePath };
+    });
+    if (routes.length === 0) throw new ConfigError(routesPath, 'must name at least one route');
+    defaultRoute = nonEmptyString(required(pi, 'defaultRoute', path), `${path}.defaultRoute`);
+    if (!routes.some(route => route.name === defaultRoute)) throw new ConfigError(`${path}.defaultRoute`, `must be one of ${routesPath}`);
+  } else {
+    if (pi.model === undefined) throw new ConfigError(`${path}.routes`, `is required (or ${path}.model for a single route)`);
+    if (pi.defaultRoute !== undefined) throw new ConfigError(`${path}.defaultRoute`, `is set only with ${path}.routes`);
+    routes = [{ name: SINGLE_ROUTE_NAME, ...parseRoute(pi, path), path }];
+    defaultRoute = SINGLE_ROUTE_NAME;
+  }
+  // Each compatible route is registered in Pi under its own provider, so two of them cannot share one.
+  const providers = new Set<string>();
+  for (const route of routes) {
+    if (!route.compatible) continue;
+    if (providers.has(route.model.provider)) {
+      throw new ConfigError(`${route.path}.model.provider`, 'is already the provider of another route; give this one its own');
+    }
+    providers.add(route.model.provider);
   }
   return {
     agentDirectory: absolutePath(required(pi, 'agentDirectory', path), `${path}.agentDirectory`),
     sessionDirectory: absolutePath(required(pi, 'sessionDirectory', path), `${path}.sessionDirectory`),
     authPath: absolutePath(required(pi, 'authPath', path), `${path}.authPath`),
-    model: { provider, id: nonEmptyString(required(model, 'id', modelPath), `${modelPath}.id`) },
-    ...(compatible ? { compatible } : {}),
+    routes, defaultRoute,
     thinking,
     voiceEnabled: false,
+  };
+}
+
+/** A compatible route's provider is this one, or this one with a suffix of its own. */
+const isCompatibleProvider = (provider: string) => provider === COMPATIBLE_PROVIDER || provider.startsWith(`${COMPATIBLE_PROVIDER}-`);
+
+/** `model` and `compatible` of one route, at `path` (which is `pi` itself for a config with only `pi.model`). */
+function parseRoute(fields: Record<string, unknown>, path: string): Pick<ModelRoute, 'model' | 'compatible'> {
+  const modelPath = `${path}.model`;
+  const model = object(required(fields, 'model', path), modelPath);
+  onlyKeys(model, modelPath, ['provider', 'id']);
+  const provider = nonEmptyString(required(model, 'provider', modelPath), `${modelPath}.provider`);
+  // The route is chosen explicitly and never falls back: the compatible provider and its endpoint come together.
+  let compatible: CompatibleConfig | undefined;
+  if (fields.compatible !== undefined) {
+    if (!isCompatibleProvider(provider)) {
+      throw new ConfigError(`${modelPath}.provider`, `must be ${COMPATIBLE_PROVIDER} (or begin with ${COMPATIBLE_PROVIDER}-) when ${path}.compatible is set`);
+    }
+    compatible = parseCompatible(fields.compatible, `${path}.compatible`);
+  } else if (isCompatibleProvider(provider)) {
+    throw new ConfigError(`${path}.compatible`, `is required for the ${provider} provider`);
+  }
+  return {
+    model: { provider, id: nonEmptyString(required(model, 'id', modelPath), `${modelPath}.id`) },
+    ...(compatible ? { compatible } : {}),
   };
 }
 
@@ -411,13 +486,46 @@ const TURN_GROWTH_TOKENS = 32_768;
  * window: its own growth, the longest reply it may ask for, and the margin Pi keeps when it sizes a request. Near the
  * window Pi shortens each reply to what is left, so replies and thinking are cut off; Pi's own compaction is off.
  */
-function checkContextRoom(contextWindow: number, threshold: number) {
+export function checkContextRoom(contextWindow: number, threshold: number, where: { threshold: string; window: string }) {
   const room = TURN_GROWTH_TOKENS + COMPATIBLE_MAX_TOKENS + PI_CONTEXT_SAFETY_TOKENS;
   if (threshold + room > contextWindow) {
-    throw new ConfigError('loop.compactionThreshold',
-      `must leave ${room} tokens below pi.compatible.contextWindow (${contextWindow}) for a turn to finish; ` +
+    throw new ConfigError(where.threshold,
+      `must leave ${room} tokens below ${where.window} (${contextWindow}) for a turn to finish; ` +
       `lower it to ${contextWindow - room} or raise the window`);
   }
+}
+
+/**
+ * Each route's threshold, its own or the loop's, against what is kept at a compaction and against the route's window.
+ * Only a compatible route's window is in the config; a subscription model's comes from Pi's own model definition,
+ * and the server checks it at startup (see `checkRouteWindow`).
+ */
+function resolveRoutes(pi: ParsedPi, loop: LoopConfig): PiConfig {
+  const routes = pi.routes.map(({ path, compactionThreshold: own, ...route }) => {
+    const threshold = own ?? loop.compactionThreshold;
+    const thresholdPath = own === undefined ? 'loop.compactionThreshold' : `${path}.compactionThreshold`;
+    if (loop.compactionKeepRecent >= threshold) {
+      throw new ConfigError(thresholdPath, own === undefined ? 'must be larger than compactionKeepRecent'
+        : 'must be larger than loop.compactionKeepRecent');
+    }
+    if (route.compatible) {
+      checkContextRoom(route.compatible.contextWindow, threshold, { threshold: thresholdPath, window: `${path}.compatible.contextWindow` });
+    }
+    return { ...route, compactionThreshold: threshold };
+  });
+  return { ...pi, routes };
+}
+
+/**
+ * The check `resolveRoutes` leaves to the server: a subscription route's threshold against the window Pi gives its
+ * model. The window is looked up by the caller, which may load Pi.
+ */
+export function checkRouteWindow(pi: PiConfig, route: ModelRoute, contextWindow: number) {
+  const named = pi.routes.length > 1 || route.name !== SINGLE_ROUTE_NAME;
+  checkContextRoom(contextWindow, route.compactionThreshold, {
+    threshold: named ? `pi.routes.${route.name}.compactionThreshold` : 'loop.compactionThreshold',
+    window: `the context window of ${route.model.provider}/${route.model.id}`,
+  });
 }
 
 function parsePublicOrigin(value: unknown, path: string): string {
@@ -658,7 +766,10 @@ function parseSlack(value: unknown, path: string): SlackConfig {
  * without a compatible model there is no judge. A key set here goes over plain http only to a loopback host.
  */
 function parseJudge(value: unknown, path: string, pi: PiConfig): JudgeConfig | undefined {
-  if (value === undefined && !pi.compatible) return undefined;
+  // The default route's, fixed at startup: switching routes never changes what the dove judges with (ADR 0046).
+  const lender = defaultRoute(pi);
+  const compatible = lender.compatible;
+  if (value === undefined && !compatible) return undefined;
   const judge = object(value ?? {}, path);
   onlyKeys(judge, path, ['method', 'baseUrl', 'apiKeyEnv', 'apiKeyFile', 'model', 'concurrency', 'timeoutSeconds', 'thresholds']);
   const method = judge.method ?? JUDGE_DEFAULTS.method;
@@ -678,16 +789,16 @@ function parseJudge(value: unknown, path: string, pi: PiConfig): JudgeConfig | u
     baseUrl = (judge.baseUrl as string).replace(/\/+$/, '');
   } else if (method === 'jev') {
     baseUrl = JUDGE_DEFAULTS.jev.baseUrl;
-  } else if (pi.compatible) {
-    baseUrl = pi.compatible.baseUrl.replace(/\/+$/, '');
-    apiKey ??= pi.compatible.apiKey;
+  } else if (compatible) {
+    baseUrl = compatible.baseUrl.replace(/\/+$/, '');
+    apiKey ??= compatible.apiKey;
   } else {
     throw new ConfigError(basePath, 'is required when pi has no compatible provider to borrow it from');
   }
   let model: string;
   if (judge.model !== undefined) model = nonEmptyString(judge.model, `${path}.model`);
   else if (method === 'jev') model = JUDGE_DEFAULTS.jev.model;
-  else if (pi.compatible) model = pi.model.id;
+  else if (compatible) model = lender.model.id;
   else throw new ConfigError(`${path}.model`, 'is required when pi has no compatible provider to borrow it from');
   const concurrency = judge.concurrency ?? JUDGE_DEFAULTS.concurrency;
   if (!positiveInteger(concurrency, 1) || (concurrency as number) > MAX_JUDGE_CONCURRENCY) {
@@ -727,10 +838,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (at !== false && (typeof at !== 'string' || !TIME_OF_DAY.test(at))) {
     throw new ConfigError(`${path}.nightlyRotationAt`, 'must be a 24-hour HH:MM time, or false');
   }
-  const threshold = loop.compactionThreshold ?? LOOP_DEFAULTS.compactionThreshold;
-  if (typeof threshold !== 'number' || !Number.isInteger(threshold) || threshold < 10000) {
-    throw new ConfigError(`${path}.compactionThreshold`, 'must be an integer of at least 10000');
-  }
+  const threshold = compactionThreshold(loop.compactionThreshold ?? LOOP_DEFAULTS.compactionThreshold, `${path}.compactionThreshold`);
   const keep = loop.compactionKeepRecent ?? LOOP_DEFAULTS.compactionKeepRecent;
   if (typeof keep !== 'number' || !Number.isInteger(keep) || keep < 1000) {
     throw new ConfigError(`${path}.compactionKeepRecent`, 'must be an integer of at least 1000');
@@ -807,6 +915,11 @@ function parseSelfCheck(value: unknown, path: string): SelfCheckLimits {
     throw new ConfigError(`${path}.minDelayMinutes`, 'must be shorter than maxDelayDays');
   }
   return parsed;
+}
+
+function compactionThreshold(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 10000) throw new ConfigError(path, 'must be an integer of at least 10000');
+  return value;
 }
 
 function positiveInteger(value: unknown, least: number): boolean {

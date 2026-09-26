@@ -97,6 +97,10 @@ export interface FixtureOptions {
   apns?: { origin: string; pem: string; retryDelaysMs?: number[] };
   /** Turns Slack on with this section, connecting every workspace to the stand-in `api` (ADR 0039, ADR 0040). */
   slack?: { section: Record<string, unknown>; api: SlackApi & SlackSocket; judge?: JudgeClient };
+  /** Replaces the single `pi.model` with these settings, such as named routes (ADR 0046). */
+  pi?: Record<string, unknown>;
+  /** Overlaid on the loop section. */
+  loop?: Record<string, unknown>;
 }
 
 export const APNS_KEY_ENV = 'NATSUMI_APNS_KEY';
@@ -115,8 +119,13 @@ export async function startFixture(options: FixtureOptions = {}) {
   let server: RunningServer;
   const launch = async (allowedUserId: number) => {
     const { apns, slack } = options;
-    await writeFile(configFile, JSON.stringify({ ...serverConfig(root, { allowedUserId, apns: apns !== undefined }),
-      ...(slack ? { slack: slack.section } : {}) }));
+    const config = serverConfig(root, { allowedUserId, apns: apns !== undefined });
+    if (options.pi) {
+      const { model: _model, ...directories } = config.pi;
+      config.pi = { ...directories, ...options.pi } as typeof config.pi;
+    }
+    await writeFile(configFile, JSON.stringify({ ...config, ...(slack ? { slack: slack.section } : {}),
+      ...(options.loop ? { loop: options.loop } : {}) }));
     server = await startServer({
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
       env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET, ...(apns ? { [APNS_KEY_ENV]: apns.pem } : {}),

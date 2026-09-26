@@ -1,29 +1,21 @@
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { compatibleRuntimeWithKey, subscriptionRuntime } from '../pi/auth.ts';
-import type { PiTarget } from '../pi/session.ts';
+import { routesRuntime } from '../pi/auth.ts';
 import type { PiConfig } from './config.ts';
 import { readSecret } from './secrets.ts';
 
-/** The configured model route cannot be used (no login, no key). The message never carries paths or values. */
-export class PiUnavailableError extends Error {
-  constructor() { super('the configured Pi model route is not ready: log in or provide its API key'); this.name = 'PiUnavailableError'; }
-}
-
 /**
- * The model runtime for `pi.model`. The compatible endpoint uses only its referenced key; every other provider uses
- * only the OAuth login in the dedicated auth file. Neither route falls back to the other (ADR 0004).
+ * One model runtime for every route in `pi.routes` (ADR 0046). A compatible route uses only its referenced key; every
+ * other provider uses only the OAuth login in the dedicated auth file. A key that cannot be read leaves its route not
+ * ready rather than stopping the others; no route ever stands in for another (ADR 0004).
  */
-export async function createModelRuntime(pi: PiConfig, env: Record<string, string | undefined>): Promise<{ runtime: ModelRuntime; target: PiTarget }> {
-  const target = { provider: pi.model.provider, model: pi.model.id };
-  try {
-    if (pi.compatible) {
-      // Resolved once at startup from the server's own reference; a rotated key takes effect on restart.
-      const key = await readSecret(pi.compatible.apiKey, 'pi.compatible.apiKey', env);
-      return { runtime: await compatibleRuntimeWithKey(pi.agentDirectory, { baseUrl: pi.compatible.baseUrl, model: pi.model.id,
-        contextWindow: pi.compatible.contextWindow }, key), target };
-    }
-    return { runtime: await subscriptionRuntime(pi.agentDirectory, pi.authPath, pi.model.provider), target };
-  } catch {
-    throw new PiUnavailableError();
-  }
+export async function createModelRuntime(pi: PiConfig, env: Record<string, string | undefined>): Promise<ModelRuntime> {
+  const compatible = await Promise.all(pi.routes.filter(route => route.compatible).map(async ({ name, model, compatible: endpoint }) => {
+    // Resolved once at startup from the server's own reference; a rotated key takes effect on restart.
+    let apiKey: string | undefined;
+    try { apiKey = await readSecret(endpoint!.apiKey, `pi.routes.${name}.compatible.apiKey`, env); } catch { apiKey = undefined; }
+    return { provider: model.provider, apiKey,
+      endpoint: { baseUrl: endpoint!.baseUrl, model: model.id, contextWindow: endpoint!.contextWindow } };
+  }));
+  const subscription = pi.routes.some(route => !route.compatible);
+  return routesRuntime(pi.agentDirectory, { compatible, ...(subscription ? { authPath: pi.authPath } : {}) });
 }

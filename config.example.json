@@ -3,7 +3,17 @@
     "agentDirectory": "/var/lib/natsumi-pi/agent",
     "sessionDirectory": "/var/lib/natsumi-pi/sessions",
     "authPath": "/var/lib/natsumi-pi/agent/auth.json",
-    "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+    "routes": {
+      "local": {
+        "model": { "provider": "natsumi-compatible", "id": "example-model" },
+        "compatible": { "baseUrl": "https://llm.example.net/v1", "apiKeyFile": "/run/secrets/natsumi_pi_api_key", "contextWindow": 131072 }
+      },
+      "plus": {
+        "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+        "compactionThreshold": 150000
+      }
+    },
+    "defaultRoute": "local",
     "voiceEnabled": false
   },
   "publicOrigin": "https://natsumi.example.net:8443",

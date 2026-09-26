@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { parseCli, UsageError } from './cli.ts';
 import { resolveDataDirectory } from './data-directory.ts';
+import { runModelCommand } from './model-routes.ts';
 import { SERVER_UMASK } from './permissions.ts';
 import { startServer } from './server.ts';
 import { checkHealth, readStatus } from './status.ts';
@@ -14,6 +15,10 @@ try {
     const result = checkHealth(await readStatus(await resolveDataDirectory(cli.dataDir, process.cwd())));
     process.stdout.write(`${result.reason}\n`);
     process.exitCode = result.healthy ? 0 : 1;
+  } else if (cli.command === 'model') {
+    // Reaches a running server through the data directory: it reads the choice before its next turn (ADR 0046).
+    process.exitCode = await runModelCommand(cli, await resolveDataDirectory(cli.dataDir, process.cwd()),
+      line => { process.stdout.write(`${line}\n`); });
   } else {
     const server = await startServer({
       config: cli.config, dataDir: cli.dataDir, cwd: process.cwd(), home: homedir(), env: process.env,
