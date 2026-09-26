@@ -18,11 +18,22 @@ const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
  */
 export interface SealedPush { v: 1; epk: string; nonce: string; ct: string }
 
-/** The line as the device shows it: `{ text, expression }`, the text cut to `maxChars` characters with `…` at the end. */
-export function pushPlaintext(line: { text: string; expression?: string }, maxChars = PUSH_TEXT_MAX_CHARS): Buffer {
+/**
+ * The line as the device shows it: `{ text, expression }`, the text cut to `maxChars` characters with `…` at the end.
+ * A reply that shows images ends with how many, `（画像 2 枚）`, which is kept whole and not counted into the cut: the
+ * alert is text alone, and the images are seen in the app (ADR 0045).
+ */
+export function pushPlaintext(line: { text: string; expression?: string; imageCount?: number }, maxChars = PUSH_TEXT_MAX_CHARS): Buffer {
+  const mark = line.imageCount ? imageMark(line.imageCount) : '';
+  const room = Math.max(1, maxChars - [...mark].length);
   const characters = [...line.text];
-  const text = characters.length <= maxChars ? line.text : `${characters.slice(0, maxChars - 1).join('')}…`;
+  const text = (characters.length <= room ? line.text : `${characters.slice(0, room - 1).join('')}…`) + mark;
   return Buffer.from(JSON.stringify(line.expression === undefined ? { text } : { text, expression: line.expression }));
+}
+
+/** What a pushed reply ends with when it shows images. */
+function imageMark(count: number): string {
+  return `（画像 ${count} 枚）`;
 }
 
 /**

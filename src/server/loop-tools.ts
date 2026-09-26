@@ -23,8 +23,11 @@ type Outcome = ToolOutcome | Promise<ToolOutcome>;
  * event: what a tool acts on is what the turn is handling, which the server knows and natsumi need not copy (ADR 0024).
  */
 export interface LoopToolHost {
-  /** A line carries the feeling natsumi chose for it; it is kept with the line and never moves the avatar (ADR 0026). */
-  reply(text: string, expression: Expression): Outcome;
+  /**
+   * A line carries the feeling natsumi chose for it; it is kept with the line and never moves the avatar (ADR 0026).
+   * A reply may carry images from /work, as the workspace names them (ADR 0045); a notice never does.
+   */
+  reply(text: string, expression: Expression, images?: string[]): Outcome;
   notify(text: string, expression: Expression): Outcome;
   setExpression(expression: Expression): Outcome;
   writeHandoff(text: string): Outcome;
@@ -74,8 +77,8 @@ export function createLoopTools(host: LoopToolHost) {
     defineTool({
       name: 'reply_to_mac', label: 'Reply to the owner',
       description: REPLY_TO_MAC_DESCRIPTION,
-      parameters: Type.Object({ text: Type.String(), expression: expressionParameter() }),
-      execute: async (_id, params) => result(host.reply(params.text, params.expression as Expression)),
+      parameters: Type.Object({ text: Type.String(), expression: expressionParameter(), images: Type.Optional(Type.Array(Type.String())) }),
+      execute: async (_id, params) => result(host.reply(params.text, params.expression as Expression, params.images)),
     }),
     defineTool({
       name: 'notify_owner', label: 'Notify the owner',

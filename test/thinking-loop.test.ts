@@ -13,6 +13,7 @@ import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { THINKING_LINE_MAX_CHARS, THINKING_MIN_INTERVAL_MS, ThinkingLoop,
   type LoopClientEvent, type LoopOptions, type SendOutcome } from '../src/server/thinking-loop.ts';
 import { fixtureRuntime } from './support/fixture.ts';
+import { PNG, pngOf } from './support/fake-slack.ts';
 import { PRIVATE_DETAIL, ScriptedModel } from './support/scripted-model.ts';
 
 /** What a test may replace when it opens a loop: loop settings are overlaid on `LOOP_DEFAULTS`. */
@@ -953,5 +954,87 @@ test('sending a line with an expression leaves the avatar expression as it was',
     assert.equal(shownExpressions.includes('laughing'), false);
     assert.equal(shownExpressions.includes('sad'), false);
     assert.equal(loop.snapshot().avatar.expression, 'surprised');
+  } finally { await f.cleanup(); }
+});
+
+// ADR 0045: a reply may carry images from /work. They are copied as she calls the tool, and the line shows them by ID.
+const IMAGE_COPIES = (f: { data: string }) => join(f.data, '.natsumi', 'images');
+const copies = async (f: { data: string }) => (await readdir(IMAGE_COPIES(f)).catch(() => [])).sort();
+
+async function drawn(f: { data: string }) {
+  await mkdir(join(f.data, 'work', 'images'), { recursive: true });
+  const tall = pngOf(896, 1152);
+  await writeFile(join(f.data, 'work', 'images', 'me.png'), tall);
+  await writeFile(join(f.data, 'work', 'images', 'plain.png'), PNG);
+  return { tall };
+}
+
+test('a reply with images copies them at the call and shows them on the line, in the event and in the snapshot', async () => {
+  const f = await setup();
+  try {
+    const { tall } = await drawn(f);
+    const { loop, events } = await f.open();
+    const sent = f.send(loop, '絵を描いて');
+    const turn = await f.model.next();
+    turn.call('reply_to_mac', { text: '描きました', expression: 'happy', images: ['/work/images/me.png', '/work/images/plain.png'] });
+    turn.finish();
+    const after = await f.model.next();
+    const [result] = toolResults(after.context);
+    assert.equal(result!.isError, false);
+    assert.match(result!.text, /画像 2 枚/);
+    // Written over after the call: the owner is shown what was there when she called.
+    await writeFile(join(f.data, 'work', 'images', 'me.png'), PNG);
+    after.finish();
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'replied');
+    await loop.idle();
+
+    const [reply] = messages(events, 'natsumi');
+    const images = reply!.payload.images as { imageId: string; mimeType: string; bytes: number; width?: number; height?: number }[];
+    assert.deepEqual(images.map(({ imageId: _id, ...image }) => image),
+      [{ mimeType: 'image/png', bytes: tall.length, width: 896, height: 1152 }, { mimeType: 'image/png', bytes: PNG.length }]);
+    assert.equal(reply!.payload.replyTo, sent.eventId);
+    assert.deepEqual(loop.snapshot().messages.at(-1)!.images, images);
+    // The owner's message and a reply without images have no field at all, rather than an empty list.
+    assert.equal('images' in messages(events, 'owner')[0]!.payload, false);
+    const files = await copies(f);
+    assert.deepEqual(files, images.map(image => `${image.imageId}.png`).sort());
+    assert.deepEqual(await readFile(join(IMAGE_COPIES(f), `${images[0]!.imageId}.png`)), tall);
+    assert.equal(loop.showsImage(images[0]!.imageId), true);
+    assert.equal(loop.showsImage('image-unknown'), false);
+
+    // The images stay with the line across a restart.
+    await loop.close();
+    const again = await f.open();
+    assert.deepEqual(again.loop.snapshot().messages.at(-1)!.images, images);
+  } finally { await f.cleanup(); }
+});
+
+test('a reply whose images cannot be taken is not sent, text and all, and says how to fix them', async () => {
+  const f = await setup();
+  try {
+    await drawn(f);
+    await writeFile(join(f.data, 'outside.png'), PNG);
+    const { loop, events } = await f.open({ replyImageLimits: { maxBytes: 1024 * 1024, maxCount: 2 } });
+    const sent = f.send(loop, '見せて');
+    const turn = await f.model.next();
+    turn.call('reply_to_mac', { text: 'これです', expression: 'happy', images: ['/data/outside.png'] });
+    turn.call('reply_to_mac', { text: 'これです', expression: 'happy', images: ['/work/images/none.png'] });
+    turn.call('reply_to_mac', { text: 'これです', expression: 'happy',
+      images: ['/work/images/me.png', '/work/images/plain.png', '/work/images/me.png'] });
+    // A line that is refused for its text takes no copies either.
+    turn.call('reply_to_mac', { text: '네 알겠습니다', expression: 'happy', images: ['/work/images/me.png'] });
+    turn.finish();
+    const next = await f.model.next();
+    const refused = toolResults(next.context);
+    assert.deepEqual(refused.map(r => r.isError), [true, true, true, true]);
+    assert.match(refused[0]!.text, /送信していません[\s\S]*\/work\//);
+    assert.match(refused[1]!.text, /見つかりません/);
+    assert.match(refused[2]!.text, /2 枚まで/);
+    assert.match(refused[3]!.text, /日本語以外/);
+    next.finish();
+    assert.equal((await completed(events, sent.eventId)).payload.status, 'no-reply');
+    assert.deepEqual(messages(events, 'natsumi'), []);
+    assert.deepEqual(await copies(f), []);
+    assert.equal((f.db.prepare('SELECT COUNT(*) AS n FROM images').get() as { n: number }).n, 0);
   } finally { await f.cleanup(); }
 });

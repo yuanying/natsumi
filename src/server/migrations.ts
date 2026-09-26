@@ -518,4 +518,24 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 17,
+    name: 'reply images',
+    sql: `
+      -- The size in pixels when the image's header says it (ADR 0045), for the devices to lay it out before it arrives.
+      -- NULL on the images taken before, and on any whose header does not say.
+      ALTER TABLE images ADD COLUMN width INTEGER CHECK (width > 0);
+      ALTER TABLE images ADD COLUMN height INTEGER CHECK (height > 0);
+
+      -- The images natsumi showed the owner with a reply, in the order she named them (ADR 0045). Kept with the line, as
+      -- the conversation is, and never removed.
+      CREATE TABLE conversation_message_images (
+        message_id TEXT NOT NULL REFERENCES conversation_messages (message_id),
+        position INTEGER NOT NULL CHECK (position >= 0),
+        image_id TEXT NOT NULL REFERENCES images (image_id),
+        PRIMARY KEY (message_id, position)
+      ) STRICT;
+      CREATE INDEX conversation_message_images_image ON conversation_message_images (image_id);
+    `,
+  },
 ];

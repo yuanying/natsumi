@@ -343,3 +343,30 @@ test('a sender that throws at once never reaches the loop, and closing stops lis
   assert.equal(loop.listening, false);
   // Nothing keeps the process alive: node:test would report a pending timer as a hang.
 });
+
+// ADR 0045: the alert stays text alone; a reply with images says how many at the end of its text, the mark kept whole.
+test('a reply with images carries a mark of how many at the end of its text, kept whole when the text is cut', async () => {
+  const { db, loop, sender, keys, notifier } = setup({ connected: ['device-b'] });
+  try {
+    const image = { imageId: 'image-1', mimeType: 'image/png', bytes: 10 };
+    const opened = async (text: string, images: object[] | undefined) => {
+      const { position: _, ...reply } = message(db, 'reply', text, 'happy');
+      const before = sender.requests.length;
+      loop.emit('conversation.message', images ? { ...reply, images } : reply);
+      const [request] = (await sender.waitFor(before + 1)).slice(before);
+      assert.ok(Buffer.byteLength(JSON.stringify(request!.payload)) <= APNS_PAYLOAD_MAX_BYTES);
+      assert.equal((request!.payload as any).aps.alert.body, '返事があります');
+      return JSON.parse(openPush({ devicePrivateKey: keys.a.privateKey, messageId: reply.messageId, sealed: (request!.payload as any).e })
+        .toString()) as { text: string };
+    };
+    assert.deepEqual(await opened('描きました', [image, { ...image, imageId: 'image-2' }]), { text: '描きました（画像 2 枚）', expression: 'happy' });
+    assert.equal((await opened('描きました', [image])).text, '描きました（画像 1 枚）');
+    assert.equal((await opened('描きました', undefined)).text, '描きました');
+    assert.equal((await opened('描きました', [])).text, '描きました');
+    for (const long of ['a'.repeat(1500), 'あ'.repeat(1500)]) {
+      const chars = [...(await opened(long, [image])).text];
+      assert.ok(chars.length <= 1000);
+      assert.equal(chars.slice(-9).join(''), '…（画像 1 枚）');
+    }
+  } finally { notifier.close(); }
+});

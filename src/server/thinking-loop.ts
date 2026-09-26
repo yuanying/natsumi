@@ -7,10 +7,13 @@ import type { AgentSession, AgentSessionEvent, ModelRuntime } from '@earendil-wo
 import { createPersistedPiSession, openPiSession, PiSessionRestoreError, type PiSessionOptions, type PiTarget } from '../pi/session.ts';
 import { SdkA2AClient, type A2AClient } from './a2a-client.ts';
 import { AgentRequests } from './agent-requests.ts';
+import { STATE_DIRECTORY } from './data-directory.ts';
 import { DOVE_NAME } from './dove.ts';
 import type { A2AConfig, LoopConfig } from './config.ts';
 import { ConversationStore, type EventKind, type EventState, type MessageRow,
   type RotationRow, type Transaction } from './conversation-store.ts';
+import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownImage, type ImageLimits, type ShownImage,
+  type TakenImage } from './images.ts';
 import { createLoopTools, type Expression, type LoopToolHost, type ToolOutcome } from './loop-tools.ts';
 import { BASE_INSTRUCTION, COMPACTION_INSTRUCTIONS, NO_WORKSPACE_SECTION, REVIEW_INSTRUCTIONS,
   WORKSPACE_SECTION } from './prompts.ts';
@@ -19,7 +22,7 @@ import { WorkspaceShell } from './workspace-shell.ts';
 import { WorkspaceSize } from './workspace-size.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
 import { ReadState, type ReadPosition } from './read-state.ts';
-import { localDateTime } from './nightly.ts';
+import { isoAt, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
 import { takeUpdates, type UpdateSource } from './updates.ts';
@@ -82,6 +85,8 @@ export interface ShownMessage {
   about?: string[];
   /** The feeling natsumi chose for one of her lines. Absent on the owner's messages and on lines older than ADR 0026. */
   expression?: Expression;
+  /** The images a reply shows, in her order (ADR 0045). Absent, rather than empty, on a line that shows none. */
+  images?: ShownImage[];
 }
 
 /** A type rather than an interface: it is a client event's payload, and is spread into one whole. */
@@ -131,6 +136,10 @@ export interface LoopOptions {
    */
   dove?: DoveEvents;
   notifyLimits?: { perTurn: number; perHour: number };
+  /** Where the images of her replies are copied and recorded; by default the server's own image directory (ADR 0045). */
+  images?: ImageStore;
+  /** How large and how many the images of one reply may be. */
+  replyImageLimits?: ImageLimits;
   now?: () => number;
   log?: (line: string) => void;
 }
@@ -183,6 +192,7 @@ export class ThinkingLoop {
   private readonly now: () => number;
   private readonly memoryRepository: MemoryRepository;
   private readonly store: ConversationStore;
+  private readonly images: ImageStore;
   private readonly workspaceSize: WorkspaceSize;
   private readonly readState: ReadState;
   private readonly shell: WorkspaceShell | undefined;
@@ -232,6 +242,7 @@ export class ThinkingLoop {
       log: line => this.log(line),
     });
     this.store = new ConversationStore(options.db, this.now);
+    this.images = options.images ?? new ImageStore(options.db, join(options.dataDirectory, STATE_DIRECTORY, IMAGE_DIRECTORY));
     this.readState = new ReadState(options.db, this.now);
     this.shell = loop.workspaceSocket
       ? new WorkspaceShell({
@@ -376,12 +387,22 @@ export class ThinkingLoop {
   /** The conversation shown to the owner, built from SQLite only. Pi's record never appears here. */
   snapshot(): LoopSnapshot {
     return {
-      messages: this.store.snapshotRows(SNAPSHOT_MESSAGE_LIMIT).map(shown),
+      messages: this.shownRows(this.store.snapshotRows(SNAPSHOT_MESSAGE_LIMIT)),
       pendingEvents: this.store.pendingEvents(),
       avatar: { expression: this.avatar.expression },
       ...this.readState.position(),
       unacknowledgedNotificationIds: this.readState.unacknowledgedNotificationIds(),
     };
+  }
+
+  /** Whether a line of the conversation shows the image, so that the devices may fetch it (ADR 0045). */
+  showsImage(imageId: string): boolean {
+    return this.store.showsImage(imageId);
+  }
+
+  private shownRows(rows: MessageRow[]): ShownMessage[] {
+    const images = this.store.messageImages(rows.map(row => row.message_id));
+    return rows.map(row => shown(row, images.get(row.message_id)));
   }
 
   /** No turn is running and nothing is waiting: the scheduler may raise an event. */
@@ -897,7 +918,7 @@ export class ThinkingLoop {
 
   private host(): LoopToolHost {
     return {
-      reply: (text, expression) => this.reply(text, expression),
+      reply: (text, expression, images) => this.reply(text, expression, images),
       notify: (text, expression) => this.notify(text, expression),
       setExpression: expression => {
         this.setAvatar(expression, 'model');
@@ -946,22 +967,38 @@ export class ThinkingLoop {
    * ends answers none of them again: the record says replied, and only messages still being processed are closed on
    * a start. A reply with nothing waiting answers nothing and names no event.
    */
-  private reply(text: string, expression: Expression): ToolOutcome {
+  private async reply(text: string, expression: Expression, paths: string[] = []): Promise<ToolOutcome> {
     if (this.turn?.kind === 'review') {
       return { ok: false, text: '送信していません。夜の振り返りの間は、本人に話しかけません。明日に伝えたいことは write_handoff_note に書いてください。' };
     }
     const check = checkOutgoingText(text);
     if (!check.ok) return { ok: false, text: refusalText(check) };
+    // Copied at the call, once the text can no longer turn the line back: what the owner is shown is the copy (ADR 0045).
+    let taken: TakenImage[] = [];
+    if (paths.length > 0) {
+      const workDirectory = join(this.options.dataDirectory, WORK_DIRECTORY);
+      const result = await this.images.take(paths, workDirectory, this.options.replyImageLimits ?? REPLY_IMAGE_LIMITS);
+      if (!result.ok) return { ok: false, text: `送信していません（セリフも送っていません）。${result.text}直してから、セリフと一緒に送り直してください。` };
+      taken = result.images;
+    }
     const open = [...this.handling.values()].filter(handling => handling.messageId !== undefined && handling.shown && !handling.replied);
     const target = open.at(-1);
-    const row = this.store.transaction(() => {
-      const inserted = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId: target?.eventId, expression });
-      for (const handling of open) this.store.setEventState(handling.eventId, 'replied');
-      return inserted;
-    });
+    let row: MessageRow;
+    try {
+      row = this.store.transaction(() => {
+        this.images.record(taken, isoAt(this.now()));
+        const inserted = this.store.insertMessage({ role: 'natsumi', kind: 'reply', text, eventId: target?.eventId, expression,
+          ...(taken.length > 0 ? { imageIds: taken.map(image => image.imageId) } : {}) });
+        for (const handling of open) this.store.setEventState(handling.eventId, 'replied');
+        return inserted;
+      });
+    } catch (error) {
+      await discardImages(taken);
+      throw error;
+    }
     for (const handling of open) handling.replied = true;
-    this.emit('conversation.message', shown(row));
-    return { ok: true, text: '本人の Mac にセリフを送りました。このセリフは確定しました。'
+    this.emit('conversation.message', shown(row, taken.length > 0 ? taken.map(image => shownImage(image)) : undefined));
+    return { ok: true, text: `本人の Mac にセリフ${taken.length > 0 ? `と画像 ${taken.length} 枚` : ''}を送りました。このセリフは確定しました。`
       + (target ? 'ここまでに届いた本人のメッセージには返事を済ませました。' : '')
       + '続けて話してもかまいませんが、同じことを繰り返さないでください。ほかにやることがなければ、ツールを呼ばずに終えてください。' };
   }
@@ -1137,9 +1174,9 @@ function failureReason(error: unknown): string {
   return `${kind}: ${characters.length <= 200 ? message : `${characters.slice(0, 199).join('')}…`}`;
 }
 
-function shown(row: MessageRow): ShownMessage {
+function shown(row: MessageRow, images?: ShownImage[]): ShownMessage {
   const base = { messageId: row.message_id, role: row.role, kind: row.kind, text: row.text, createdAt: row.created_at,
-    ...(row.expression === null ? {} : { expression: row.expression }) };
+    ...(row.expression === null ? {} : { expression: row.expression }), ...(images && images.length > 0 ? { images } : {}) };
   if (row.kind === 'message') return { ...base, eventId: row.event_id! };
   if (row.kind === 'reply') return row.event_id === null ? base : { ...base, replyTo: row.event_id };
   const about = row.about_event_ids ? JSON.parse(row.about_event_ids) as string[] : [];

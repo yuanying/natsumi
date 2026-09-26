@@ -5,9 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { MIGRATIONS } from '../src/server/migrations.ts';
-import { ImageStore, takeImages } from '../src/server/images.ts';
+import { ImageStore, imageSize, takeImages } from '../src/server/images.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
-import { PNG } from './support/fake-slack.ts';
+import { PNG, pngOf } from './support/fake-slack.ts';
 
 /**
  * The images natsumi hands the server from /work, such as those she names in a request to the dove (ADR 0044): only files under /work, only PNG, JPEG and WebP by
@@ -148,4 +148,49 @@ test('taken images are recorded by ID, and each is read back by its ID alone, fr
   assert.deepEqual({ ...row }, { source: '/work/images/cat.png', file: `${cat!.imageId}.png`, bytes: PNG.length });
   await rm(cat!.file);
   assert.equal(await store.read(cat!.imageId), undefined, 'a copy that is gone is not there');
+});
+
+/** A baseline JPEG with an APP0 segment before the frame that says its size. */
+function jpegOf(width: number, height: number): Buffer {
+  const app0 = Buffer.from([0xff, 0xe0, 0x00, 0x04, 0x00, 0x00]);
+  const sof = Buffer.from([0xff, 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff, 0x03,
+    ...Buffer.alloc(9)]);
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof, Buffer.alloc(16, 5)]);
+}
+
+/** An extended WebP (VP8X), whose canvas is the size less one in 24 bits. */
+function webpOf(width: number, height: number): Buffer {
+  const chunk = Buffer.alloc(10);
+  chunk.writeUIntLE(width - 1, 4, 3);
+  chunk.writeUIntLE(height - 1, 7, 3);
+  return Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x20, 0, 0, 0]), Buffer.from('WEBPVP8X'), Buffer.from([10, 0, 0, 0]),
+    chunk, Buffer.alloc(16, 6)]);
+}
+
+// ADR 0045: the devices lay a picture out before it arrives, when its size can be read from its header.
+test('the width and height are read from a PNG, JPEG or WebP header, and left out when the header does not say', () => {
+  assert.deepEqual(imageSize(pngOf(896, 1152), 'image/png'), { width: 896, height: 1152 });
+  assert.deepEqual(imageSize(jpegOf(1024, 768), 'image/jpeg'), { width: 1024, height: 768 });
+  assert.deepEqual(imageSize(webpOf(1152, 896), 'image/webp'), { width: 1152, height: 896 });
+  assert.equal(imageSize(PNG, 'image/png'), undefined);
+  assert.equal(imageSize(JPEG, 'image/jpeg'), undefined);
+  assert.equal(imageSize(WEBP, 'image/webp'), undefined);
+});
+
+test('a taken image keeps its width and height when they can be read, and the record keeps them too', async t => {
+  const f = await setup(t);
+  await writeFile(join(f.work, 'images', 'wide.png'), pngOf(1152, 896));
+  const db = openStateDatabase(join(f.root, 'state.sqlite'));
+  t.after(() => db.close());
+  migrate(db, MIGRATIONS);
+  const store = new ImageStore(db, f.destination);
+  const taken = await store.take(['/work/images/wide.png', '/work/images/cat.png'], f.work, LIMITS);
+  assert.ok(taken.ok);
+  const [wide, cat] = taken.images;
+  assert.deepEqual([wide!.width, wide!.height], [1152, 896]);
+  assert.equal('width' in cat!, false);
+  store.record(taken.images, '2026-09-26T00:00:00.000Z');
+  const size = (imageId: string) => ({ ...db.prepare('SELECT width, height FROM images WHERE image_id = ?').get(imageId) as object });
+  assert.deepEqual(size(wide!.imageId), { width: 1152, height: 896 });
+  assert.deepEqual(size(cat!.imageId), { width: null, height: null });
 });

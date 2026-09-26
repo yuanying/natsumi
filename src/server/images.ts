@@ -36,6 +36,32 @@ export interface TakenImage {
   mimeType: PostImageType;
   bytes: number;
   sha256: string;
+  /** The size in pixels, when the header says it. */
+  width?: number;
+  height?: number;
+}
+
+/**
+ * How large and how many the images of one reply may be (ADR 0045): the same as a post to Slack's defaults. They are
+ * not in the config, since the owner is the only one they are shown to.
+ */
+export const REPLY_IMAGE_LIMITS: ImageLimits = { maxBytes: 10 * 1024 * 1024, maxCount: 4 };
+
+/** An image as the devices are told of it: by ID, with what they need to lay it out before fetching it. */
+export interface ShownImage {
+  imageId: string;
+  mimeType: string;
+  bytes: number;
+  /** Present only when the image's header said it. */
+  width?: number;
+  height?: number;
+}
+
+/** How an image is shown, without the fields it does not have. */
+export function shownImage(image: { imageId: string; mimeType: string; bytes: number; width?: number | null; height?: number | null }):
+  ShownImage {
+  const { imageId, mimeType, bytes, width, height } = image;
+  return { imageId, mimeType, bytes, ...(width != null && height != null ? { width, height } : {}) };
 }
 
 export type TakenImages = { ok: true; images: TakenImage[] } | { ok: false; text: string };
@@ -57,7 +83,7 @@ export async function takeImages(paths: string[], options: { workDirectory: stri
   const images = read.map(({ source, data, mimeType }) => {
     const imageId = `image-${randomUUID()}`;
     return { imageId, source, file: join(options.destination, `${imageId}.${EXTENSIONS[mimeType]}`), mimeType, bytes: data.length,
-      sha256: createHash('sha256').update(data).digest('hex'), data };
+      sha256: createHash('sha256').update(data).digest('hex'), ...imageSize(data, mimeType), data };
   });
   try {
     await mkdir(options.destination, { recursive: true, mode: 0o700 });
@@ -93,10 +119,11 @@ export class ImageStore {
 
   /** Records taken images. Called inside the transaction that records what they belong to. */
   record(images: TakenImage[], createdAt: string): void {
-    const insert = this.db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    const insert = this.db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, width, height, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const image of images) {
-      insert.run(image.imageId, image.source, basename(image.file), image.mimeType, image.bytes, image.sha256, createdAt);
+      insert.run(image.imageId, image.source, basename(image.file), image.mimeType, image.bytes, image.sha256,
+        image.width ?? null, image.height ?? null, createdAt);
     }
   }
 
@@ -141,6 +168,57 @@ async function readImage(path: string, workDirectory: string, maxBytes: number):
     }
     return { ok: true, source, data, mimeType };
   } finally { await handle.close(); }
+}
+
+/**
+ * The width and height a PNG, JPEG or WebP header gives, for the devices to lay the picture out before it arrives
+ * (ADR 0045). Undefined when the header does not say, which leaves the image as good as any other.
+ */
+export function imageSize(data: Buffer, mimeType: PostImageType): { width: number; height: number } | undefined {
+  const size = mimeType === 'image/png' ? pngSize(data) : mimeType === 'image/jpeg' ? jpegSize(data) : webpSize(data);
+  return size && size.width > 0 && size.height > 0 ? size : undefined;
+}
+
+/** The IHDR chunk, which comes first. */
+function pngSize(data: Buffer) {
+  if (data.length < 24 || data.toString('latin1', 12, 16) !== 'IHDR') return undefined;
+  return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+}
+
+/** The first start-of-frame marker, found by walking the segments before it. */
+function jpegSize(data: Buffer) {
+  let at = 2;
+  while (at + 4 <= data.length) {
+    if (data[at] !== 0xff) return undefined;
+    const marker = data[at + 1]!;
+    // Fill bytes, and markers that stand alone without a length.
+    if (marker === 0xff) { at += 1; continue; }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) { at += 2; continue; }
+    const length = data.readUInt16BE(at + 2);
+    // SOF0 to SOF15, less DHT (C4), JPG (C8) and DAC (CC), which share the range.
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      if (at + 9 > data.length) return undefined;
+      return { width: data.readUInt16BE(at + 7), height: data.readUInt16BE(at + 5) };
+    }
+    if (length < 2) return undefined;
+    at += 2 + length;
+  }
+  return undefined;
+}
+
+/** The first chunk: VP8X for an extended file, VP8 for a lossy one, VP8L for a lossless one. */
+function webpSize(data: Buffer) {
+  if (data.length < 30) return undefined;
+  const chunk = data.toString('latin1', 12, 16);
+  if (chunk === 'VP8X') return { width: data.readUIntLE(24, 3) + 1, height: data.readUIntLE(27, 3) + 1 };
+  if (chunk === 'VP8 ' && data[23] === 0x9d && data[24] === 0x01 && data[25] === 0x2a) {
+    return { width: data.readUInt16LE(26) & 0x3fff, height: data.readUInt16LE(28) & 0x3fff };
+  }
+  if (chunk === 'VP8L' && data[20] === 0x2f) {
+    const bits = data.readUInt32LE(21);
+    return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+  }
+  return undefined;
 }
 
 function size(bytes: number): string {

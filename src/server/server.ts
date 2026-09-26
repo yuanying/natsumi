@@ -189,7 +189,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop,
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
-      updates, ...(archive ? { slack: archive } : {}), ...(theDove ? { dove: theDove } : {}),
+      updates, ...(archive ? { slack: archive } : {}), ...(theDove ? { dove: theDove } : {}), images,
     });
     raiseInto = thinkingLoop;
     if (theDove) {
@@ -283,8 +283,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log,
-        // Only what an approval shows, for now: a line of the conversation may show images the same way later.
-        images: { read: async imageId => theDove?.showsImage(imageId) ? images.read(imageId) : undefined } });
+        // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
+        images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 
     const started = isoAt(Date.now());
     const status: ServerStatus = { state: 'running', pid: process.pid, startedAt: started, updatedAt: started, schemaVersion: version };

@@ -374,7 +374,7 @@ test('schema 15 adds the reactions on Slack messages, one per person, name and m
 
 test('schema 16 adds the images the server took, and the images of a post, each once in its place', () => withDb(db => {
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 15));
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [16]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 16)).applied, [16]);
   db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
     expression, state, created_at, updated_at) VALUES ('post-1', 'post', 'work', 'C1', NULL, NULL, 'work/#dev', '', NULL, 'judging', 'x', 'x')`).run();
   const image = db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, created_at)
@@ -387,4 +387,23 @@ test('schema 16 adds the images the server took, and the images of a post, each 
   assert.throws(() => link.run('post-1', 0, 'image-2'), /constraint/i, 'one image in each place');
   assert.throws(() => link.run('post-missing', 1, 'image-2'), /constraint/i);
   assert.throws(() => link.run('post-1', 1, 'image-missing'), /constraint/i);
+}));
+
+test('schema 17 gives the images a size when it is known, and a reply its images, each once in its place', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 16));
+  db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, created_at)
+    VALUES ('image-old', '/work/old.png', 'image-old.png', 'image/png', 10, 'ab', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS).applied, [17]);
+  assert.deepEqual({ ...db.prepare("SELECT width, height FROM images WHERE image_id = 'image-old'").get() as object },
+    { width: null, height: null }, 'an image taken before has no size');
+  db.prepare(`INSERT INTO images (image_id, source, file, mime_type, bytes, sha256, width, height, created_at)
+    VALUES ('image-new', '/work/new.png', 'image-new.png', 'image/png', 10, 'ab', 896, 1152, 'x')`).run();
+  db.prepare(`INSERT INTO conversation_messages (message_id, position, role, kind, text, created_at)
+    VALUES ('message-1', 1, 'natsumi', 'reply', '描きました', 'x')`).run();
+  const link = db.prepare('INSERT INTO conversation_message_images (message_id, position, image_id) VALUES (?, ?, ?)');
+  link.run('message-1', 0, 'image-new');
+  link.run('message-1', 1, 'image-old');
+  assert.throws(() => link.run('message-1', 1, 'image-new'), /constraint/i, 'one image in each place');
+  assert.throws(() => link.run('message-missing', 2, 'image-new'), /constraint/i);
+  assert.throws(() => link.run('message-1', 2, 'image-missing'), /constraint/i);
 }));
