@@ -164,6 +164,21 @@ export const REVIEW_INSTRUCTIONS = '一日の終わりです。この後、思�
   + '全部をやる必要はありません。今夜できなかったことは引き継ぎに書いておいてください。明日の自分がそこから拾えます。'
   + '済んだら、ツールを呼ばずに終えてください。';
 
+/**
+ * What the server asks for once a turn has ended, in the same session (ADR 0047). One fixed text, both because it is
+ * how a memo is found again when the turn is folded, and because it follows the turn it asks about on the prefix: the
+ * request itself costs only its own tokens. It is asked whether folding is on or off, so that the two differ only in
+ * the folding. The memo is what the turn leaves behind once its thinking and its tools are folded, and what the night
+ * reads back, so it asks for facts and failures rather than for what she said.
+ */
+export const REFLECTION_REQUEST = '<turn_memo>\n'
+  + 'このターンはここまでです。このターンを振り返って、一行のメモを書いてください。'
+  + '途中の考えやツールの結果は後で見えなくなることがあり、このメモがその代わりに残ります。夜の振り返りでも読み返します。\n'
+  + '書くのは、調べて分かった事実（予定・数字・名前・ファイルの場所など）と、試してうまくいかなかったこと（何を試して、なぜだめだったか）です。'
+  + '本人に言ったことの繰り返しは要りません。書くことがなければ「特になし」と書いてください。\n'
+  + 'ツールは使えません。このメモは本人には届きません。\n'
+  + '</turn_memo>';
+
 export const COMPACTION_INSTRUCTIONS = 'これは natsumi（本人専属の秘書）の思考の記録です。要約は日本語で書いてください。'
   + '本人との約束、本人に頼まれて対応中のこと、本人の返事を待っていること、本人の最近の様子、覚えておいてと言われたこと（/memory に書いたかどうか）を必ず残してください。'
   + 'ファイルやコードに関する項目は「なし」で構いません。';
