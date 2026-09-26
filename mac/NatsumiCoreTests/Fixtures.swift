@@ -35,13 +35,55 @@ enum Fixture {
     static func snapshot(
         seq: Int, stream: String = stream, requestId: String? = nil, deviceId: String = "device-example",
         messages: [[String: Any]] = [], pending: [[String: Any]] = [], expression: String = "neutral",
-        readThrough: String? = nil, unreadReplyCount: Int = 0, unacknowledged: [String] = []
+        readThrough: String? = nil, unreadReplyCount: Int = 0, unacknowledged: [String] = [],
+        approvals: [[String: Any]]? = nil
     ) -> Data {
-        envelope("session.snapshot", seq: seq, stream: stream, requestId: requestId, payload: [
+        var payload: [String: Any] = [
             "deviceId": deviceId, "messages": messages, "pendingEvents": pending, "avatar": ["expression": expression],
             "readThroughMessageId": readThrough.map { $0 as Any } ?? NSNull(), "unreadReplyCount": unreadReplyCount,
             "unacknowledgedNotificationIds": unacknowledged,
-        ])
+        ]
+        if let approvals { payload["pendingApprovals"] = approvals }
+        return envelope("session.snapshot", seq: seq, stream: stream, requestId: requestId, payload: payload)
+    }
+
+    /// An approval of a Slack post as the server writes it, with made-up values: a reply in a thread that the dove
+    /// handed to the owner, with one issue over the threshold.
+    static func approval(
+        _ id: String, revision: Int = 1, text: String = "明日の 10 時で大丈夫です。", channel: String = "work/#dev",
+        replyTo: [String: Any]? = ["speaker": "山田", "at": "2026-09-25 14:32:05", "text": "明日の打ち合わせ、何時がいいですか？"],
+        placement: String = "thread", verdict: String = "owner", expression: String? = "happy",
+        issues: [[String: Any]] = [
+            ["name": "promise", "label": "本人に代わる約束・期限", "score": 0.82, "flagged": true],
+            ["name": "missing-context", "label": "スレッドに無い情報", "score": 0.12],
+        ],
+        probabilities: [String: Double]? = ["thread": 0.7, "channel": 0.3], history: [[String: Any]] = []
+    ) -> [String: Any] {
+        var target: [String: Any] = ["channel": channel, "placement": placement]
+        if let replyTo { target["replyTo"] = replyTo }
+        var reason: [String: Any] = ["verdict": verdict, "issues": issues]
+        if let probabilities { reason["placement"] = ["probabilities": probabilities] }
+        var approval: [String: Any] = [
+            "approvalId": id, "revision": revision, "kind": "slack-post", "createdAt": "2026-09-22T05:30:00.000Z",
+            "expiresAt": "2026-09-29T05:30:00.000Z", "target": target, "text": text, "reason": reason, "history": history,
+        ]
+        if let expression { approval["expression"] = expression }
+        return approval
+    }
+
+    static func approvalPending(_ approval: [String: Any], seq: Int) -> Data {
+        envelope("approval.pending", seq: seq, payload: approval)
+    }
+
+    static func approvalResolved(
+        _ id: String, seq: Int, state: String = "approved", delivery: String? = "sent", reason: String? = nil,
+        sentText: String? = "明日の 10 時で大丈夫です。"
+    ) -> Data {
+        var payload: [String: Any] = ["approvalId": id, "revision": 1, "state": state, "resolvedAt": "2026-09-22T05:40:00.000Z"]
+        if let delivery { payload["delivery"] = delivery }
+        if let reason { payload["reason"] = reason }
+        if let sentText { payload["sentText"] = sentText }
+        return envelope("approval.resolved", seq: seq, payload: payload)
     }
 
     /// The line of thinking: an event of the moment, which carries the number the stream is already at (ADR 0017).

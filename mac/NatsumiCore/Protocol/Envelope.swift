@@ -23,6 +23,10 @@ public enum ServerEvent: Equatable, Sendable {
     /// `session.renewed`: the server moved the session's expiry while connected (ADR 0030). Like the line of
     /// thinking, it takes no number on the stream.
     case sessionRenewed(expiresAt: Date)
+    /// `approval.pending`: a Slack post is waiting for the owner.
+    case approvalPending(Approval)
+    /// `approval.resolved`: an approval was closed, and what came of it.
+    case approvalResolved(ApprovalResolution)
     case accepted(CommandAccepted)
     case rejected(code: String)
     case unavailable(code: String, deviceId: String?)
@@ -61,7 +65,8 @@ public struct ServerEnvelope: Equatable, Sendable {
                     deviceId: $0.deviceId, messages: $0.messages, pendingEvents: $0.pendingEvents, expression: $0.avatar.expression,
                     readState: ReadState(
                         readThroughMessageId: $0.readThroughMessageId, unreadReplyCount: $0.unreadReplyCount ?? 0,
-                        unacknowledgedNotificationIds: $0.unacknowledgedNotificationIds ?? [])))
+                        unacknowledgedNotificationIds: $0.unacknowledgedNotificationIds ?? []),
+                    pendingApprovals: $0.pendingApprovals?.elements ?? []))
             }
         case "conversation.message": payload(ShownMessage.self).map { .message($0) }
         case "avatar.expression": payload(ExpressionPayload.self).map { .expression($0.expression) }
@@ -71,6 +76,8 @@ public struct ServerEnvelope: Equatable, Sendable {
             payload(ReadPayload.self).map { .readMoved(readThroughMessageId: $0.readThroughMessageId, unreadReplyCount: $0.unreadReplyCount) }
         case "notification.acked": payload(AckedPayload.self).map { .notificationAcked(notificationId: $0.notificationId) }
         case "session.renewed": payload(RenewedPayload.self).flatMap { parseTimestamp($0.expiresAt) }.map { .sessionRenewed(expiresAt: $0) }
+        case "approval.pending": payload(Approval.self).map { .approvalPending($0) }
+        case "approval.resolved": payload(ApprovalResolution.self).map { .approvalResolved($0) }
         case "command.accepted": payload(CommandAccepted.self).map { .accepted($0) }
         case "command.rejected": payload(CodePayload.self).map { .rejected(code: $0.code) }
         case "service.unavailable": payload(CodePayload.self).map { .unavailable(code: $0.code, deviceId: $0.deviceId) }
@@ -105,6 +112,7 @@ public struct ServerEnvelope: Equatable, Sendable {
         let readThroughMessageId: String?
         let unreadReplyCount: Int?
         let unacknowledgedNotificationIds: [String]?
+        let pendingApprovals: Lossy<Approval>?
     }
 
     private struct ExpressionPayload: Decodable { let expression: Expression }
@@ -135,6 +143,8 @@ public enum ClientCommand: Equatable, Sendable {
     case notificationAck(notificationId: String)
     /// Where to send this iPhone's notifications, and the key to seal them to (ADR 0029).
     case pushRegister(PushRegistration)
+    /// The owner's answer to an approval, for the revision they saw.
+    case approvalDecide(approvalId: String, revision: Int, decision: ApprovalDecision)
 }
 
 /// One command to the server.
@@ -174,6 +184,21 @@ public struct ClientEnvelope: Equatable, Sendable {
             object["payload"] = [
                 "token": registration.token, "publicKey": registration.publicKey, "environment": registration.environment.rawValue,
             ]
+        case .approvalDecide(let approvalId, let revision, let decision):
+            object["type"] = "approval.decide"
+            var payload: [String: Any] = ["approvalId": approvalId, "revision": revision]
+            switch decision {
+            case .approve(let placement):
+                payload["decision"] = "approve"
+                if let placement { payload["placement"] = placement.rawValue }
+            case .edit(let text, let placement):
+                payload["decision"] = "edit"
+                payload["text"] = text
+                if let placement { payload["placement"] = placement.rawValue }
+            case .reject:
+                payload["decision"] = "reject"
+            }
+            object["payload"] = payload
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }

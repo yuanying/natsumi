@@ -110,16 +110,19 @@ public struct Snapshot: Equatable, Sendable {
     public let pendingEvents: [PendingEvent]
     public let expression: Expression
     public let readState: ReadState
+    /// Slack posts waiting for the owner, oldest first.
+    public let pendingApprovals: [Approval]
 
     public init(
         deviceId: String, messages: [ShownMessage], pendingEvents: [PendingEvent], expression: Expression,
-        readState: ReadState = ReadState()
+        readState: ReadState = ReadState(), pendingApprovals: [Approval] = []
     ) {
         self.deviceId = deviceId
         self.messages = messages
         self.pendingEvents = pendingEvents
         self.expression = expression
         self.readState = readState
+        self.pendingApprovals = pendingApprovals
     }
 }
 
@@ -138,8 +141,9 @@ public struct EventCompletion: Codable, Equatable, Sendable {
 }
 
 /// `command.accepted`: a recorded `conversation.send`, a `session.sync` that replayed what was missed, the read
-/// position after `conversation.read`, or the notice `notification.ack` checked.
-public struct CommandAccepted: Codable, Equatable, Sendable {
+/// position after `conversation.read`, the notice `notification.ack` checked, or the state `approval.decide` left an
+/// approval in.
+public struct CommandAccepted: Decodable, Equatable, Sendable {
     public let messageId: String?
     public let eventId: String?
     public let state: EventState?
@@ -148,10 +152,15 @@ public struct CommandAccepted: Codable, Equatable, Sendable {
     public let readThroughMessageId: String?
     public let unreadReplyCount: Int?
     public let notificationId: String?
+    public let approvalId: String?
+    public let revision: Int?
+    /// `state` on an answer to `approval.decide`, which shares the field with the conversation's.
+    public let approvalOutcome: ApprovalOutcome?
 
     public init(
         messageId: String? = nil, eventId: String? = nil, state: EventState? = nil, deviceId: String? = nil, mode: String? = nil,
-        readThroughMessageId: String? = nil, unreadReplyCount: Int? = nil, notificationId: String? = nil
+        readThroughMessageId: String? = nil, unreadReplyCount: Int? = nil, notificationId: String? = nil,
+        approvalId: String? = nil, revision: Int? = nil, approvalOutcome: ApprovalOutcome? = nil
     ) {
         self.messageId = messageId
         self.eventId = eventId
@@ -161,6 +170,29 @@ public struct CommandAccepted: Codable, Equatable, Sendable {
         self.readThroughMessageId = readThroughMessageId
         self.unreadReplyCount = unreadReplyCount
         self.notificationId = notificationId
+        self.approvalId = approvalId
+        self.revision = revision
+        self.approvalOutcome = approvalOutcome
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case messageId, eventId, state, deviceId, mode, readThroughMessageId, unreadReplyCount, notificationId, approvalId, revision
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let state = try values.decodeIfPresent(String.self, forKey: .state)
+        self.init(
+            messageId: try values.decodeIfPresent(String.self, forKey: .messageId),
+            eventId: try values.decodeIfPresent(String.self, forKey: .eventId),
+            state: state.flatMap(EventState.init(rawValue:)), deviceId: try values.decodeIfPresent(String.self, forKey: .deviceId),
+            mode: try values.decodeIfPresent(String.self, forKey: .mode),
+            readThroughMessageId: try values.decodeIfPresent(String.self, forKey: .readThroughMessageId),
+            unreadReplyCount: try values.decodeIfPresent(Int.self, forKey: .unreadReplyCount),
+            notificationId: try values.decodeIfPresent(String.self, forKey: .notificationId),
+            approvalId: try values.decodeIfPresent(String.self, forKey: .approvalId),
+            revision: try values.decodeIfPresent(Int.self, forKey: .revision),
+            approvalOutcome: state.flatMap(ApprovalOutcome.init(rawValue:)))
     }
 }
 

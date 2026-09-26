@@ -17,6 +17,10 @@ public struct PhoneState {
     public internal(set) var isComposing = false
     /// The page over the main screen, if one is open.
     public internal(set) var page: PhonePage?
+    /// The draft of the approval that is open is a text field.
+    public internal(set) var isEditingApproval = false
+    /// Where the owner chose to put the post of the approval that is open; nil until they choose.
+    public internal(set) var approvalPlacement: ApprovalPlacement?
     /// The rows of the history in sight, by message ID, while the history is open.
     var visibleHistoryIds: Set<String> = []
     /// Where this iPhone's notifications go. It outlives a session: the next login registers the same (ADR 0029).
@@ -26,6 +30,7 @@ public struct PhoneState {
     var lastTidy: PushTidy?
 
     public var conversation: ConversationState { session.conversation }
+    public var approvals: ApprovalBook { session.approvals }
 
     /// The owner is reading the history: what is in sight there is read and checked.
     public var isReadingHistory: Bool { hasSession && page == .history }
@@ -39,4 +44,8 @@ public struct PhoneState {
 public enum PhonePage: Equatable, Sendable {
     case history
     case settings
+    /// The approvals waiting for the owner.
+    case approvals
+    /// One approval, pushed over the list.
+    case approval(String)
 }

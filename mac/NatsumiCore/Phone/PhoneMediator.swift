@@ -100,6 +100,15 @@ public struct PhoneMediator {
         case .backgroundPushReceived(let push):
             return [.tidyNotifications(.background(push))]
 
+        case .approvalResolvedPushReceived(let push):
+            return [.tidyNotifications(.approvalResolved(push))]
+
+        case .approvalNotificationOpened(let id):
+            // From wherever the owner was: back from it goes to the list of approvals.
+            guard state.hasSession else { return [] }
+            openApproval(id)
+            return []
+
         // MARK: Login
         case .loginSubmitted(let text):
             guard state.status != .loggingIn else { return [] }
@@ -143,6 +152,13 @@ public struct PhoneMediator {
             state.session.dismiss(requestId: requestId)
             return []
 
+        case .approvalsOpenRequested:
+            guard state.hasSession else { return [] }
+            closePage()
+            state.page = .approvals
+            state.isComposing = false
+            return []
+
         // MARK: The history and the settings
         case .historyOpenRequested:
             guard state.hasSession, state.page != .history else { return [] }
@@ -179,6 +195,44 @@ public struct PhoneMediator {
             }
             return []
 
+        // MARK: The approvals
+        case .approvalOpenRequested(let id):
+            guard state.hasSession else { return [] }
+            openApproval(id)
+            return []
+
+        case .approvalClosed:
+            guard case .approval = state.page else { return [] }
+            closePage()
+            state.page = .approvals
+            return []
+
+        case .approvalPlacementChosen(let placement):
+            guard case .approval = state.page else { return [] }
+            state.approvalPlacement = placement
+            return []
+
+        case .approvalEditRequested:
+            guard case .approval = state.page else { return [] }
+            state.isEditingApproval = true
+            return []
+
+        case .approvalEditCancelled:
+            state.isEditingApproval = false
+            return []
+
+        case .approvalApproved(let id):
+            return decide(id, .approve(placement: chosenPlacement(id)))
+
+        case .approvalRejected(let id):
+            return decide(id, .reject)
+
+        case .approvalEditSubmitted(let id, let text):
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+            let effects = decide(id, .edit(text: text, placement: chosenPlacement(id)))
+            if !effects.isEmpty || state.approvals.decisions[id] != nil { state.isEditingApproval = false }
+            return effects
+
         case .logoutRequested:
             _ = state.session.stop()
             state.session = SessionMachine(deviceId: nil, makeRequestId: makeRequestId)
@@ -192,6 +246,28 @@ public struct PhoneMediator {
     private mutating func closePage() {
         state.page = nil
         state.visibleHistoryIds = []
+        state.isEditingApproval = false
+        state.approvalPlacement = nil
+    }
+
+    private mutating func openApproval(_ id: String) {
+        closePage()
+        state.page = .approval(id)
+        state.isComposing = false
+    }
+
+    /// The place the owner chose, when it differs from where the post would go. A post to the channel itself has no
+    /// line to put a thread under, so it has no choice (the server ignores one).
+    private func chosenPlacement(_ id: String) -> ApprovalPlacement? {
+        guard state.page == .approval(id), let chosen = state.approvalPlacement,
+              let target = state.approvals.approval(id)?.target, target.replyTo != nil, chosen != target.placement
+        else { return nil }
+        return chosen
+    }
+
+    private mutating func decide(_ id: String, _ decision: ApprovalDecision) -> [PhoneEffect] {
+        guard state.hasSession else { return [] }
+        return apply(state.session.decideApproval(id, decision))
     }
 
     /// Reads the replies and checks the notices the owner has seen in the history (ADR 0022, ADR 0028). Asked after
@@ -215,7 +291,7 @@ public struct PhoneMediator {
             state.lastTidy = nil
             return []
         }
-        let tidy = PushTidy.synced(state.conversation)
+        let tidy = PushTidy.synced(state.conversation, approvals: state.approvals)
         guard tidy != state.lastTidy else { return [] }
         state.lastTidy = tidy
         return [.tidyNotifications(tidy)]

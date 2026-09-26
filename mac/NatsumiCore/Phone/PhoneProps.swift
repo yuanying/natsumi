@@ -139,12 +139,17 @@ public struct PhoneSettingsProps: Equatable, Sendable {
 public enum PhonePageProps: Equatable, Sendable {
     case history(PhoneHistoryProps)
     case settings(PhoneSettingsProps)
+    case approvals(PhoneApprovalListProps)
+    /// One approval, pushed over the list.
+    case approval(PhoneApprovalPageProps)
 }
 
 /// The main screen: the only one where she moves.
 public struct PhoneMainProps: Equatable, Sendable {
     public var status: PhoneStatusProps
     public var notices: PhoneNoticeProps?
+    /// How many approvals are waiting, when any are.
+    public var approvals: PhoneApprovalEntryProps?
     public var balloon: PhoneBalloonProps?
     public var character: PhoneCharacterProps
     /// Messages the server has not recorded yet, over the input field: while the owner is writing, all of them, so
@@ -159,10 +164,11 @@ public struct PhoneMainProps: Equatable, Sendable {
     public init(
         status: PhoneStatusProps, notices: PhoneNoticeProps?, balloon: PhoneBalloonProps?,
         character: PhoneCharacterProps, outgoing: [OutgoingRowProps], isComposing: Bool = false,
-        page: PhonePageProps? = nil
+        page: PhonePageProps? = nil, approvals: PhoneApprovalEntryProps? = nil
     ) {
         self.status = status
         self.notices = notices
+        self.approvals = approvals
         self.balloon = balloon
         self.character = character
         self.outgoing = outgoing
@@ -199,7 +205,7 @@ public enum PhoneProps {
             balloon: balloon(conversation, time: time),
             character: PhoneCharacterProps(avatar: state.avatar, expression: face(conversation, isComposing: state.isComposing)),
             outgoing: outgoing(conversation, isComposing: state.isComposing), isComposing: state.isComposing,
-            page: page(state, time: time))))
+            page: page(state, time: time), approvals: PhoneApprovalProps.entry(state))))
     }
 
     /// Standing, she wears the face the server gives her. While the owner writes she is a face beside her reply, so
@@ -233,6 +239,10 @@ public enum PhoneProps {
             .settings(PhoneSettingsProps(
                 serverOrigin: state.serverOrigin ?? "", status: status(state.status),
                 device: state.session.deviceId ?? ""))
+        case .approvals:
+            .approvals(PhoneApprovalProps.list(state, time: time))
+        case .approval(let id):
+            .approval(PhoneApprovalProps.page(state, id: id, time: time))
         case nil:
             nil
         }
