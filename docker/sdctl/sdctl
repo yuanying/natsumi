@@ -1,0 +1,4 @@
+#!/bin/sh
+# The sdctl in natsumi's PATH (ADR 0044): the real one, always reading the image's defaults in /etc/sdctl/config.yaml.
+# A --config she passes comes later and wins.
+exec /usr/libexec/sdctl --config /etc/sdctl/config.yaml "$@"

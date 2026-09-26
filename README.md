@@ -480,10 +480,14 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   - 既定の設定は image の `/etc/sdctl/anima.yaml`（リポジトリの [docker/sdctl/anima.yaml](docker/sdctl/anima.yaml)）です。
     Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
     変えるには image を作り直します。
-  - image の環境変数 `SDCTL_PARAMS` がこの設定を、`SDCTL_OUTPUT_DIR` が出力の既定の `/work/images` を指します。
+  - 接続先・既定の設定・出力の既定の `/work/images` は、image の `/etc/sdctl/config.yaml`（リポジトリの [docker/sdctl/config.yaml](docker/sdctl/config.yaml)）にあります。
+    PATH の `sdctl` は、本物（`/usr/libexec/sdctl`）にいつもこのファイルを `--config` で渡すラッパーです。
+    runner はコマンドにコンテナの環境変数を渡さないので（下の「環境変数」）、image の環境変数では natsumi のコマンドに届きません。
     natsumi は `sdctl txt2img --prompt <ファイル>` だけで作れ、保存したパスが 1 行出ます。
-  - 接続先は環境変数 `SDCTL_URL` です。Kubernetes の構成では、同じ Pod の出口の proxy が loopback で受けて token を付ける中継を指します
-    （token は中継だけが持ちます。[権限と秘密の一覧](docs/permissions.md) の「作業環境」）。Docker の構成（`compose.yaml`）には中継が無く、作業環境はネットワークを持たないので、sdctl は使えません。
+  - 接続先は `http://127.0.0.1:17860` です。Kubernetes の構成では、同じ Pod の出口の proxy がここで受けて token を付ける中継です
+    （token は中継だけが持ちます。[権限と秘密の一覧](docs/permissions.md) の「作業環境」）。
+    環境変数 `SDCTL_URL` があればそちらが勝つので、コンテナのシェル（`kubectl exec`）では Pod の渡す値を使います。番号を変えるときは環境の設定と両方を直します。
+    Docker の構成（`compose.yaml`）には中継が無く、作業環境はネットワークを持たないので、sdctl は使えません。
 - 閉じ込め
   - ネットワークはありません（`network_mode: none`）。
   - `natsumi-data` の上の 3 つと、読み取り専用の `agents/` だけをマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。

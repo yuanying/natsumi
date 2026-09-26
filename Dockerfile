@@ -43,13 +43,14 @@ RUN groupadd --gid 1000 natsumi \
   && chown natsumi:natsumi /work /home/natsumi
 # Outside PATH, so running it by its path gives nothing bash does not already have.
 COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-workspace-runner
-# sdctl and its default params (ADR 0044). It reaches the image server through the relay that SDCTL_URL names, which
-# the environment gives; the params are baked in, so changing them is a new image. With these two, `sdctl txt2img
+# sdctl and its defaults (ADR 0044): the relay, the params and /work/images, baked in, so changing them is a new image.
+# They are in a config file and not in ENV, because the runner gives natsumi's commands none of the image's environment
+# (ADR 0019); the sdctl in PATH is a wrapper that always points the real one at that file. With these, `sdctl txt2img
 # --prompt <file>` needs nothing else, and prints only the path it saved to.
-COPY --from=sdctl /out/sdctl /usr/local/bin/sdctl
+COPY --from=sdctl /out/sdctl /usr/libexec/sdctl
+COPY --chmod=755 docker/sdctl/sdctl /usr/local/bin/sdctl
+COPY docker/sdctl/config.yaml /etc/sdctl/config.yaml
 COPY docker/sdctl/anima.yaml /etc/sdctl/anima.yaml
-ENV SDCTL_PARAMS=/etc/sdctl/anima.yaml
-ENV SDCTL_OUTPUT_DIR=/work/images
 # natsumi's manual (ADR 0036), read-only like the rest of the root. The list of agents the server writes on every
 # start is mounted over /manual/agents.
 COPY manual/ /manual/
