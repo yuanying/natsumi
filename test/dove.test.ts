@@ -662,3 +662,18 @@ test('Slack refusing the upload is told to natsumi as not sent', async t => {
   assert.match(String(line!.text), /Slack に断られた/);
   assert.ok(f.logs.some(line => line.includes('files.completeUploadExternal: ratelimited')));
 });
+
+// ADR 0044: the devices are given only the images of an approval, never those that went out without one.
+test('only the images of an approval are shown to the devices', async t => {
+  const f = await setup(t);
+  f.jev.answers.push(OWNER());
+  await f.dove.ask(withImages('見てください', ['/work/images/cat.png']));
+  await f.dove.ask(withImages('', ['/work/images/cat.png']));
+  await f.dove.idle();
+  const approved = (f.clientEvents[0]!.payload.images as { imageId: string }[])[0]!.imageId;
+  const alone = (f.db.prepare(`SELECT p.image_id FROM dove_post_images p JOIN dove_posts d ON d.post_id = p.post_id
+    WHERE d.text = ''`).get() as { image_id: string }).image_id;
+  assert.equal(f.dove.showsImage(approved), true);
+  assert.equal(f.dove.showsImage(alone), false);
+  assert.equal(f.dove.showsImage('image-unknown'), false);
+});

@@ -283,7 +283,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const login = new GitHubLogin({ config: config.github, clientSecret, endpoints: options.github ?? GITHUB_ENDPOINTS, sessions, now, log });
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log,
-        images });
+        // Only what an approval shows, for now: a line of the conversation may show images the same way later.
+        images: { read: async imageId => theDove?.showsImage(imageId) ? images.read(imageId) : undefined } });
 
     const started = isoAt(Date.now());
     const status: ServerStatus = { state: 'running', pid: process.pid, startedAt: started, updatedAt: started, schemaVersion: version };

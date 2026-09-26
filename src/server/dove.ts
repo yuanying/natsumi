@@ -214,6 +214,12 @@ export class SlackDove {
       .all(this.iso()) as { payload: string }[]).map(row => JSON.parse(row.payload) as ApprovalPayload);
   }
 
+  /** Whether an image belongs to an approval, and so may be shown to the devices (ADR 0044). */
+  showsImage(imageId: string): boolean {
+    return this.db.prepare(`SELECT 1 FROM dove_post_images p JOIN approvals a ON a.post_id = p.post_id WHERE p.image_id = ?`)
+      .get(imageId) !== undefined;
+  }
+
   /**
    * The owner's decision (ADR 0002). Taken once, by a conditional update: an approval already closed answers with the
    * state it closed in, whoever asks. An approval past its time expires here rather than being sent.
