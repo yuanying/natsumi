@@ -150,11 +150,12 @@ export class PushNotifier {
       const position = this.positionOf(payload.messageId);
       if (position === undefined) return;
       const expression = typeof payload.expression === 'string' ? payload.expression : undefined;
+      const imageCount = Array.isArray(payload.images) ? payload.images.length : 0;
       const badge = this.badge();
       for (const target of this.awayTargets()) {
         const body = alertPayload({ alert, badge, plain: { messageId: payload.messageId, kind: payload.kind as string, position },
           sealedTo: payload.messageId, devicePublicKey: target.publicKey,
-          plaintext: maxChars => pushPlaintext({ text: payload.text as string, expression }, maxChars) });
+          plaintext: maxChars => pushPlaintext({ text: payload.text as string, expression, imageCount }, maxChars) });
         this.dispatch(target, { environment: target.environment, token: target.token, pushType: 'alert', payload: body, id: randomUUID() });
       }
       return;

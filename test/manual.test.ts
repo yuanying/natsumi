@@ -86,3 +86,9 @@ test('the Slack page says how to name images for the dove', async () => {
   assert.ok(page.includes('画像: /work/'));
   assert.ok(page.includes('/manual/images.md'));
 });
+
+// ADR 0045: the page on images says how to show one to the owner, with reply_to_mac and never with a notice.
+test('the page on images says how to show the owner a picture with reply_to_mac', async () => {
+  const page = await read('manual/images.md');
+  for (const word of ['reply_to_mac', 'images', '/work/', 'notify_owner']) assert.ok(page.includes(word), word);
+});

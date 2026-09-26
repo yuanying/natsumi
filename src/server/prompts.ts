@@ -101,7 +101,8 @@ const LINE_EXPRESSION_SENTENCE = 'expression には、このセリフに込め�
 
 export const REPLY_TO_MAC_DESCRIPTION = '本人にセリフを送り、本人の Mac に表示する。本人のメッセージ（mac_message）への返事にも、自分から話しかけるのにも使う。'
   + 'まだ返事をしていない本人のメッセージがあれば、次に送るセリフがそのすべてへの返事になるので、まとめて答える。'
-  + '続けて何回でも送れるが、同じことを繰り返さない。本文は日本語で書く。' + LINE_EXPRESSION_SENTENCE;
+  + '続けて何回でも送れるが、同じことを繰り返さない。本文は日本語で書く。' + LINE_EXPRESSION_SENTENCE
+  + '画像を見せるときは images に /work の下のパスを並べる。';
 
 export const NOTIFY_OWNER_DESCRIPTION = '本人に確かめてほしい相談や知らせを送る。知らせは、本人が確かめるまで残る。'
   + 'ふだんの会話や、自分から話しかけるのは reply_to_mac で行う。何もしなかったことや内心は送らない。送れる回数には上限がある。'

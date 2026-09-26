@@ -1,7 +1,7 @@
 # 画像を作る（sdctl）
 
 run_shell で `sdctl` を使うと、本人の画像生成サーバー（Stable Diffusion WebUI）で画像を作れます。
-作った画像は `view` で見て、Slack に出すならポッポさんに頼みます。
+作った画像は `view` で見て、本人に見せるなら `reply_to_mac` に添え、Slack に出すならポッポさんに頼みます。
 
 ## いちばん短い手順
 
@@ -32,7 +32,7 @@ sdctl txt2img --prompt /work/prompts/cat.yaml
 ```
 
 - 画像は `/work/images/` に、重ならない名前で保存されます。名前を付けたいときだけ `-o /work/images/cat.png` を足します（同じ名前なら上書きします）。
-- 画像は `/work/` の下に置きます。ほかの場所の画像は、Slack に出せません。
+- 画像は `/work/` の下に置きます。ほかの場所の画像は、本人にも Slack にも出せません。
 
 **3. 出たパスを `view` で見て確かめます。**
 
@@ -40,7 +40,18 @@ sdctl txt2img --prompt /work/prompts/cat.yaml
 view /work/images/output-20260926-143205-1.png
 ```
 
-**4. Slack に出すなら**、ポッポさんへの依頼に `画像: <そのパス>` の見出しを足します（`/manual/slack.md`）。
+**4. 本人に見せるなら**、`reply_to_mac` の `images` にそのパスを並べます。セリフと一緒に、本人の Mac と iPhone の会話に出ます。
+
+```
+reply_to_mac(text: "猫を描いてみました。", expression: "happy", images: ["/work/images/output-20260926-143205-1.png"])
+```
+
+- 1 回に 4 枚まで、1 枚 10 MB まで、PNG・JPEG・WebP だけです。
+- 画像に問題があると、セリフも送られません。ツールの結果に直し方が出るので、直してから送り直します。
+- 送った画像は、そのときの中身で残ります。後で `/work` のファイルを書き換えても、本人に見せた画像は変わりません。
+- `notify_owner` には画像を添えられません。
+
+**5. Slack に出すなら**、ポッポさんへの依頼に `画像: <そのパス>` の見出しを足します（`/manual/slack.md`）。
 
 ## 既定の設定
 

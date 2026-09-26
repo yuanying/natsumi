@@ -1,7 +1,7 @@
 # 0044. なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する
 
 - Date: 2026-09-26
-- Status: Accepted（2026-09-26: sdctl の既定を image の設定ファイルに置くことを「追記」の節に加えた）
+- Status: Accepted（2026-09-26: sdctl の既定を image の設定ファイルに置くことを「追記」の節に加えた。未決としていた画像を Mac に出すかと、画像を取る道が会話の行の画像も返すことは [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で決定）
 
 ## Context
 

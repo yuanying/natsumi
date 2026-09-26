@@ -83,7 +83,7 @@ test('no tool takes an event ID and finish_event is gone', () => {
     assert.doesNotMatch(tool.description, /event_id|finish_event/, tool.name);
   }
   const shape = (name: string) => Object.keys((tools.find(tool => tool.name === name)!.parameters as { properties: object }).properties);
-  assert.deepEqual(shape('reply_to_mac'), ['text', 'expression']);
+  assert.deepEqual(shape('reply_to_mac'), ['text', 'expression', 'images']);
   assert.deepEqual(shape('notify_owner'), ['text', 'expression']);
   assert.deepEqual(shape('write_handoff_note'), ['text']);
   assert.deepEqual(shape('write_change_note'), ['text']);
@@ -115,6 +115,28 @@ test('reply_to_mac and notify_owner hand the text and its expression to the host
   await run('reply_to_mac', { text: 'はい', expression: 'happy' });
   await run('notify_owner', { text: 'あのね', expression: 'worried' });
   assert.deepEqual(sent, [['reply', 'はい', 'happy'], ['notify', 'あのね', 'worried']]);
+});
+
+// ADR 0045: she may show the owner images from /work with a reply, and only with a reply; a notice stays text alone.
+test('reply_to_mac takes an optional list of paths under images, and notify_owner takes none', async () => {
+  const tools = createLoopTools(host());
+  const reply = JSON.parse(JSON.stringify(tools.find(tool => tool.name === 'reply_to_mac')!.parameters)) as
+    { required: string[]; properties: Record<string, { type: string; items?: { type: string } }> };
+  assert.deepEqual([...reply.required].sort(), ['expression', 'text']);
+  assert.equal(reply.properties.images!.type, 'array');
+  assert.equal(reply.properties.images!.items!.type, 'string');
+  const notify = tools.find(tool => tool.name === 'notify_owner')!.parameters as { properties: object };
+  assert.equal('images' in notify.properties, false);
+
+  const handed: (string[] | undefined)[] = [];
+  const run = (args: object) => createLoopTools(host({ reply: (_text, _expression, images) => { handed.push(images); return ok('replied'); } }))
+    .find(tool => tool.name === 'reply_to_mac')!.execute('call-1', args as never, undefined, undefined, {} as never);
+  await run({ text: '描きました', expression: 'happy', images: ['/work/images/cat.png', '/work/images/dog.png'] });
+  await run({ text: 'はい', expression: 'happy' });
+  assert.deepEqual(handed, [['/work/images/cat.png', '/work/images/dog.png'], undefined]);
+  assert.match(REPLY_TO_MAC_DESCRIPTION, /images/);
+  assert.match(REPLY_TO_MAC_DESCRIPTION, /\/work/);
+  assert.doesNotMatch(NOTIFY_OWNER_DESCRIPTION, /images/);
 });
 
 /** The descriptions sit on the prefix cache like run_shell's (ADR 0019): fixed strings, whatever the host holds. */

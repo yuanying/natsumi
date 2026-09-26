@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { shownImage, type ShownImage } from './images.ts';
 import type { Expression } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
 
@@ -97,10 +98,11 @@ export class ConversationStore {
 
   /**
    * What natsumi sent the owner: a reply, naming the event it answered if it answered one (ADR 0032), or a notice
-   * about some, with the feeling she chose for it.
+   * about some, with the feeling she chose for it. A reply may show images already recorded, by ID, in her order
+   * (ADR 0045).
    */
   insertMessage(message: { role: MessageRow['role']; kind: MessageRow['kind']; text: string; eventId?: string;
-    about?: string[]; requestId?: string; deviceId?: string; expression?: Expression }): MessageRow {
+    about?: string[]; requestId?: string; deviceId?: string; expression?: Expression; imageIds?: string[] }): MessageRow {
     const { db } = this;
     const messageId = `message-${randomUUID()}`;
     db.prepare(`INSERT INTO conversation_messages
@@ -109,6 +111,8 @@ export class ConversationStore {
       messageId, message.role, message.kind, message.text, message.eventId ?? null,
       message.about && message.about.length > 0 ? JSON.stringify(message.about) : null,
       message.requestId ?? null, message.deviceId ?? null, message.expression ?? null, this.iso());
+    const image = db.prepare('INSERT INTO conversation_message_images (message_id, position, image_id) VALUES (?, ?, ?)');
+    message.imageIds?.forEach((imageId, position) => image.run(messageId, position, imageId));
     return db.prepare('SELECT * FROM conversation_messages WHERE message_id = ?').get(messageId) as unknown as MessageRow;
   }
 
@@ -133,6 +137,26 @@ export class ConversationStore {
   snapshotRows(limit: number): MessageRow[] {
     return this.db.prepare('SELECT * FROM (SELECT * FROM conversation_messages ORDER BY position DESC LIMIT ?) ORDER BY position')
       .all(limit) as unknown as MessageRow[];
+  }
+
+  /** The images each of these messages shows, in order. A message that shows none is not in the map. */
+  messageImages(messageIds: string[]): Map<string, ShownImage[]> {
+    const shown = new Map<string, ShownImage[]>();
+    if (messageIds.length === 0) return shown;
+    const rows = this.db.prepare(`SELECT l.message_id, i.image_id, i.mime_type, i.bytes, i.width, i.height
+      FROM conversation_message_images l JOIN images i ON i.image_id = l.image_id
+      WHERE l.message_id IN (SELECT value FROM json_each(?)) ORDER BY l.message_id, l.position`).all(JSON.stringify(messageIds)) as
+      { message_id: string; image_id: string; mime_type: string; bytes: number; width: number | null; height: number | null }[];
+    for (const row of rows) {
+      const image = shownImage({ imageId: row.image_id, mimeType: row.mime_type, bytes: row.bytes, width: row.width, height: row.height });
+      shown.set(row.message_id, [...shown.get(row.message_id) ?? [], image]);
+    }
+    return shown;
+  }
+
+  /** Whether a line of the conversation shows the image, so that the devices may fetch it (ADR 0045). */
+  showsImage(imageId: string): boolean {
+    return this.db.prepare('SELECT 1 FROM conversation_message_images WHERE image_id = ?').get(imageId) !== undefined;
   }
 
   /** Owner messages the loop has not finished with, oldest first. */

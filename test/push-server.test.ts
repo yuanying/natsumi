@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
@@ -7,6 +8,7 @@ import type { Context } from '@earendil-works/pi-ai';
 import WebSocket from 'ws';
 import { openPush } from '../src/server/push-crypto.ts';
 import { apnsTestKey, FakeApns } from './support/fake-apns.ts';
+import { pngOf } from './support/fake-slack.ts';
 import { login, startFixture, type Fixture, type FixtureOptions } from './support/server-fixture.ts';
 
 interface Envelope { type: string; requestId?: string; seq: number; payload: Record<string, any> }
@@ -257,4 +259,50 @@ test('APNs saying the token is unregistered removes the registration', () => wit
   assert.ok(f.logs.some(line => line.includes('push: removed')), f.logs.join('\n'));
   for (const line of f.logs) assert.ok(!line.includes(TOKEN), 'no whole device token in the log');
   await mac.close();
+}));
+
+// ADR 0045, docs/client-contract.md: a reply's images are fetched by ID with the session, like an approval's, and the
+// phone that is away is told how many there are at the end of the text.
+test('a reply with images lists them, each is fetched only with a live session, and the push marks how many', () => withPush(async (f, apns) => {
+  await mkdir(join(f.data, 'work', 'images'), { recursive: true });
+  const drawn = pngOf(896, 1152);
+  await writeFile(join(f.data, 'work', 'images', 'me.png'), drawn);
+  f.model.auto = context => freshPrompt(context) ? { calls: [
+    { name: 'reply_to_mac', arguments: { text: '描きました', expression: 'happy', images: ['/work/images/me.png'] } },
+  ] } : {};
+  const phoneLogin = await login(f);
+  const macLogin = await login(f);
+  const phone = await Client.open(f, phoneLogin.token);
+  await phone.sync();
+  const keys = keyPair();
+  await phone.command('push.register', { token: TOKEN, publicKey: keys.publicKey, environment: 'sandbox' });
+  await phone.close();
+  const mac = await Client.open(f, macLogin.token);
+  await mac.sync();
+
+  const { reply } = await talk(mac, '絵を見せて');
+  const images = reply.images as { imageId: string; mimeType: string; bytes: number; width: number; height: number }[];
+  assert.deepEqual(images.map(({ imageId: _id, ...image }) => image), [{ mimeType: 'image/png', bytes: drawn.length, width: 896, height: 1152 }]);
+  const snapshot = await mac.sync();
+  assert.deepEqual(snapshot.payload.messages.at(-1).images, images);
+
+  const path = `/v1/images/${images[0]!.imageId}`;
+  const image = await fetch(`${f.base}${path}`, { headers: { authorization: `Bearer ${macLogin.token}` } });
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/png');
+  assert.equal(image.headers.get('content-length'), String(drawn.length));
+  assert.deepEqual(Buffer.from(await image.arrayBuffer()), drawn);
+  assert.equal((await f.fetch(path)).status, 401, 'no session');
+  assert.deepEqual((await f.fetch(path, { headers: { authorization: 'Bearer not-a-session' } })).json(), { error: 'unauthorized' });
+  const unknown = await f.fetch('/v1/images/image-unknown', { headers: { authorization: `Bearer ${macLogin.token}` } });
+  assert.deepEqual([unknown.status, unknown.json()], [404, { error: 'not-found' }]);
+
+  const [push] = await apns.waitFor(1);
+  assert.deepEqual(push!.body.aps.alert, { title: 'なつみ', body: '返事があります' });
+  const plain = JSON.parse(openPush({ devicePrivateKey: keys.privateKey, messageId: reply.messageId, sealed: push!.body.e }).toString());
+  assert.deepEqual(plain, { text: '描きました（画像 1 枚）', expression: 'happy' });
+
+  await mac.close();
+  await f.fetch('/auth/logout', { method: 'POST', headers: { authorization: `Bearer ${macLogin.token}` } });
+  assert.equal((await f.fetch(path, { headers: { authorization: `Bearer ${macLogin.token}` } })).status, 401, 'not after logging out');
 }));
