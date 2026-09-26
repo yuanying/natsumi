@@ -55,7 +55,7 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 | Pi の認証 | `pi.authPath` | モデルの OAuth の credential。Pi が refresh で書き換えます | [0004](adr/0004-pi-tool-and-voice-boundaries.md) |
 | ACME のアカウント鍵と証明書の鍵 | data directory の `.natsumi/acme/`（ディレクトリ 0700、ファイル 0600） | `acme` を使うときだけ | [0007](adr/0007-acme-and-fixed-ipv6.md) |
 | ログインのセッション | `.natsumi/state.sqlite` | bearer token の SHA-256 だけを持ちます。token そのものは持ちません | [0006](adr/0006-github-login-and-transport.md)、[0030](adr/0030-a-session-that-lasts-while-it-is-used.md) |
-| なつみが渡した画像の写し | data directory の `.natsumi/images/`（ディレクトリ 0700、ファイル 0600）と `.natsumi/state.sqlite` | ポッポさんへの依頼で `/work` から写し取った画像。承認に見せ、Slack に送るのはこれです。作業環境からは見えません | [0044](adr/0044-drawing-with-sdctl-and-posting-images.md) |
+| なつみが渡した画像の写し | data directory の `.natsumi/images/`（ディレクトリ 0700、ファイル 0600）と `.natsumi/state.sqlite` | ポッポさんへの依頼と `reply_to_mac` の `images` で `/work` から写し取った画像。承認に見せ、Slack に送り、会話の返事で本人に見せるのはこれです。会話と同じく消しません。作業環境からは見えません | [0044](adr/0044-drawing-with-sdctl-and-posting-images.md)・[0045](adr/0045-showing-the-owner-images-with-a-reply.md) |
 | iPhone の device token | `.natsumi/state.sqlite` | APNs に送る宛先。ログには出しません | [0029](adr/0029-push-notifications-on-the-iphone.md) |
 | TLS の鍵（ファイルで渡すとき） | `listen.tls.keyFile` | 読めないと起動を止めます。Ingress の後ろでは要りません | [0006](adr/0006-github-login-and-transport.md)、[0033](adr/0033-running-on-kubernetes.md) |
 

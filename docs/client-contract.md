@@ -103,7 +103,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 | `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`pendingApprovals`（承認待ちの承認をすべて古い順に。Slack の設定が無ければ空）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）。envelope の seq が snapshot の sequence |
 | `conversation.read` | readThroughMessageId、unreadReplyCount。カーソルが進んだときだけ全端末に届く |
 | `notification.acked` | notificationId、acknowledgedAt。知らせを初めて確認したときだけ全端末に届く |
-| `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は本人のメッセージに答えたものなら replyTo（答えたメッセージのうち最も新しいもののイベント）、notice は関係するイベントがあれば about。本人のメッセージに答えていない reply（続けて話したセリフや、自分から話しかけたセリフ）には replyTo が無い（ADR 0032）。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026） |
+| `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は本人のメッセージに答えたものなら replyTo（答えたメッセージのうち最も新しいもののイベント）、notice は関係するイベントがあれば about。本人のメッセージに答えていない reply（続けて話したセリフや、自分から話しかけたセリフ）には replyTo が無い（ADR 0032）。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026）。reply は、natsumi が画像を添えたときだけ images（画像の一覧。下記「会話の画像」）を持つ。画像の無い行には欄が無い（空の配列も送らない） |
 | `avatar.expression` | expression（neutral / happy / laughing / surprised / thinking / worried / sad / sleepy） |
 | `conversation.thinking` | line（natsumi がいま書いている思考の 1 行。120 文字まで。空文字は思考が終わったこと）。その場限りで、採番せず、再送もせず、記録もしない。下記「考えている 1 行」 |
 | `conversation.event.completed` | eventId、messageId、status（replied / no-reply / failed）。failed には reason（model-call-limit / timeout / model-error / stopped） |
@@ -142,12 +142,13 @@ natsumi は一本の思考ループで、本人のメッセージを 1 件ずつ
    natsumi はその後も続けて話すことがあり、本人のメッセージが無いときに自分から話しかけることもある。どちらも kind: reply で届き、replyTo を持たない（ADR 0032）。
    相談や知らせは kind: notice で届く。**返事の途中の文字列は流れない。**
    返事と知らせにはセリフの気持ち（expression）が付くが、それでアバターの表情は変わらない。
+   返事には画像が添えられることがある（images。下記「会話の画像」）。画像も本文と同じ `conversation.message` の中で一度に届く。
 5. 処理が終わると `conversation.event.completed` が届く。返事なしで終わることもある（no-reply）。
    表情が thinking のままなら（natsumi が自分で付けたものも含む）、ほかに待っているメッセージがなければ neutral の `avatar.expression` が続く。
 6. thinking 以外の表情は、最後に変わってから一定の時間（サーバーの設定、既定 3 分）で neutral に戻り、そのときも `avatar.expression` が届く（ADR 0014）。
 
 `session.snapshot` の `messages` は SQLite の記録から作る。natsumi の思考、内心、ツールの呼び出しは含まれない。
-`messages` の各要素は `conversation.message` の payload と同じ形で、natsumi のセリフの expression もそのまま載る。
+`messages` の各要素は `conversation.message` の payload と同じ形で、natsumi のセリフの expression と返事の images もそのまま載る。
 サーバーを再起動しても同じ履歴が返る。再起動の前に処理中だったメッセージは二度処理せず、返事がなければ failed になる。
 
 natsumi は毎晩決まった時刻に一日を振り返り、思考の記録を新しくする（ADR 0009）。Mac から見える変化は次のとおりである。
@@ -165,6 +166,33 @@ epoch/streamId が変わった、その stream の seq が抜けた、受信が�
 stream を破棄・再作成する場合は新しい streamId を発行し、同じ ID で seq をリセットしない。
 snapshot はサーバーの一つの同期処理で作るので、その間にイベントは割り込まない。snapshot より大きい seq のイベントをその上に適用する。
 Mac 再起動時はサーバーの snapshot を正とし、永続的な独自会話 DB は持たない。
+
+## 会話の画像
+
+natsumi は返事（kind: reply）に画像を添えることがある（[ADR 0045](adr/0045-showing-the-owner-images-with-a-reply.md)）。
+知らせ（kind: notice）と本人のメッセージには画像は付かない。
+
+`conversation.message` と `session.snapshot` の `messages` の要素のうち、画像の添えられた返事だけが `images` を持つ。
+`images` は 1 つ以上の要素の配列で、natsumi が並べた順（表示する順）である。1 つの返事に付くのは 4 枚までである。
+
+| 欄 | 内容 |
+| --- | --- |
+| `imageId` | 画像の ID（文字列。英数字と `-`）。取得の道に使う |
+| `mimeType` | `image/png`・`image/jpeg`・`image/webp` のどれか |
+| `bytes` | 画像のバイト数（整数）。取得した本文の長さと同じ |
+| `width`・`height` | 画像の幅と高さのピクセル数（正の整数）。サーバーが画像の頭から読めたときだけ、2 つそろって付く。無ければ取得してから大きさを知る |
+
+```json
+{"messageId":"message-example","role":"natsumi","kind":"reply","text":"猫を描いてみました。","createdAt":"2026-09-26T06:00:00.000Z","expression":"happy","images":[{"imageId":"image-example","mimeType":"image/png","bytes":946870,"width":896,"height":1152}]}
+```
+
+- 画像は、natsumi が返事を送った時点でサーバーが写し取ったものである。同じ `imageId` の画像は後から変わらず、消えない。
+- 画像そのものは、承認の画像と同じ `GET /v1/images/<imageId>` で取る（下記「承認と外部実行」の「画像」）。ログインが要る。
+- 縮小した画像を返す道は無い。取るのは元の画像である。吹き出しや履歴に並べるときは、アプリが表示の大きさに縮める。
+  同じ ID の画像は変わらないので、アプリは取った画像（または縮めた画像）を手元に持って使い回してよい。ログアウトしたら捨てる。
+- `images` の欄を知らない古いアプリは、欄を読み飛ばして本文だけを出す。
+- 画像が取れないとき（404、つながらない）は、画像の場所に取れなかったことを示し、本文はそのまま出す。
+- iPhone の通知には画像は載らない。本文の末尾に画像の枚数の印が付く（下記「iPhone への通知」の「e の暗号」）。
 
 ## 考えている 1 行
 
@@ -287,6 +315,11 @@ iPhone は接続のたびに、`session.sync` の後で `push.register` を送�
 平文は UTF-8 の JSON `{"text": "…", "expression": "…"}` である。`expression` はセリフの気持ちで、記録の無い古いセリフでは欄が無い。
 `text` は 1000 文字（Unicode のコードポイント）までに切り、切ったときは最後の 1 文字を `…` にする。
 全角の文字が多く payload が 4096 バイトを超えるときは、収まるまでさらに短く切る（そのときも末尾は `…`）。
+
+画像の添えられた返事（上記「会話の画像」）では、サーバーが `text` の末尾に `（画像 N 枚）` を付ける（N は画像の枚数、全角の括弧、
+「画像」と N と「枚」の間は半角の空白。例 `猫を描いてみました。（画像 1 枚）`）（[ADR 0045](adr/0045-showing-the-owner-images-with-a-reply.md)）。
+印は切らない。1000 文字や 4096 バイトに収めるために切るのは印の前の本文で、切ったときは `…（画像 1 枚）` のように終わる。
+印は通知の中だけのもので、会話の `text` には付かない。アプリは印を足したり外したりせず、`text` をそのまま出す。
 全文はアプリを開けば会話の同期で読める。
 
 1. サーバーは送るたびに P-256 の一時的な鍵ペアを作る。`epk` はその公開鍵（X9.63 の非圧縮、65 バイト）である。
@@ -363,16 +396,18 @@ natsumi が Slack に出したい投稿のうち、ポッポさんの判定で�
 ### 画像
 
 画像の付いた投稿の理由は [ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md) にある。
+取得の道は、会話の返事に添えられた画像（上記「会話の画像」、[ADR 0045](adr/0045-showing-the-owner-images-with-a-reply.md)）にも使う。
 
 - 画像は、natsumi が依頼した時点でサーバーが写し取ったものである。承認に見せる画像と、送る画像は同じで、後から変わらない。
 - 本文の無い、画像だけの投稿は、承認を通らずに送られる。承認に画像が付くのは、本文があって本人に回されたときだけである。
 - 画像そのものは `GET /v1/images/<imageId>` で取る。`Authorization: Bearer <token>`（WSS と同じセッション）が要る。
   - 成功すると 200 で、本文は画像のバイト列、`Content-Type` は一覧の `mimeType`、`Content-Length` は `bytes` と同じ。
   - セッションが無い・失効・期限切れ・本人以外なら 401（`{"error": "unauthorized"}`）。画像があるかどうかは、セッションを確かめてから答える。
-  - 知らない imageId、承認に載っていない画像（承認を通らずに送った画像など）、写しが無くなった画像は 404（`{"error": "not-found"}`）。
-  - `Cache-Control: no-store` が付く。アプリは表示のために手元に持ってよいが、承認が閉じたら捨てる。
+  - 知らない imageId、承認にも会話の返事にも載っていない画像（承認を通らずに Slack に送った画像など）、写しが無くなった画像は 404（`{"error": "not-found"}`）。
+  - `Cache-Control: no-store` が付く。承認の画像は、アプリは表示のために手元に持ってよいが、承認が閉じたら捨てる。
+    会話の画像は、ログアウトするまで手元に持ってよい（上記「会話の画像」）。同じ画像が承認と会話の両方に載ることは無い。
   - 取るのはセッションの使用であり、WSS の接続と同じくセッションを延ばす（上記「セッションの延長」）。
-- 画像の ID は承認に限らない。後で会話など、ほかのところにも同じ ID と同じ道で画像が出ることがある。
+- 画像の ID は承認に限らない。会話の返事の画像も、同じ形の ID で同じ道から取る。
 
 ```json
 {"approvalId":"approval-example","revision":1,"kind":"slack-post","createdAt":"2026-09-25T06:00:00.000Z","expiresAt":"2026-10-02T06:00:00.000Z","target":{"channel":"work/#dev","placement":"thread","replyTo":{"speaker":"山田","at":"2026-09-25 14:32:05","text":"猫の絵を描いて"}},"text":"描いてみました。","images":[{"imageId":"image-example","mimeType":"image/png","bytes":946870}],"reason":{"verdict":"no-verdict","issues":[]},"history":[]}
