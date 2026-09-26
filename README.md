@@ -646,12 +646,17 @@ xcodebuild build -project mac/Natsumi.xcodeproj -scheme NatsumiPhone -destinatio
 - 右上のボタンで会話の履歴と設定を開きます。知らせのカードを押しても履歴が開きます。
   履歴で見えた返事は既読に、見えた知らせは確認済みになります。
 - 設定には、サーバー・接続の状態・この端末の ID と、ログアウトがあります。
+- natsumi の Slack の投稿が本人の承認を待っていると、状態の下に「承認待ち N 件」が出ます（[ADR 0041](docs/adr/0041-approving-slack-posts-on-the-iphone.md)）。
+  押すと一覧、行を押すと 1 件の画面になり、返信先・置き場所・下書き・回った理由と問題点ごとの点数・前の突き返しを見て、
+  「承認して送る」「修正」「却下」を選べます。返す相手の発言があるときは、スレッドかチャンネルかも選び直せます。
+  送った結果（送れなかったときはその理由）はその画面に出ます。
 - 吹き出しと履歴の本文の `http://`・`https://` の URL はリンクになり、タップすると既定のブラウザで開きます（[ADR 0038](docs/adr/0038-links-in-what-she-says.md)）。
 - アプリが裏に回ると接続を切り、前に戻ると続きから同期し直します。
 - 裏にいる間の返事と知らせは、通知で届きます（[ADR 0029](docs/adr/0029-push-notifications-on-the-iphone.md)。サーバーの設定は上の「iPhone への通知」）。
   ログインすると通知を許可するか尋ねられます。本文はこの iPhone の鍵で暗号化されて届き、アプリの拡張 `NatsumiNotifications` が開いて、
   セリフと気持ちの顔を出します。開けなかったときは「返事があります」「知らせがあります」とだけ出ます。
-  バッジは未読の返事と未確認の知らせの数で、Mac で読んだ分の通知は消えます（iOS が間引くと、次にアプリを開いたときに消えます）。
+  承認待ちの通知はチャンネルと下書きの先頭を出し、タップするとその承認を開きます。
+  バッジは未読の返事と未確認の知らせと承認待ちの数で、Mac で読んだ分の通知は消えます（iOS が間引くと、次にアプリを開いたときに消えます）。
   送り先（sandbox か production か）は、アプリの署名の provisioning profile から決まります。
 - シミュレータでも登録までは動きますが、`xcrun simctl push` は拡張を通らないので、本文を開くところは実機で確かめます。
 - ロック画面からも開けます。ロック画面を長押しして「カスタマイズ」を選び、下の隅のボタンを「なつみを開く」に替えるか、
@@ -714,14 +719,20 @@ iPhone の TestFlight アプリが新しいビルドを自動で入れます（[
 
 GitHub もモデルも使わずに画面を確かめるための、偽のサーバーがあります。`http://localhost:8787` で待ち受け、
 ログインは GitHub を通さずに通り、架空の会話と知らせを返し、送ったメッセージには少し考えてから返事をします。
+Slack の投稿の承認待ちも架空のものを 2 件持ち、最初の同期から `--approval-delay` 秒（既定 8 秒、0 で送らない）後に 1 件を
+`approval.pending` で足します。承認・修正・却下には契約どおりに答え（承認と修正は少し後に `delivery: sent` で閉じ、却下はその場で閉じます）、
+閉じた承認への 2 回目の決定には最初の状態を、違う revision には `stale-revision` を返します。ログアウトすると承認待ちは最初の 2 件に戻ります。
 
 ```sh
 npm ci
-npm run fake-server -- [--port 8787] [--reply-delay 5] [--short]
+npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8]
 ```
 
+偽のサーバーそのもののテストは `test/fake-server.test.ts` にあり、`npm test` で走ります。
+
 シミュレータのアプリでは、サーバーに `http://localhost:8787` を入れてログインします。
-UI テスト `NatsumiPhoneUITests` は、この偽のサーバーを相手にログイン・返事・履歴・設定・ログアウトまでを辿り、画面を撮ります
+UI テスト `NatsumiPhoneUITests` は、この偽のサーバーを相手にログイン・返事・履歴・設定・ログアウトまでと、
+承認待ちの件数・一覧・1 件の画面から承認・修正・却下までを辿り、画面を撮ります
 （偽のサーバーを先に起動してください。別のポートで動かすときは `TEST_RUNNER_NATSUMI_SERVER` に URL を渡します）。撮った画面は結果の bundle に添付され、`TEST_RUNNER_NATSUMI_SCREENSHOTS` に
 ディレクトリを渡すとそこにも書き出されます。
 
@@ -738,7 +749,7 @@ TEST_RUNNER_NATSUMI_SCREENSHOTS=/tmp/natsumi-shots \
 
 ## 文書
 
-- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは Jev が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)
+- [設計 ADR](docs/adr/0001-server-and-data-ownership.md): データ所有権、[通信・承認](docs/adr/0002-client-events-and-approvals.md)、[外部連携](docs/adr/0003-assistance-and-integrations.md)、[Pi のツール・認証・音声](docs/adr/0004-pi-tool-and-voice-boundaries.md)、[サーバー基盤](docs/adr/0005-server-foundation.md)、[GitHub ログインと HTTPS/WSS](docs/adr/0006-github-login-and-transport.md)、[Let's Encrypt と固定 IPv6](docs/adr/0007-acme-and-fixed-ipv6.md)、[単一の思考ループと Mac との会話](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)、[長期記憶と夜の session の切り替え](docs/adr/0009-long-term-memory-and-nightly-session-switch.md)、[Mac アプリの構成](docs/adr/0010-mac-app-structure.md)、[閉じ込めたコンテナで記憶を shell で探す](docs/adr/0011-memory-shell-in-a-confined-container.md)、[Slack 連携と同僚 AI](docs/adr/0012-slack-and-colleagues.md)、[本人が確かめたことをサーバーで持つ](docs/adr/0013-read-state-on-the-server.md)、[自分で予約する確認と定期の合図](docs/adr/0014-self-checks-and-pings.md)、[Mac の UI は一本の木の Passive View](docs/adr/0015-mac-ui-passive-view-tree.md)、[カードを開く操作とキャラクターの移動](docs/adr/0016-opening-a-card-and-moving-the-character.md)、[考えている 1 行を流す](docs/adr/0017-streaming-the-line-she-is-thinking.md)、[記憶を git で持ち、夜に組み直す](docs/adr/0018-memory-in-git-and-the-nightly-rebuild.md)、[記憶の道具をやめ、なつみの作業環境にする](docs/adr/0019-a-workspace-not-a-memory-tool.md)、[外のエージェントと A2A で話す](docs/adr/0025-talking-to-outside-agents-over-a2a.md)、[セリフごとに気持ちを載せる](docs/adr/0026-a-feeling-on-each-line.md)、[履歴のセリフに気持ちの顔を添える](docs/adr/0027-her-face-beside-each-line-in-the-history.md)、[iPhone のクライアント](docs/adr/0028-the-iphone-client.md)、[本番を Kubernetes に置く](docs/adr/0033-running-on-kubernetes.md)、[出口を許可リストで絞る](docs/adr/0034-an-allow-list-for-the-way-out.md)、[外のエージェントに頼むツールと、返事の受け取り方](docs/adr/0035-asking-outside-agents-and-hearing-back.md)、[読み取り専用のマニュアルと、返事を待ち続ける上限](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)、[スリープから起きたらつなぎ直し、開いている接続は ping で確かめる](docs/adr/0037-catching-up-after-sleep-and-pinging-the-socket.md)、[本文の中の URL をリンクにし、クリックでブラウザを開く](docs/adr/0038-links-in-what-she-says.md)、[Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する](docs/adr/0039-slack-as-files-and-a-scored-dove.md)、[ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)、[Slack の投稿を iPhone で承認する](docs/adr/0041-approving-slack-posts-on-the-iphone.md)
 - [サーバーと Mac の契約・実装順](docs/client-contract.md)
 - [実接続の実行方法と結果](docs/probe-results.md)
 - [設定例](config.example.json)（証明書ファイル）と [ACME の設定例](config.acme.example.json): 現在サーバーが受け付ける設定だけを載せています。後続の実装で項目を追加します。検証ハーネスはこのファイルを読みません。

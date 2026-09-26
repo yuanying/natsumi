@@ -23,6 +23,25 @@ public struct PushText: Equatable, Sendable {
     }
 }
 
+/// A Slack post waiting for the owner, as the server sealed it: how the draft begins, and where it would go.
+public struct ApprovalPushText: Equatable, Sendable {
+    public let text: String
+    public let channel: String
+
+    public init(text: String, channel: String) {
+        self.text = text
+        self.channel = channel
+    }
+
+    /// The plaintext: `{"text": …, "channel": …}` in UTF-8.
+    init(json: Data) throws {
+        guard let object = try JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let text = object["text"] as? String, let channel = object["channel"] as? String
+        else { throw PushError.malformed }
+        self.init(text: text, channel: channel)
+    }
+}
+
 /// `e` of an alert: the ephemeral public key, the nonce, and the ciphertext followed by its tag.
 public struct SealedPushText: Equatable, Sendable {
     public let epk: Data
@@ -74,6 +93,43 @@ public struct AlertPush: Equatable, Sendable {
     }
 }
 
+/// An alert that a Slack post is waiting for the owner (`kind: approval`). It carries no place in the conversation:
+/// it is tidied away by its approval ID.
+public struct ApprovalAlertPush: Equatable, Sendable {
+    public let approvalId: String
+    /// nil when there is nothing this app can open; the fixed text of the alert then stays.
+    public let sealed: SealedPushText?
+
+    public init(approvalId: String, sealed: SealedPushText?) {
+        self.approvalId = approvalId
+        self.sealed = sealed
+    }
+
+    public init?(userInfo: [AnyHashable: Any]) {
+        guard userInfo["kind"] as? String == "approval", let approvalId = userInfo["approvalId"] as? String else { return nil }
+        self.init(approvalId: approvalId, sealed: SealedPushText(userInfo["e"]))
+    }
+}
+
+/// A silent push after an approval was closed, here or on another device (`kind: approval-resolved`).
+public struct ApprovalResolvedPush: Equatable, Sendable {
+    public let approvalId: String
+    /// Unread replies, unchecked notices and pending approvals, as the server counted them.
+    public let badge: Int
+
+    public init(approvalId: String, badge: Int) {
+        self.approvalId = approvalId
+        self.badge = badge
+    }
+
+    public init?(userInfo: [AnyHashable: Any]) {
+        guard userInfo["kind"] as? String == "approval-resolved", let approvalId = userInfo["approvalId"] as? String,
+              let badge = userInfo["badge"] as? Int
+        else { return nil }
+        self.init(approvalId: approvalId, badge: badge)
+    }
+}
+
 /// A silent push after the owner read or checked something, likely on another device.
 public struct BackgroundPush: Equatable, Sendable {
     /// Unread replies and unchecked notices, as the server counted them.
@@ -110,11 +166,21 @@ public enum PushCrypto {
     public static func open(
         _ sealed: SealedPushText, messageId: String, with key: P256.KeyAgreement.PrivateKey
     ) throws -> PushText {
+        try PushText(json: open(sealed, authenticating: messageId, with: key))
+    }
+
+    /// The same steps for an approval, whose ID is the additional data.
+    public static func openApproval(
+        _ sealed: SealedPushText, approvalId: String, with key: P256.KeyAgreement.PrivateKey
+    ) throws -> ApprovalPushText {
+        try ApprovalPushText(json: open(sealed, authenticating: approvalId, with: key))
+    }
+
+    static func open(_ sealed: SealedPushText, authenticating id: String, with key: P256.KeyAgreement.PrivateKey) throws -> Data {
         let secret = try sharedSecret(key, epk: sealed.epk)
         let box = try AES.GCM.SealedBox(combined: sealed.nonce + sealed.ct)
-        let plain = try AES.GCM.open(
-            box, using: symmetricKey(secret, epk: sealed.epk, device: key.publicKey), authenticating: Data(messageId.utf8))
-        return try PushText(json: plain)
+        return try AES.GCM.open(
+            box, using: symmetricKey(secret, epk: sealed.epk, device: key.publicKey), authenticating: Data(id.utf8))
     }
 
     static func sharedSecret(_ key: P256.KeyAgreement.PrivateKey, epk: Data) throws -> SharedSecret {

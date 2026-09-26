@@ -1,24 +1,40 @@
 /**
  * A stand-in for the natsumi server, for looking at a client without GitHub, a model or real memory.
  *
- *   npm run fake-server -- [--port 8787] [--reply-delay 5] [--short]
+ *   npm run fake-server -- [--port 8787] [--reply-delay 5] [--short] [--approval-delay 8]
  *
  * It listens on http://localhost only (clients allow plain http for loopback), skips GitHub by redirecting
  * `/auth/github/start` straight to `natsumi://oauth/callback`, hands out a session to anyone, and speaks enough of
  * docs/client-contract.md for the conversation: a snapshot for every `session.sync`, reads, notice checks, and a
- * reply to each message after a line of thinking. Everything it says is fictional and kept in memory only.
+ * reply to each message after a line of thinking. It also keeps Slack posts waiting for the owner's approval: two at
+ * the start, one more arriving `--approval-delay` seconds after the first sync (0 for none), and `approval.decide`
+ * answered the way the contract says. Logging out puts the approvals back as they were at the start. Everything it
+ * says is fictional and kept in memory only.
  */
 import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { parseArgs } from 'node:util';
 import { WebSocketServer, type WebSocket } from 'ws';
 
-const { values } = parseArgs({ options: {
-  port: { type: 'string', default: '8787' },
-  'reply-delay': { type: 'string', default: '5' },
-  short: { type: 'boolean', default: false },
-} });
-const port = Number(values.port);
-const replyDelay = Number(values['reply-delay']) * 1000;
+export interface FakeServerOptions {
+  /** 0 picks a free port. */
+  port: number;
+  /** Before her reply to a message. */
+  replyDelayMs: number;
+  /** Her first reply in one line instead of several paragraphs. */
+  short: boolean;
+  /** After the first sync, before one more approval arrives; 0 for none. */
+  approvalDelayMs: number;
+  /** Between taking an approval or an edit and saying it was sent. */
+  sendDelayMs: number;
+  /** Whether to print the requests and commands it receives. */
+  log: boolean;
+}
+
+export interface FakeServer {
+  port: number;
+  close(): Promise<void>;
+}
 
 interface Message {
   messageId: string;
@@ -32,15 +48,42 @@ interface Message {
   expression?: string;
 }
 
+interface Issue {
+  name: string;
+  label: string;
+  score: number;
+  flagged?: true;
+}
+
+type Placement = 'thread' | 'channel';
+
+interface Approval {
+  approvalId: string;
+  revision: number;
+  kind: 'slack-post';
+  createdAt: string;
+  expiresAt: string;
+  target: { channel: string; placement: Placement; replyTo?: { speaker: string; at: string; text: string } };
+  text: string;
+  expression?: string;
+  reason: {
+    verdict: 'owner' | 'no-verdict' | 'rewrite-limit';
+    issues: Issue[];
+    placement?: { probabilities: { thread: number; channel: number } };
+  };
+  history: { text: string; issues: Issue[] }[];
+}
+
+type Outcome = 'approved' | 'edited' | 'rejected' | 'expired';
+
 interface ClientEnvelope {
   requestId: string;
   type: string;
   payload: Record<string, unknown>;
 }
 
-const epoch = `epoch-${Date.now()}`;
-const streamId = 'stream-fake';
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+const fromNow = (days: number) => new Date(Date.now() + days * 24 * 3600_000).toISOString();
 const longReply = [
   'おはよう。昨日は iPhone 版の画面を考えていたところで止まってたよ。',
   'ログインと会話の画面はだいたい形になってて、残りは設定と、キーボードが出たときの見え方。メインの吹き出しは、Mac と違って最新のセリフを全部読めるようにしたいって話だった。',
@@ -49,114 +92,250 @@ const longReply = [
   '今日はこの3つを直してから、ログインと会話の画面を詰める？',
 ].join('\n\n');
 
-const messages: Message[] = [
-  { messageId: 'm1', role: 'owner', kind: 'message', text: 'おはよう', createdAt: ago(10), eventId: 'e1' },
-  { messageId: 'n1', role: 'natsumi', kind: 'notice', text: '10 時から定例があります\n資料は共有フォルダにあります', createdAt: ago(8), about: ['e0'], expression: 'neutral' },
-  { messageId: 'n2', role: 'natsumi', kind: 'notice', text: '明日は祝日です', createdAt: ago(7), about: ['e0'], expression: 'happy' },
-  { messageId: 'r1', role: 'natsumi', kind: 'reply', text: values.short ? 'おはよう。今日は何から始める？' : longReply, createdAt: ago(5), eventId: 'e1', replyTo: 'm1', expression: 'happy' },
-];
-let unacknowledged = ['n1', 'n2'];
-let readThrough: string | null = null;
-let expression = 'happy';
-let seq = 0;
-let sent = 0;
-const sockets = new Set<WebSocket>();
+const promise: Issue = { name: 'promise-for-owner', label: '本人に代わる約束・期限', score: 0.82, flagged: true };
 
-/** Every connection shares the one stream, the way one device would see it. */
-function broadcast(type: string, payload: unknown, requestId?: string, moment = false): void {
-  // A line of thinking is of the moment: it carries the number the stream is already at (ADR 0017).
-  if (!moment) seq += 1;
-  const text = JSON.stringify({ v: 1, epoch, streamId, seq, type, payload, ...(requestId ? { requestId } : {}) });
-  for (const socket of sockets) socket.send(text);
+/** The approvals waiting at the start: a reply in a thread sent back twice before, and a post to a channel. */
+function startingApprovals(): Approval[] {
+  return [
+    {
+      approvalId: 'approval-review', revision: 1, kind: 'slack-post', createdAt: ago(30), expiresAt: fromNow(7),
+      target: {
+        channel: 'work/#dev', placement: 'thread',
+        replyTo: { speaker: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、何時からなら大丈夫そう？' },
+      },
+      text: '明日は 10 時からなら大丈夫です。資料は今日中に共有しておきますね。', expression: 'happy',
+      reason: {
+        verdict: 'rewrite-limit',
+        issues: [promise, { name: 'not-in-thread', label: 'スレッドに無い情報', score: 0.12 }, { name: 'false-claim', label: '事実と違う説明', score: 0.05 }],
+        placement: { probabilities: { thread: 0.8, channel: 0.2 } },
+      },
+      history: [
+        { text: '明日なら何時でも大丈夫です！', issues: [{ ...promise, score: 0.91 }] },
+        { text: '明日の午前なら空いています。資料もすぐ出せます。', issues: [{ ...promise, score: 0.77 }] },
+      ],
+    },
+    {
+      approvalId: 'approval-lunch', revision: 1, kind: 'slack-post', createdAt: ago(3), expiresAt: fromNow(7),
+      target: { channel: 'work/#random', placement: 'channel' },
+      text: '今日のお昼は新しくできたカレー屋さんが空いてるみたいです。',
+      reason: { verdict: 'no-verdict', issues: [] }, history: [],
+    },
+  ];
 }
 
-/** Like the real server, every use moves the session's end thirty days out (ADR 0030). */
-function sessionEnd(): string {
-  return new Date(Date.now() + 30 * 24 * 3600_000).toISOString();
+/** The approval that arrives after the first sync: a direct message the judge handed to the owner. */
+function laterApproval(): Approval {
+  return {
+    approvalId: 'approval-dm', revision: 1, kind: 'slack-post', createdAt: new Date().toISOString(), expiresAt: fromNow(7),
+    target: {
+      channel: 'work/@佐藤', placement: 'thread',
+      replyTo: { speaker: '佐藤', at: '2026-09-26 09:05:12', text: '来週の件、先方に日程を伝えてもいいですか？' },
+    },
+    text: 'はい、来週の水曜で先方に伝えてください。', expression: 'neutral',
+    reason: {
+      verdict: 'owner',
+      issues: [{ ...promise, score: 0.64 }, { name: 'not-in-thread', label: 'スレッドに無い情報', score: 0.58, flagged: true }],
+      placement: { probabilities: { thread: 0.55, channel: 0.45 } },
+    },
+    history: [],
+  };
 }
 
-function unreadReplies(): number {
-  const read = readThrough === null ? -1 : messages.findIndex((m) => m.messageId === readThrough);
-  return messages.slice(read + 1).filter((m) => m.kind === 'reply').length;
-}
+export function startFakeServer(options: FakeServerOptions): Promise<FakeServer> {
+  const epoch = `epoch-${Date.now()}`;
+  const streamId = 'stream-fake';
+  const messages: Message[] = [
+    { messageId: 'm1', role: 'owner', kind: 'message', text: 'おはよう', createdAt: ago(10), eventId: 'e1' },
+    { messageId: 'n1', role: 'natsumi', kind: 'notice', text: '10 時から定例があります\n資料は共有フォルダにあります', createdAt: ago(8), about: ['e0'], expression: 'neutral' },
+    { messageId: 'n2', role: 'natsumi', kind: 'notice', text: '明日は祝日です', createdAt: ago(7), about: ['e0'], expression: 'happy' },
+    { messageId: 'r1', role: 'natsumi', kind: 'reply', text: options.short ? 'おはよう。今日は何から始める？' : longReply, createdAt: ago(5), eventId: 'e1', replyTo: 'm1', expression: 'happy' },
+  ];
+  let unacknowledged = ['n1', 'n2'];
+  let readThrough: string | null = null;
+  let expression = 'happy';
+  let seq = 0;
+  let sent = 0;
+  let approvals = startingApprovals();
+  /** How each approval closed, so that a decision on a closed one is answered with it (the contract's idempotence). */
+  let closed = new Map<string, Outcome>();
+  let laterScheduled = false;
+  const timers = new Set<NodeJS.Timeout>();
+  const sockets = new Set<WebSocket>();
+  const log = (...args: unknown[]) => { if (options.log) console.log(...args); };
 
-function answer(envelope: ClientEnvelope): void {
-  const { requestId, payload } = envelope;
-  switch (envelope.type) {
-    case 'session.sync':
-      broadcast('session.snapshot', {
-        deviceId: 'device-fake', messages, pendingEvents: [], avatar: { expression },
-        readThroughMessageId: readThrough, unreadReplyCount: unreadReplies(), unacknowledgedNotificationIds: unacknowledged,
-        sessionExpiresAt: sessionEnd(),
-      }, requestId);
-      return;
-    case 'conversation.read':
-      readThrough = String(payload.throughMessageId);
-      broadcast('command.accepted', { readThroughMessageId: readThrough, unreadReplyCount: unreadReplies() }, requestId);
-      return;
-    case 'notification.ack':
-      unacknowledged = unacknowledged.filter((id) => id !== payload.notificationId);
-      broadcast('command.accepted', { notificationId: payload.notificationId }, requestId);
-      return;
-    case 'conversation.send':
-      converse(String(payload.text), requestId);
-      return;
-    case 'push.register':
-      // Nothing is sent from here: the simulator's pushes are not the server's to make.
-      broadcast('command.accepted', { environment: payload.environment }, requestId);
-      return;
-    default:
-      broadcast('command.rejected', { code: 'unsupported' }, requestId);
+  function later(ms: number, fn: () => void): void {
+    const timer = setTimeout(() => { timers.delete(timer); fn(); }, ms);
+    timers.add(timer);
   }
-}
 
-function converse(text: string, requestId: string): void {
-  sent += 1;
-  const messageId = `m${100 + sent}`;
-  const eventId = `e${100 + sent}`;
-  const own: Message = { messageId, role: 'owner', kind: 'message', text, createdAt: new Date().toISOString(), eventId };
-  messages.push(own);
-  broadcast('conversation.message', own);
-  broadcast('command.accepted', { messageId, eventId, state: 'processing' }, requestId);
-  expression = 'thinking';
-  broadcast('avatar.expression', { expression });
-  setTimeout(() => broadcast('conversation.thinking', { line: 'メモを読み返してる' }, undefined, true), replyDelay / 3);
-  setTimeout(() => {
-    const reply: Message = {
-      messageId: `r${100 + sent}`, role: 'natsumi', kind: 'reply', text: `「${text}」だね。わかった。`,
-      createdAt: new Date().toISOString(), eventId, replyTo: messageId, expression: 'laughing',
-    };
-    messages.push(reply);
-    broadcast('conversation.message', reply);
-    expression = 'laughing';
+  /** Every connection shares the one stream, the way one device would see it. */
+  function broadcast(type: string, payload: unknown, requestId?: string, moment = false): void {
+    // A line of thinking is of the moment: it carries the number the stream is already at (ADR 0017).
+    if (!moment) seq += 1;
+    const text = JSON.stringify({ v: 1, epoch, streamId, seq, type, payload, ...(requestId ? { requestId } : {}) });
+    for (const socket of sockets) socket.send(text);
+  }
+
+  /** Like the real server, every use moves the session's end thirty days out (ADR 0030). */
+  function sessionEnd(): string {
+    return new Date(Date.now() + 30 * 24 * 3600_000).toISOString();
+  }
+
+  function unreadReplies(): number {
+    const read = readThrough === null ? -1 : messages.findIndex((m) => m.messageId === readThrough);
+    return messages.slice(read + 1).filter((m) => m.kind === 'reply').length;
+  }
+
+  function answer(envelope: ClientEnvelope): void {
+    const { requestId, payload } = envelope;
+    switch (envelope.type) {
+      case 'session.sync':
+        broadcast('session.snapshot', {
+          deviceId: 'device-fake', messages, pendingEvents: [], avatar: { expression },
+          readThroughMessageId: readThrough, unreadReplyCount: unreadReplies(), unacknowledgedNotificationIds: unacknowledged,
+          pendingApprovals: approvals, sessionExpiresAt: sessionEnd(),
+        }, requestId);
+        if (!laterScheduled && options.approvalDelayMs > 0) {
+          laterScheduled = true;
+          later(options.approvalDelayMs, () => {
+            const approval = laterApproval();
+            approvals.push(approval);
+            broadcast('approval.pending', approval);
+          });
+        }
+        return;
+      case 'conversation.read':
+        readThrough = String(payload.throughMessageId);
+        broadcast('command.accepted', { readThroughMessageId: readThrough, unreadReplyCount: unreadReplies() }, requestId);
+        return;
+      case 'notification.ack':
+        unacknowledged = unacknowledged.filter((id) => id !== payload.notificationId);
+        broadcast('command.accepted', { notificationId: payload.notificationId }, requestId);
+        return;
+      case 'conversation.send':
+        converse(String(payload.text), requestId);
+        return;
+      case 'push.register':
+        // Nothing is sent from here: the simulator's pushes are not the server's to make.
+        broadcast('command.accepted', { environment: payload.environment }, requestId);
+        return;
+      case 'approval.decide':
+        decide(payload, requestId);
+        return;
+      default:
+        broadcast('command.rejected', { code: 'unsupported' }, requestId);
+    }
+  }
+
+  /** `approval.decide` as the contract has it: one decision each, for the revision the owner saw. */
+  function decide(payload: Record<string, unknown>, requestId: string): void {
+    const { approvalId, revision, decision, text, placement } = payload;
+    const reject = (code: string) => broadcast('command.rejected', { code }, requestId);
+    if (typeof approvalId !== 'string' || typeof revision !== 'number' || !Number.isInteger(revision)) return reject('invalid-request');
+    if (decision !== 'approve' && decision !== 'edit' && decision !== 'reject') return reject('invalid-request');
+    if (decision === 'edit' && (typeof text !== 'string' || text.trim() === '')) return reject('invalid-request');
+    if (placement !== undefined && placement !== 'thread' && placement !== 'channel') return reject('invalid-request');
+
+    const already = closed.get(approvalId);
+    if (already) {
+      // A decision on a closed approval changes nothing and is answered with how it closed.
+      broadcast('command.accepted', { approvalId, revision, state: already }, requestId);
+      return;
+    }
+    const approval = approvals.find((a) => a.approvalId === approvalId);
+    if (!approval) return reject('invalid-request');
+    if (approval.revision !== revision) return reject('stale-revision');
+
+    const state: Outcome = decision === 'approve' ? 'approved' : decision === 'edit' ? 'edited' : 'rejected';
+    approvals = approvals.filter((a) => a !== approval);
+    closed.set(approvalId, state);
+    broadcast('command.accepted', { approvalId, revision, state }, requestId);
+    const resolved = { approvalId, revision, state };
+    if (state === 'rejected') {
+      broadcast('approval.resolved', { ...resolved, resolvedAt: new Date().toISOString() });
+      return;
+    }
+    const sentText = state === 'edited' ? String(text) : approval.text;
+    later(options.sendDelayMs, () => broadcast('approval.resolved', {
+      ...resolved, resolvedAt: new Date().toISOString(), delivery: 'sent', sentText,
+    }));
+  }
+
+  function converse(text: string, requestId: string): void {
+    sent += 1;
+    const messageId = `m${100 + sent}`;
+    const eventId = `e${100 + sent}`;
+    const own: Message = { messageId, role: 'owner', kind: 'message', text, createdAt: new Date().toISOString(), eventId };
+    messages.push(own);
+    broadcast('conversation.message', own);
+    broadcast('command.accepted', { messageId, eventId, state: 'processing' }, requestId);
+    expression = 'thinking';
     broadcast('avatar.expression', { expression });
-    broadcast('conversation.event.completed', { eventId, messageId, status: 'replied' });
-  }, replyDelay);
+    later(options.replyDelayMs / 3, () => broadcast('conversation.thinking', { line: 'メモを読み返してる' }, undefined, true));
+    later(options.replyDelayMs, () => {
+      const reply: Message = {
+        messageId: `r${100 + sent}`, role: 'natsumi', kind: 'reply', text: `「${text}」だね。わかった。`,
+        createdAt: new Date().toISOString(), eventId, replyTo: messageId, expression: 'laughing',
+      };
+      messages.push(reply);
+      broadcast('conversation.message', reply);
+      expression = 'laughing';
+      broadcast('avatar.expression', { expression });
+      broadcast('conversation.event.completed', { eventId, messageId, status: 'replied' });
+    });
+  }
+
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url ?? '/', 'http://localhost');
+    log(request.method, url.pathname);
+    if (url.pathname === '/auth/github/start') {
+      const state = encodeURIComponent(url.searchParams.get('state') ?? '');
+      response.writeHead(302, { Location: `natsumi://oauth/callback?code=fake-code&state=${state}` }).end();
+    } else if (url.pathname === '/auth/session' && request.method === 'POST') {
+      response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ token: 'fake-token', expiresAt: sessionEnd() }));
+    } else if (url.pathname === '/auth/logout' && request.method === 'POST') {
+      // The next login finds the approvals as they were at the start, so a walkthrough can be run again.
+      approvals = startingApprovals();
+      closed = new Map();
+      laterScheduled = false;
+      response.writeHead(204).end();
+    } else {
+      response.writeHead(404).end();
+    }
+  });
+
+  new WebSocketServer({ server, path: '/v1/ws' }).on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('message', (data) => {
+      const envelope = JSON.parse(data.toString()) as ClientEnvelope;
+      log('<-', envelope.type, JSON.stringify(envelope.payload));
+      answer(envelope);
+    });
+  });
+
+  return new Promise((resolve) => {
+    server.listen(options.port, 'localhost', () => resolve({
+      port: (server.address() as AddressInfo).port,
+      close: () => new Promise<void>((done) => {
+        for (const timer of timers) clearTimeout(timer);
+        for (const socket of sockets) socket.terminate();
+        server.close(() => done());
+      }),
+    }));
+  });
 }
 
-const server = http.createServer((request, response) => {
-  const url = new URL(request.url ?? '/', 'http://localhost');
-  console.log(request.method, url.pathname);
-  if (url.pathname === '/auth/github/start') {
-    const state = encodeURIComponent(url.searchParams.get('state') ?? '');
-    response.writeHead(302, { Location: `natsumi://oauth/callback?code=fake-code&state=${state}` }).end();
-  } else if (url.pathname === '/auth/session' && request.method === 'POST') {
-    response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ token: 'fake-token', expiresAt: sessionEnd() }));
-  } else if (url.pathname === '/auth/logout' && request.method === 'POST') {
-    response.writeHead(204).end();
-  } else {
-    response.writeHead(404).end();
-  }
-});
-
-new WebSocketServer({ server, path: '/v1/ws' }).on('connection', (socket) => {
-  sockets.add(socket);
-  socket.on('close', () => sockets.delete(socket));
-  socket.on('message', (data) => {
-    const envelope = JSON.parse(data.toString()) as ClientEnvelope;
-    console.log('<-', envelope.type, JSON.stringify(envelope.payload));
-    answer(envelope);
+if (import.meta.main) {
+  const { values } = parseArgs({ options: {
+    port: { type: 'string', default: '8787' },
+    'reply-delay': { type: 'string', default: '5' },
+    short: { type: 'boolean', default: false },
+    'approval-delay': { type: 'string', default: '8' },
+  } });
+  const server = await startFakeServer({
+    port: Number(values.port), replyDelayMs: Number(values['reply-delay']) * 1000, short: values.short,
+    approvalDelayMs: Number(values['approval-delay']) * 1000, sendDelayMs: 1000, log: true,
   });
-});
-
-server.listen(port, 'localhost', () => console.log(`fake natsumi server on http://localhost:${port}`));
+  console.log(`fake natsumi server on http://localhost:${server.port}`);
+}

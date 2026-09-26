@@ -27,6 +27,10 @@ public enum PhoneEvent: Equatable, Sendable {
     case pushRegistrationReady(PushRegistration)
     /// A silent push said something was read or checked, most likely on another device.
     case backgroundPushReceived(BackgroundPush)
+    /// A silent push said an approval was closed, here or on another device.
+    case approvalResolvedPushReceived(ApprovalResolvedPush)
+    /// The owner tapped the alert of an approval.
+    case approvalNotificationOpened(approvalId: String)
 
     // MARK: The login screen
 
@@ -49,6 +53,8 @@ public enum PhoneEvent: Equatable, Sendable {
     case inputFocusChanged(Bool)
     case inputSubmitted(String)
     case outgoingDismissed(requestId: String)
+    /// The count of approvals waiting, under the status.
+    case approvalsOpenRequested
 
     // MARK: The history and the settings
 
@@ -57,6 +63,22 @@ public enum PhoneEvent: Equatable, Sendable {
     /// A URL in what she or the owner wrote, in the balloon or the history (ADR 0038).
     case linkTapped(URL)
     case logoutRequested
+
+    // MARK: The approvals
+
+    /// A row of the list of approvals.
+    case approvalOpenRequested(approvalId: String)
+    /// Back from an approval to the list, by the button or by the swipe.
+    case approvalClosed
+    /// 「スレッド」 or 「チャンネル」 on the approval that is open.
+    case approvalPlacementChosen(ApprovalPlacement)
+    case approvalApproved(approvalId: String)
+    case approvalRejected(approvalId: String)
+    /// 「修正する」: the draft becomes a text field.
+    case approvalEditRequested
+    case approvalEditCancelled
+    /// 「修正して送る」 with the text the owner wrote.
+    case approvalEditSubmitted(approvalId: String, text: String)
 }
 
 /// What the iPhone's mediator asks the world outside to do. The root runs these and reports back with events.

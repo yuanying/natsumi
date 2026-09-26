@@ -61,6 +61,85 @@ final class FakeServerWalkthroughTests: XCTestCase {
         shoot("12-logged-out")
     }
 
+    /// The Slack posts waiting for the owner (ADR 0041): one arrives while the main screen is up, and each of the three
+    /// is closed a different way — approved, edited and rejected. Logging out at the end puts the fake server's
+    /// approvals back, so this can run again.
+    func testApprovalWalkthrough() throws {
+        app.launch()
+        logInIfAsked()
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 15), "つながらない")
+
+        // Two are waiting at the start, and the fake server sends a third a few seconds after the sync.
+        let entry = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "承認待ち 3 件")).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 20), "3 件目が届かない")
+        shoot("a1-main")
+        entry.tap()
+        XCTAssertTrue(app.navigationBars["承認待ち"].waitForExistence(timeout: 5))
+        shoot("a2-list")
+
+        // A reply in a thread, sent back twice before: approved as it is.
+        row("work/#dev").tap()
+        XCTAssertTrue(app.navigationBars["承認"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["同じ返信先で 3 回目の突き返しになりました"].exists)
+        shoot("a3-detail")
+        app.swipeUp()
+        shoot("a4-detail-below")
+        app.buttons["承認して送る"].tap()
+        XCTAssertTrue(app.staticTexts["承認して送りました"].waitForExistence(timeout: 10))
+        shoot("a5-approved")
+        back()
+
+        // The one that arrived: moved to the channel and edited.
+        row("work/@佐藤").tap()
+        XCTAssertTrue(app.navigationBars["承認"].waitForExistence(timeout: 5))
+        app.buttons["チャンネル"].tap()
+        XCTAssertTrue(app.staticTexts["チャンネルに投稿"].exists)
+        app.buttons["修正"].tap()
+        let field = app.textFields["approval.editor.text"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        // The caret starts at the beginning of the draft: what is typed goes in front of it.
+        field.tap()
+        field.typeText("確認しました。")
+        shoot("a6-editing")
+        app.buttons["修正して送る"].tap()
+        XCTAssertTrue(app.staticTexts["修正して送りました"].waitForExistence(timeout: 10))
+        // What was sent is the owner's text, with the addition.
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "確認しました。")).firstMatch.exists)
+        shoot("a7-edited")
+        back()
+
+        // A post to the channel itself has no thread to choose: rejected.
+        row("work/#random").tap()
+        XCTAssertTrue(app.navigationBars["承認"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["スレッド"].exists)
+        app.buttons["却下"].tap()
+        XCTAssertTrue(app.staticTexts["却下しました"].waitForExistence(timeout: 10))
+        shoot("a8-rejected")
+        back()
+
+        XCTAssertTrue(app.staticTexts["承認待ちはありません"].waitForExistence(timeout: 5))
+        shoot("a9-none-left")
+        back()
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "承認待ち")).firstMatch.exists)
+
+        app.buttons["設定"].tap()
+        app.buttons["ログアウト"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+    }
+
+    /// The row of the list for a channel.
+    private func row(_ channel: String) -> XCUIElement {
+        let row = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", channel)).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "\(channel) の行が無い")
+        return row
+    }
+
+    private func back() {
+        app.navigationBars.buttons.firstMatch.tap()
+        sleep(1)
+    }
+
     /// The login screen, when the app has no session: the fake server's address, the button, and the system's
     /// question whether the app may sign in with it.
     private func logInIfAsked() {

@@ -10,19 +10,30 @@ struct MainView: View {
     var body: some View {
         // The page open over the main screen is in the props; the stack only shows it, and going back by the button
         // or by the swipe is raised as an event like any other.
+        // An approval is pushed over their list, so going back from it by one leaves the list.
         NavigationStack(path: Binding(
-            get: { props.page.map { [PageRoute($0)] } ?? [] },
-            set: { if $0.isEmpty { sinks.main(.pageClosed) } }
+            get: { props.page.map(PageRoute.path) ?? [] },
+            set: { path in
+                if path.isEmpty {
+                    sinks.main(.pageClosed)
+                } else if path.count < (props.page.map(PageRoute.path)?.count ?? 0) {
+                    sinks.approval(.approvalClosed)
+                }
+            }
         )) {
             screen
                 .toolbarVisibility(.hidden, for: .navigationBar)
-                .navigationDestination(for: PageRoute.self) { _ in
-                    switch props.page {
-                    case .history(let history):
+                .navigationDestination(for: PageRoute.self) { route in
+                    switch (route, props.page) {
+                    case (_, .history(let history)):
                         HistoryView(props: history, sinks: sinks)
-                    case .settings(let settings):
+                    case (_, .settings(let settings)):
                         SettingsView(props: settings, send: sinks.settings)
-                    case nil:
+                    case (_, .approvals(let list)), (.approvals, .approval(_, let list)):
+                        ApprovalListView(props: list, send: sinks.approvalRows)
+                    case (_, .approval(let approval, _)):
+                        ApprovalView(props: approval, sinks: sinks)
+                    case (_, nil):
                         EmptyView()
                     }
                 }
@@ -52,6 +63,15 @@ struct MainView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
+
+            if let approvals = props.approvals {
+                Button { sinks.approvalsEntry(.approvalsOpenRequested) } label: {
+                    ApprovalEntryView(props: approvals)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+            }
 
             if let notices = props.notices {
                 Button { sinks.notices(.historyOpenRequested) } label: {
@@ -122,11 +142,16 @@ struct MainView: View {
 enum PageRoute: Hashable {
     case history
     case settings
+    case approvals
+    case approval
 
-    init(_ page: PhonePageProps) {
+    /// The pages on the stack: an approval is over the list of approvals.
+    static func path(_ page: PhonePageProps) -> [PageRoute] {
         switch page {
-        case .history: self = .history
-        case .settings: self = .settings
+        case .history: [.history]
+        case .settings: [.settings]
+        case .approvals: [.approvals]
+        case .approval: [.approvals, .approval]
         }
     }
 }

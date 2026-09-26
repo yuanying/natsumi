@@ -41,6 +41,8 @@ public struct SessionMachine {
     public private(set) var phase: SessionPhase = .idle
     public private(set) var deviceId: String?
     public private(set) var conversation = ConversationState()
+    /// The Slack posts waiting for the owner, and the owner's decisions on them.
+    public private(set) var approvals = ApprovalBook()
 
     /// Where this iPhone wants its notifications, sent after every sync (ADR 0029). The Mac has none.
     private var pushRegistration: PushRegistration?
@@ -110,6 +112,14 @@ public struct SessionMachine {
         return effects
     }
 
+    /// Records the owner's decision on an approval and sends it now when synced; otherwise it waits for the sync
+    /// like an unsent message. A second decision while the first is on its way sends nothing.
+    public mutating func decideApproval(_ approvalId: String, _ decision: ApprovalDecision) -> [SessionEffect] {
+        guard let sent = approvals.decide(approvalId, decision, requestId: makeRequestId()) else { return [] }
+        guard phase == .ready, let deviceId else { return [] }
+        return [.send(ClientEnvelope(requestId: sent.requestId, deviceId: deviceId, command: sent.command))]
+    }
+
     /// Keeps the registration and sends it now when synced. Every later sync sends it again, since the token can
     /// change and the server may have dropped it.
     public mutating func registerPush(_ registration: PushRegistration) -> [SessionEffect] {
@@ -154,6 +164,7 @@ public struct SessionMachine {
 
         guard isSyncAnswer else {
             conversation.apply(event, requestId: envelope.requestId)
+            approvals.apply(event, requestId: envelope.requestId)
             return []
         }
         var effects: [SessionEffect] = envelope.sessionExpiresAt.map { [.extendSession(until: $0)] } ?? []
@@ -161,6 +172,7 @@ public struct SessionMachine {
         case .snapshot(let snapshot):
             syncRequestId = nil
             conversation.apply(event)
+            approvals.apply(event)
             effects += adopt(snapshot.deviceId)
             effects += becomeReady()
         case .accepted(let accepted) where accepted.mode == "resume":
@@ -177,6 +189,7 @@ public struct SessionMachine {
             effects.append(.disconnect)
         default:
             conversation.apply(event, requestId: envelope.requestId)
+            approvals.apply(event, requestId: envelope.requestId)
         }
         return effects
     }
@@ -247,10 +260,14 @@ public struct SessionMachine {
         let changes = conversation.localReadChanges.map {
             SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: $0.command))
         }
+        // A decision is idempotent too: the server answers one on a closed approval with the state it closed in.
+        let decisions = approvals.unsent.map {
+            SessionEffect.send(ClientEnvelope(requestId: $0.requestId, deviceId: deviceId, command: $0.command))
+        }
         // Registering is idempotent on the server: the same device's registration is overwritten.
         let register = pushRegistration.map {
             [SessionEffect.send(ClientEnvelope(requestId: makeRequestId(), deviceId: deviceId, command: .pushRegister($0)))]
         } ?? []
-        return sends + changes + register
+        return sends + changes + decisions + register
     }
 }
