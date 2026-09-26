@@ -9,8 +9,9 @@
  * reply to each message after a line of thinking. It also keeps Slack posts waiting for the owner's approval: two at
  * the start, one more arriving `--approval-delay` seconds after the first sync (0 for none), and `approval.decide`
  * answered the way the contract says. The post to a channel carries two images, served at `/v1/images/<imageId>` to
- * the fake token (the faces of the avatar stand in for pictures she drew). Logging out puts the approvals back as they were at the start. Everything it
- * says is fictional and kept in memory only.
+ * the fake token (the faces of the avatar stand in for pictures she drew). The conversation holds a reply showing two
+ * images the same way, and a message that asks for a picture (`絵` or `画像`) is answered with one. Logging out puts
+ * the approvals back as they were at the start. Everything it says is fictional and kept in memory only.
  */
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
@@ -48,7 +49,10 @@ interface Message {
   replyTo?: string;
   about?: string[];
   expression?: string;
+  images?: ShownImage[];
 }
+
+interface ShownImage { imageId: string; mimeType: string; bytes: number; width?: number; height?: number }
 
 interface Issue {
   name: string;
@@ -101,6 +105,11 @@ const promise: Issue = { name: 'promise-for-owner', label: '本人に代わる�
 const IMAGES = new Map(['happy', 'laughing'].map(face => [`image-fake-${face}`,
   readFileSync(new URL(`../../assets/avatar/${face}.png`, import.meta.url))]));
 const listed = (imageId: string) => ({ imageId, mimeType: 'image/png', bytes: IMAGES.get(imageId)!.length });
+/** A line's images also say their size, read from the PNG header (ADR 0045). */
+const sized = (imageId: string): ShownImage => {
+  const data = IMAGES.get(imageId)!;
+  return { ...listed(imageId), width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+};
 
 /** The approvals waiting at the start: a reply in a thread sent back twice before, and a post to a channel. */
 function startingApprovals(): Approval[] {
@@ -158,6 +167,8 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
     { messageId: 'n1', role: 'natsumi', kind: 'notice', text: '10 時から定例があります\n資料は共有フォルダにあります', createdAt: ago(8), about: ['e0'], expression: 'neutral' },
     { messageId: 'n2', role: 'natsumi', kind: 'notice', text: '明日は祝日です', createdAt: ago(7), about: ['e0'], expression: 'happy' },
     { messageId: 'r1', role: 'natsumi', kind: 'reply', text: options.short ? 'おはよう。今日は何から始める？' : longReply, createdAt: ago(5), eventId: 'e1', replyTo: 'm1', expression: 'happy' },
+    { messageId: 'r2', role: 'natsumi', kind: 'reply', text: '昨日描いた絵も見てね。', createdAt: ago(4), expression: 'laughing',
+      images: [sized('image-fake-happy'), sized('image-fake-laughing')] },
   ];
   let unacknowledged = ['n1', 'n2'];
   let readThrough: string | null = null;
@@ -285,6 +296,7 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       const reply: Message = {
         messageId: `r${100 + sent}`, role: 'natsumi', kind: 'reply', text: `「${text}」だね。わかった。`,
         createdAt: new Date().toISOString(), eventId, replyTo: messageId, expression: 'laughing',
+        ...(/絵|画像/.test(text) ? { images: [sized('image-fake-happy')] } : {}),
       };
       messages.push(reply);
       broadcast('conversation.message', reply);

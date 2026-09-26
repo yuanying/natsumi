@@ -184,3 +184,29 @@ test('the post to a channel carries two images, each fetched with the token and 
   assert.equal(unknown.status, 404);
   client.close();
 }));
+
+// docs/client-contract.md (ADR 0045): a reply with images in the conversation, fetched the same way.
+test('the conversation holds a reply with images, and a message asking for a picture is answered with one', () => withServer(async port => {
+  const { client, snapshot } = await synced(port);
+  const withImages = snapshot.payload.messages.filter((m: any) => m.images !== undefined);
+  assert.equal(withImages.length, 1);
+  assert.equal(withImages[0].kind, 'reply');
+  assert.equal(withImages[0].images.length, 2);
+  // Every other line has no field at all.
+  assert.ok(snapshot.payload.messages.filter((m: any) => m !== withImages[0]).every((m: any) => !('images' in m)));
+  for (const image of withImages[0].images) {
+    assert.deepEqual(Object.keys(image).sort(), ['bytes', 'height', 'imageId', 'mimeType', 'width']);
+    const fetched = await fetch(`http://localhost:${port}/v1/images/${image.imageId}`, { headers: { authorization: 'Bearer fake-token' } });
+    assert.equal(fetched.status, 200);
+    assert.equal(Buffer.from(await fetched.arrayBuffer()).length, image.bytes);
+  }
+
+  const from = client.received.length;
+  client.send('conversation.send', { text: '絵を見せて' });
+  const reply = await client.next(e => e.type === 'conversation.message' && e.payload.kind === 'reply', from);
+  assert.equal(reply.payload.images.length, 1);
+  client.send('conversation.send', { text: 'ありがとう' });
+  const plain = await client.next(e => e.type === 'conversation.message' && e.payload.kind === 'reply' && e.payload.text.includes('ありがとう'), from);
+  assert.equal('images' in plain.payload, false);
+  client.close();
+}));
