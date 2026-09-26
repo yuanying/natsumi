@@ -63,8 +63,9 @@ natsumi もポッポさんへの依頼でリアクションを付けられる（
 - `files` には、`new` の分と並べて、リアクションの付いた投稿のあるファイルを載せる。投稿が前の日のものなら、そのファイルになる。
 - 数えるものが無い種類は、欄ごと付けない。発言も無ければ、Slack の欄ごと付けない（ADR 0039 のまま）。
 - 更新元の枠は、`new` に限らず、更新元ごとに数える種類を足せる形にする。
-- system prompt の `updates` の説明は変えない。`reactions_on_mine` の読み方は Slack のマニュアル（`manual/slack.md`）に書く。
-  system prompt は固定の文にしておく方針（prefix cache のため）に合わせる。
+- system prompt の `ping` の説明（`self_check` の `updates` もこれに従う）に、`reactions_on_mine` の意味を 1 文足す（本人の決定）。
+  文は固定であり、session の間は変わらない。足した時点で prefix が変わるので、走っている session は夜の切り替えまでキャッシュを失う。
+  ファイルの行の読み方などの細部は Slack のマニュアル（`manual/slack.md`）に書く。
 
 ### メンションの出来事
 
