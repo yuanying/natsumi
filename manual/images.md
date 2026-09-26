@@ -5,13 +5,13 @@ run_shell で `sdctl` を使うと、本人の画像生成サーバー（Stable 
 
 ## いちばん短い手順
 
-既定の設定（`/etc/sdctl/anima.yaml`）を使えば、書くのはプロンプトだけです。
+既定の設定が入っているので、書くのはプロンプトだけです。
 
-**1. プロンプトを `/work/images/` の下にファイルで書きます。**
+**1. プロンプトをファイルに書きます。**
 
 ```
-mkdir -p /work/images
-cat > /work/images/cat.yaml <<'EOF'
+mkdir -p /work/prompts
+cat > /work/prompts/cat.yaml <<'EOF'
 prompt: |
   masterpiece, best quality, newest, safe,
   no humans,
@@ -21,23 +21,26 @@ prompt: |
 EOF
 ```
 
-**2. 作ります。** 1 枚に 30 秒ほどかかります。
+**2. 作ります。** 1 枚に 30 秒ほどかかります。保存した画像のパスが 1 行出ます。
 
 ```
-sdctl txt2img --params /etc/sdctl/anima.yaml --prompt /work/images/cat.yaml -o /work/images/cat.png > /dev/null
+sdctl txt2img --prompt /work/prompts/cat.yaml
 ```
 
-- 進み具合の表示は長いので、`> /dev/null` で捨てます。失敗したときのエラーは、それでも表示されます。
-- 出力（`-o`）は必ず `/work/` の下にします。ほかの場所の画像は、Slack に出せません。
-- 同じ名前で作ると上書きします。作り直すときは、名前を変えると見比べられます。
-
-**3. 見て確かめます。**
-
 ```
-view /work/images/cat.png
+/work/images/output-20260926-143205-1.png
 ```
 
-**4. Slack に出すなら**、ポッポさんへの依頼に `画像: /work/images/cat.png` の見出しを足します（`/manual/slack.md`）。
+- 画像は `/work/images/` に、重ならない名前で保存されます。名前を付けたいときだけ `-o /work/images/cat.png` を足します（同じ名前なら上書きします）。
+- 画像は `/work/` の下に置きます。ほかの場所の画像は、Slack に出せません。
+
+**3. 出たパスを `view` で見て確かめます。**
+
+```
+view /work/images/output-20260926-143205-1.png
+```
+
+**4. Slack に出すなら**、ポッポさんへの依頼に `画像: <そのパス>` の見出しを足します（`/manual/slack.md`）。
 
 ## 既定の設定
 
@@ -90,7 +93,7 @@ black business suit,  collared white shirt, large breasts,
 その後に、人数・場面・表情・構図・背景を続けます。
 
 ```
-cat > /work/images/me.yaml <<'EOF'
+cat > /work/prompts/me.yaml <<'EOF'
 prompt: |
   <lora:kutara_aki_anima.v3:1> ,
   masterpiece, newest,
@@ -101,5 +104,5 @@ prompt: |
   1girl, solo, upper body, smile, looking at viewer,
   indoors, office, window, soft daylight
 EOF
-sdctl txt2img --params /etc/sdctl/anima.yaml --prompt /work/images/me.yaml -o /work/images/me.png > /dev/null
+sdctl txt2img --prompt /work/prompts/me.yaml
 ```

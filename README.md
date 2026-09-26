@@ -475,11 +475,13 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   git の差分でも見られません。中を見るときはオーナーが自分でコンテナに入ります。
   例外は、natsumi が `view` で見る画像と、ポッポさんへの依頼で名指しした画像だけです（サーバーが読みます）。
 - 画像を作る（[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）
-  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.0。image の build でソースから入れます）を使い、
+  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.1。image の build でソースから入れます）を使い、
     Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの [manual/images.md](manual/images.md) にあります。
   - 既定の設定は image の `/etc/sdctl/anima.yaml`（リポジトリの [docker/sdctl/anima.yaml](docker/sdctl/anima.yaml)）です。
     Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
     変えるには image を作り直します。
+  - image の環境変数 `SDCTL_PARAMS` がこの設定を、`SDCTL_OUTPUT_DIR` が出力の既定の `/work/images` を指します。
+    natsumi は `sdctl txt2img --prompt <ファイル>` だけで作れ、保存したパスが 1 行出ます。
   - 接続先は環境変数 `SDCTL_URL` です。Kubernetes の構成では、同じ Pod の出口の proxy が loopback で受けて token を付ける中継を指します
     （token は中継だけが持ちます。[権限と秘密の一覧](docs/permissions.md) の「作業環境」）。Docker の構成（`compose.yaml`）には中継が無く、作業環境はネットワークを持たないので、sdctl は使えません。
 - 閉じ込め

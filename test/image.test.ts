@@ -53,7 +53,7 @@ test('the workspace image has sdctl built from a fixed version of its source', a
   const text = await dockerfile();
   const stage = text.slice(text.indexOf(' AS sdctl\n'), text.indexOf('\nFROM ', text.indexOf(' AS sdctl\n')));
   assert.ok(text.includes(' AS sdctl\n'), 'no stage builds sdctl');
-  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.0\b/);
+  assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.1\b/);
   assert.doesNotMatch(stage, /@latest/);
   assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/local\/bin\/sdctl$/m);
 });
@@ -68,4 +68,12 @@ test('the default params are in the workspace image, for Anima, with a negative 
   assert.match(params, /^override_settings:\n  sd_model_checkpoint: "anima_mignolia_v10"\n  forge_additional_modules:\n    - "qwen_image_vae\.safetensors"\n    - "qwen_3_06b_base\.safetensors"$/m);
   for (const key of ['steps', 'width', 'height', 'cfg_scale', 'sampler', 'scheduler', 'seed']) assert.match(params, new RegExp(`^${key}: `, 'm'), key);
   assert.doesNotMatch(params, /^prompt:/m, 'the prompt is hers to write');
+});
+
+// sdctl v0.3.1 reads its defaults from the environment: she writes the prompt and nothing else.
+test('the workspace image makes the default params and /work/images sdctl\'s own defaults, and leaves the URL to the environment', async () => {
+  const stage = await workspaceStage();
+  assert.match(stage, /^ENV SDCTL_PARAMS=\/etc\/sdctl\/anima\.yaml$/m);
+  assert.match(stage, /^ENV SDCTL_OUTPUT_DIR=\/work\/images$/m);
+  assert.doesNotMatch(stage, /^ENV SDCTL_URL/m, 'the relay is the environment\'s to name');
 });
