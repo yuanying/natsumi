@@ -60,7 +60,7 @@ Mac は `ASWebAuthenticationSession` を callback scheme `natsumi` で使う。
 クライアントのメッセージは 1 件ごとに `v` を検証する。`v` が 1 でなければ `command.rejected`（`unsupported-version`）を送り、
 close code 1002 で閉じる。JSON のオブジェクトでなければ `invalid-envelope` を送り、1007 で閉じる。1 メッセージは 64 KiB までとする。
 未知の `type` は無視する。セッションの失効・期限切れでは close code 1008 で閉じる（command を受けるたびと、定期的に期限を確かめる）。
-下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register` は実装済みで、それ以外の command は
+下表のうち `session.sync`・`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide` は実装済みで、それ以外の command は
 `command.rejected`（`not-implemented`）を返す。`session.sync` の前の応答は、その接続だけの一時的な stream で採番する。
 会話の扱いの理由は [ADR 0008](adr/0008-single-thinking-loop-and-mac-conversation.md)、
 既読と知らせの確認の理由は [ADR 0013](adr/0013-read-state-on-the-server.md) にある。
@@ -89,25 +89,26 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
 
 | クライアント command | payload | サーバーの結果 |
 | --- | --- | --- |
-| `session.sync` | `resume`: 前回の epoch/streamId/seq または null | 下記「端末の登録と stream」。承認待ちは後続の実装で加える |
+| `session.sync` | `resume`: 前回の epoch/streamId/seq または null | 下記「端末の登録と stream」 |
 | `conversation.send` | text（32 KiB まで、空白だけは不可）、requestId | `command.accepted`（messageId、eventId、state）、または request-conflict / invalid-request / `service.unavailable` |
 | `conversation.read` | throughMessageId（会話の messageId） | `command.accepted`（readThroughMessageId、unreadReplyCount。手前の位置なら今の位置）、または invalid-request / `service.unavailable`。下記「既読と知らせの確認」 |
 | `conversation.interrupt` | — | 受け付けない（`not-implemented`）。進行中の思考は外から止めない |
-| `approval.decide` | approvalId、revision、approve/reject | 確定した承認状態。内容・期限・権限を再検証（未実装） |
+| `approval.decide` | approvalId、revision（整数）、decision（approve / edit / reject）。edit は text（32 KiB まで、空白だけは不可）。approve と edit は任意で placement（thread / channel） | `command.accepted`（approvalId、revision、state）。既に閉じた承認には閉じたときの state。revision が違えば `stale-revision`、形の不備や知らない approvalId は invalid-request。下記「承認と外部実行」 |
 | `notification.ack` | notificationId（知らせの messageId） | `command.accepted`（notificationId、acknowledgedAt。2 回目以降も最初の時刻）、または invalid-request / `service.unavailable` |
 | `device.activity` | 明示操作の kind のみ | サーバー受理順で通知先更新。画面内容は含めない（未実装） |
 | `push.register` | token、publicKey、environment | `command.accepted`（environment）、または invalid-request。下記「iPhone への通知」 |
 
 | サーバー event | 内容 |
 | --- | --- |
-| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）。envelope の seq が snapshot の sequence。承認待ちは後続の実装で加える |
+| `session.snapshot` | deviceId、`messages`（本人に見せる会話。古い順で直近 500 件）、`pendingEvents`（処理を待つ・処理中の本人のメッセージ: eventId、messageId、state）、`avatar`（expression）、`readThroughMessageId`（既読カーソル。無ければ null）、`unreadReplyCount`（未読の返事の数。500 件の外も数える）、`unacknowledgedNotificationIds`（未確認の知らせの messageId をすべて古い順に。500 件の外も含む）、`pendingApprovals`（承認待ちの承認をすべて古い順に。Slack の設定が無ければ空）、`sessionExpiresAt`（接続で延びたセッションの期限。上記「セッションの延長」）。envelope の seq が snapshot の sequence |
 | `conversation.read` | readThroughMessageId、unreadReplyCount。カーソルが進んだときだけ全端末に届く |
 | `notification.acked` | notificationId、acknowledgedAt。知らせを初めて確認したときだけ全端末に届く |
 | `conversation.message` | messageId、role（owner / natsumi）、kind（message / reply / notice）、text（全文）、createdAt。message は eventId、reply は本人のメッセージに答えたものなら replyTo（答えたメッセージのうち最も新しいもののイベント）、notice は関係するイベントがあれば about。本人のメッセージに答えていない reply（続けて話したセリフや、自分から話しかけたセリフ）には replyTo が無い（ADR 0032）。reply と notice は、natsumi がそのセリフに込めた気持ち expression（`avatar.expression` と同じ候補）を持つ。本人のメッセージと、気持ちを記録する前のセリフには欄が無い（null ではなく省く）。欄が無いこと、知らない値は「不明」と読む。セリフの気持ちはアバターの表情とは別で、`avatar.expression` は届かない（ADR 0026） |
 | `avatar.expression` | expression（neutral / happy / laughing / surprised / thinking / worried / sad / sleepy） |
 | `conversation.thinking` | line（natsumi がいま書いている思考の 1 行。120 文字まで。空文字は思考が終わったこと）。その場限りで、採番せず、再送もせず、記録もしない。下記「考えている 1 行」 |
 | `conversation.event.completed` | eventId、messageId、status（replied / no-reply / failed）。failed には reason（model-call-limit / timeout / model-error / stopped） |
-| `approval.pending` / `approval.resolved` | approvalId、revision、具体的変更内容または確定結果 |
+| `approval.pending` | 新しい承認待ち（承認の全体）。全端末に届く。下記「承認と外部実行」 |
+| `approval.resolved` | approvalId、revision、state（approved / edited / rejected / expired）、resolvedAt。送ったときは delivery（sent / failed）、sent なら sentText、failed なら reason（mechanical-check / slack-error / target-gone）。全端末に届く |
 | `notification.batch` | 未実装で、送られない。知らせは `conversation.message`（kind: notice）で届く。下記「通知と定期処理」 |
 | `session.renewed` | expiresAt（延びたセッションの期限）。接続中に期限が動いたときだけ、その接続に届く。その場限りで、採番せず、再送もしない。上記「セッションの延長」 |
 | `command.accepted` | command ごとの結果（`conversation.send` は messageId・eventId・state、`session.sync` の再送は deviceId・mode: resume・sessionExpiresAt） |
@@ -122,7 +123,7 @@ close code 1002 で閉じる。JSON のオブジェクトでなければ `invali
    サーバーのバッファに残っていれば、欠けたイベントが元の seq のまま届き、続けて `command.accepted`（mode: resume）が届く。
 3. それ以外の場合は `session.snapshot` が届く。Mac は表示をこの snapshot で置き換え、以後はこれより大きい seq のイベントを適用する。
 4. 会話が使えない場合は `service.unavailable` が届く（deviceId と sessionExpiresAt も付く）。
-5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`）は `sync-required`、
+5. 同期の前の端末の command（`conversation.send`・`conversation.read`・`notification.ack`・`push.register`・`approval.decide`）は `sync-required`、
    接続の端末と異なる `deviceId` の command は `device-mismatch` で拒否される。
 6. 同じ端末で新しく接続すると古い接続は close code 4001 で閉じられる。受信が大きく遅れた接続は 4002 で閉じられるので、再接続して同期する。
 
@@ -254,6 +255,8 @@ iPhone は接続のたびに、`session.sync` の後で `push.register` を送�
 | 知らせ（kind: notice）を記録した | alert |
 | 既読のカーソルが進んだ（`conversation.read`） | background（kind: read） |
 | 知らせが初めて確認された（`notification.acked`） | background（kind: acked） |
+| 承認待ちができた（`approval.pending`） | alert（kind: approval） |
+| 承認が閉じた（`approval.resolved`） | background（kind: approval-resolved） |
 
 本人のメッセージは送らない。5xx・429・つながらないときは、同じ `apns-id` で数回（既定では 5 秒・30 秒・2 分の後）送り直し、
 だめなら諦める。送り直しはメモリの中だけで、サーバーを再起動すると消える。
@@ -266,12 +269,18 @@ iPhone は接続のたびに、`session.sync` の後で `push.register` を送�
 {"aps":{"alert":{"title":"なつみ","body":"返事があります"},"mutable-content":1,"badge":3,"sound":"default"},"messageId":"message-example","kind":"reply","position":42,"e":{"v":1,"epk":"BE9p…","nonce":"AAEC…","ct":"RDIz…"}}
 ```
 
-- `aps.alert` は決まった文である。本文は kind: reply なら「返事があります」、notice なら「知らせがあります」。
+- `aps.alert` は決まった文である。本文は kind: reply なら「返事があります」、notice なら「知らせがあります」、approval なら「承認待ちがあります」。
   Notification Service Extension が復号に失敗したときは、この文がそのまま出る。
-- `aps.badge` は、送る時点の未読の返事の数と未確認の知らせの数の和である。
+- `aps.badge` は、送る時点の未読の返事の数と未確認の知らせの数と承認待ちの数の和である。
 - 平文の `messageId`（会話の messageId。知らせならそのまま notificationId）、`kind`（`reply` / `notice`）、`position`（会話の位置の整数）は、
   会話の中身ではなく片づけに使う。
 - `e` はオブジェクトで、`v`（数値の 1）と、base64 の文字列 `epk`・`nonce`・`ct` を持つ。
+- kind: approval の alert は、平文に `messageId` と `position` を持たず、`kind` と `approvalId` だけを持つ。
+  `e` の平文は `{"text": "…", "channel": "work/#dev"}`（下書きの先頭と、投稿するチャンネル）で、AAD は approvalId の UTF-8 である。text の切り方は下と同じ。
+
+```json
+{"aps":{"alert":{"title":"なつみ","body":"承認待ちがあります"},"mutable-content":1,"badge":1,"sound":"default"},"kind":"approval","approvalId":"approval-example","e":{"v":1,"epk":"BE9p…","nonce":"AAEC…","ct":"RDIz…"}}
+```
 
 ### e の暗号
 
@@ -302,12 +311,54 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 {"aps":{"content-available":1},"kind":"acked","badge":0,"readThroughPosition":42,"notificationId":"message-example"}
 ```
 
-- `badge` は送る時点の未読の返事と未確認の知らせの和、`readThroughPosition` は既読のカーソルの位置（カーソルが無ければ欄が無い）。
+- `badge` は送る時点の未読の返事と未確認の知らせと承認待ちの和、`readThroughPosition` は既読のカーソルの位置（カーソルが無ければ欄が無い）。
 - kind: acked は、確認された知らせの `notificationId` を持つ。
+- kind: approval-resolved は `approvalId` と `badge` だけを持つ（`{"aps":{"content-available":1},"kind":"approval-resolved","approvalId":"approval-example","badge":0}`）。
+  アプリはその承認の alert を消す。
 - アプリはバッジを直し、届いている通知のうち、`position` が `readThroughPosition` 以下の返事と、確認済みの知らせを消す。
 - background push は iOS が間引くので確実には届かない。アプリは前に戻ったとき、同期した状態に合わせて通知とバッジを片づける。
 
 ## 承認と外部実行
+
+### Slack の投稿の承認
+
+natsumi が Slack に出したい投稿のうち、ポッポさんの判定で本人に回されたもの（`owner`）、判定できなかったもの（`no-verdict`）、
+同じ返信先で 3 回目に突き返されたもの（`rewrite-limit`）が承認待ちになる。判定が通った投稿は承認なしに送られる。
+理由は [ADR 0040](adr/0040-the-dove-sends-what-the-judge-passes.md) にある。リアクションは承認を通らない。
+
+承認（`approval.pending` の payload、`pendingApprovals` の各要素）は次を持つ。作った時点の中身で固定され、変わらない。
+
+| 欄 | 中身 |
+| --- | --- |
+| `approvalId` | 承認の ID |
+| `revision` | 整数。今は常に 1（サーバーが作り直すことは無い。修正は本人の決定として扱う） |
+| `kind` | `slack-post` |
+| `createdAt` / `expiresAt` | 作った時刻と期限（既定 7 日、設定 `slack.approvalExpiryDays`） |
+| `target.channel` | `work/#dev`（ワークスペース/チャンネル。DM は `work/@名前`） |
+| `target.replyTo` | 返す相手の発言の `speaker`・`at`（本人のタイムゾーンの `2026-09-25 14:32:05`）・`text`（100 文字まで。超えたら末尾に `…`）。チャンネルそのものへの投稿では欄が無い |
+| `target.placement` | `thread` か `channel`。判定の選択、判定なしならサーバーの決まりの値。チャンネルそのものへの投稿は `channel` |
+| `text` | natsumi の下書き（全文） |
+| `expression` | アイコンの表情。無ければ欄が無い |
+| `reason.verdict` | `owner`・`no-verdict`・`rewrite-limit` |
+| `reason.issues` | 問題点ごとの `name`（英語の識別子）・`label`（日本語の表示名）・`score`（0〜1）。しきい値以上のものに `flagged: true`（それ以外は欄が無い）。判定なしなら空 |
+| `reason.placement` | 判定の置き場所の `probabilities`（`thread`・`channel`）。判定なし、または判定が確率を返さなかったときは欄が無い |
+| `history` | 同じ返信先で突き返された前の下書きの `text` と、そのときの flagged の `issues`。古い順。無ければ空 |
+
+```json
+{"approvalId":"approval-example","revision":1,"kind":"slack-post","createdAt":"2026-09-25T06:00:00.000Z","expiresAt":"2026-10-02T06:00:00.000Z","target":{"channel":"work/#dev","placement":"thread","replyTo":{"speaker":"山田","at":"2026-09-25 14:32:05","text":"明日のレビュー大丈夫？"}},"text":"大丈夫です。","expression":"happy","reason":{"verdict":"owner","issues":[{"name":"promise-for-owner","label":"本人に代わる約束・期限","score":0.5,"flagged":true},{"name":"not-in-thread","label":"スレッドに無い情報","score":0.02}],"placement":{"probabilities":{"thread":0.8,"channel":0.2}}},"history":[]}
+```
+
+- 本人は `approval.decide` で承認（approve）・修正（edit）・却下（reject）を選ぶ。承認と修正では placement を変えられる。
+  チャンネルそのものへの投稿では placement は無視される。
+- 受け付けると `command.accepted`（approvalId・revision・state）が返る。state は approved・edited・rejected のどれか。
+  送った結果は、後で `approval.resolved` で全端末に届く。却下はその場で `approval.resolved`（delivery なし）が届く。
+- 決定は 1 回だけ受け付ける。既に閉じた承認への決定には、閉じたときの state を `command.accepted` で返し、何もしない（別の端末からの重複も同じ）。
+- 期限を過ぎた承認は閉じて `approval.resolved`（state: expired）を送る。期限を過ぎてから届いた決定には、送らずに expired を返す。
+- 修正した本文は判定に掛け直さない。送る直前の機械的な検査は、承認した下書きにも修正した本文にも掛け、当たれば送らずに
+  `delivery: failed`・`reason: mechanical-check` とする。返す相手の発言が消されていれば `target-gone`、Slack に断られれば `slack-error`。
+- 送るのは、承認なら見せた下書き、修正なら本人の本文だけである。`sentText` は実際に送った本文。
+
+### 予定の変更の承認（未実装）
 
 承認レコードは approvalId、revision、対象 calendar/event ID、変更前 ETag、変更後の全項目、
 期限、payload hash、状態、実行 operation ID を持つ。

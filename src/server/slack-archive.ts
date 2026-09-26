@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { Transaction } from './conversation-store.ts';
+import type { ParsedReference } from './dove-request.ts';
 import { isoAt } from './nightly.ts';
 import { writeFileAtomically } from './paths.ts';
 import type { UpdateSource } from './updates.ts';
@@ -40,6 +41,21 @@ export interface ArchivedMessage {
   files: { name: string; path?: string }[];
   edited: boolean;
 }
+
+/**
+ * A reference natsumi wrote, matched against the record (ADR 0040): the channel, and the message when one was named.
+ * The Slack IDs stay on the server's side of it.
+ */
+export interface ResolvedTarget {
+  workspace: string;
+  channelId: string;
+  /** How she names the channel: `work/#dev`, `work/@name`. */
+  label: string;
+  message?: { ts: string; threadTs?: string; speaker: string; at: string; text: string };
+}
+
+/** One message as the dove's judge and the owner see it: who, when (local, to the second), what. */
+export interface SeenMessage { from: string; at: string; text: string }
 
 export interface ChannelRow { workspace: string; channel_id: string; directory: string; label: string; is_im: number }
 
@@ -235,6 +251,70 @@ export class SlackArchive implements UpdateSource {
       new: Object.fromEntries(rows.map(row => [`${row.workspace}/${row.label}`, row.n])),
       files: rows.map(row => `${SLACK_PATH}/${row.workspace}/${row.directory}/${row.latest}.md`),
     };
+  }
+
+  /**
+   * Finds what a reference names: a channel by its label, and a message by its local date, time to the second, and
+   * speaker. A message that is not there, or more than one that fit, is a sentence saying so; the second lists how
+   * each begins so natsumi can tell them apart, and never their ts (ADR 0024).
+   */
+  resolve(reference: ParsedReference): { ok: true; target: ResolvedTarget } | { ok: false; text: string } {
+    const channel = this.db.prepare('SELECT * FROM slack_channels WHERE workspace = ? AND label = ?').get(reference.workspace, reference.channel) as
+      ChannelRow | undefined;
+    const where = `${reference.workspace}/${reference.channel}`;
+    if (!channel) return { ok: false, text: `チャンネル ${where} の記録がありません。/sources/slack/INDEX.md にあるチャンネルの名前で書いてください。` };
+    const target: ResolvedTarget = { workspace: reference.workspace, channelId: channel.channel_id, label: `${reference.workspace}/${channel.label}` };
+    if (!reference.at) return { ok: true, target };
+    const { date, time } = reference.at;
+    const guess = Date.parse(`${date}T${time}Z`) / 1000;
+    if (Number.isNaN(guess)) return { ok: false, text: `${date} ${time} は日付と時刻として読めません。` };
+    // Every time zone is within a day of UTC, so the local second is somewhere in these two days.
+    const rows = (this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0
+      AND CAST(ts AS REAL) BETWEEN ? AND ? ORDER BY CAST(ts AS REAL)`)
+      .all(reference.workspace, channel.channel_id, guess - 86_400, guess + 86_400) as unknown as MessageRow[])
+      .filter(row => row.speaker === reference.speaker && (({ date: d, time: t }) => d === date && t === time)(this.local(row.ts)))
+      .filter(row => reference.begins === undefined || oneLine(row.text).startsWith(reference.begins));
+    const named = `${where} ${date} ${time} ${reference.speaker}${reference.begins === undefined ? '' : ` 「${reference.begins}」`}`;
+    if (rows.length === 0) return { ok: false, text: `${named} の発言が記録に見つかりません。ファイルの見出しの時刻と発言者を、そのまま写してください。` };
+    if (rows.length > 1) {
+      const heads = rows.map(row => `「${cut(oneLine(row.text), 30)}」`).join('、');
+      return { ok: false, text: `${named} の発言が ${rows.length} 件あり、どれか決められません（${heads}）。`
+        + `返信先の最後に、返したい発言の書き出しを「」で添えてください（例: ${named} 「${cut(oneLine(rows[0]!.text), 10).replace(/…$/, '')}」）。` };
+    }
+    const row = rows[0]!;
+    return { ok: true, target: { ...target, message: { ts: row.ts, ...(row.thread_ts ? { threadTs: row.thread_ts } : {}), speaker: row.speaker,
+      at: `${date} ${time}`, text: row.text } } };
+  }
+
+  /**
+   * What surrounds a target, oldest first, up to it: the thread's latest messages for a reply in a thread, and the
+   * channel's latest top-level messages otherwise. Each is cut to `chars`.
+   */
+  around(target: ResolvedTarget, messages: number, chars: number): SeenMessage[] {
+    const message = target.message;
+    const rows = message?.threadTs
+      ? this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0 AND (ts = ? OR thread_ts = ?)
+          AND CAST(ts AS REAL) <= CAST(? AS REAL) ORDER BY CAST(ts AS REAL) DESC LIMIT ?`)
+        .all(target.workspace, target.channelId, message.threadTs, message.threadTs, message.ts, messages)
+      : this.db.prepare(`SELECT * FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0 AND thread_ts IS NULL
+          AND CAST(ts AS REAL) <= CAST(? AS REAL) ORDER BY CAST(ts AS REAL) DESC LIMIT ?`)
+        .all(target.workspace, target.channelId, message?.ts ?? '99999999999', messages);
+    return (rows as unknown as MessageRow[]).reverse().map(row => {
+      const { date, time } = this.local(row.ts);
+      return { from: row.speaker, at: `${date} ${time}`, text: cut(row.text, chars) };
+    });
+  }
+
+  /** How many top-level messages came in the channel after this one. */
+  following(workspace: string, channelId: string, ts: string): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM slack_messages WHERE workspace = ? AND channel_id = ? AND deleted = 0
+      AND thread_ts IS NULL AND CAST(ts AS REAL) > CAST(? AS REAL)`).get(workspace, channelId, ts) as { n: number }).n;
+  }
+
+  /** Whether a recorded message is still there: neither deleted in Slack nor unknown. */
+  isPresent(workspace: string, channelId: string, ts: string): boolean {
+    const row = this.row(workspace, channelId, ts);
+    return row !== undefined && row.deleted === 0;
   }
 
   /** Makes the directory natsumi sees and the index, so an empty source still says so. */

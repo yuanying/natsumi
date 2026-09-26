@@ -21,6 +21,8 @@ export class FakeSlack implements SlackApi, SlackSocket {
   readonly users = new Map<string, string>([['U1', '山田'], ['U2', '佐藤'], ['UBOT', 'natsumi']]);
   readonly files = new Map<string, Buffer>();
   readonly reactions: { channel: string; ts: string; name: string }[] = [];
+  /** What the dove posted, as `chat.postMessage` was called. */
+  readonly posts: { channel: string; text: string; threadTs?: string; iconUrl: string }[] = [];
   readonly historyCalls: { channel: string; oldest: string }[] = [];
   readonly downloads: string[] = [];
   /** Calls that fail as Slack would refuse them, by `<call> <argument>` (`history C2`, `userName U3`, `download <url>`). */
@@ -100,6 +102,12 @@ export class FakeSlack implements SlackApi, SlackSocket {
   async addReaction(channel: string, ts: string, name: string): Promise<void> {
     this.check('addReaction', ts);
     this.reactions.push({ channel, ts, name });
+  }
+
+  async postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string }): Promise<string> {
+    this.check('postMessage', channel);
+    this.posts.push({ channel, text, ...(options.threadTs ? { threadTs: options.threadTs } : {}), iconUrl: options.iconUrl });
+    return `${1_800_000_000 + this.posts.length}.000100`;
   }
 
   async download(url: string, maxBytes: number): Promise<Buffer | undefined> {

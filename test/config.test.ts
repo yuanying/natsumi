@@ -470,6 +470,8 @@ test('Slack is off unless the slack section is given, and has defaults for the r
   assert.deepEqual(parseConfig({ ...base(), slack: slack() }).slack, {
     workspaces: { work: { botToken: { env: 'NATSUMI_SLACK_WORK_BOT_TOKEN' }, appToken: { file: '/run/secrets/slack-work-app-token' } } },
     reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
+    approvalExpiryDays: 7, reactions: ['+1', 'eyes', 'pray', 'white_check_mark', 'bow', 'tada'], placementFollowing: 2,
+    judgeContext: { messages: 5, chars: 500 },
   });
   const tuned = parseConfig({ ...base(), slack: { ...slack(), reaction: 'white_check_mark', backfillDays: 1, maxImageBytes: 1048576,
     mentionContext: { messages: 3, chars: 200 }, updates: false } }).slack;
@@ -507,4 +509,75 @@ test('the Slack limits are checked', () => {
   rejects({ ...base(), slack: { ...slack(), mentionContext: { chars: 10 } } }, 'slack.mentionContext.chars');
   rejects({ ...base(), slack: { ...slack(), updates: 'yes' } }, 'slack.updates');
   rejects({ ...base(), slack: { ...slack(), channels: ['dev'] } }, 'slack.channels', /unknown/);
+});
+
+/** pi on the owner's own OpenAI-compatible model, whose endpoint, key and model the logprobs judge borrows by default. */
+const compatiblePi = () => ({ ...pi(), model: { provider: 'natsumi-compatible', id: 'fixture-model' },
+  compatible: { baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY' } });
+const JUDGE_THRESHOLDS = { owner: 0.5, return: 0.9 };
+
+test('by default the dove judges with the logprobs of pi\'s own compatible model, at 0.5 and 0.9 (ADR 0040)', () => {
+  assert.deepEqual(parseConfig({ ...base(), pi: compatiblePi(), slack: slack() }).slack?.judge, {
+    method: 'logprobs', baseUrl: 'https://llm.example.test/v1', apiKey: { env: 'NATSUMI_PI_API_KEY' }, model: 'fixture-model',
+    concurrency: 4, timeoutSeconds: 30, thresholds: JUDGE_THRESHOLDS,
+  });
+  // Without a compatible model there is nothing to judge with unless one is named: every draft then goes to the owner.
+  assert.equal(parseConfig({ ...base(), slack: slack() }).slack?.judge, undefined);
+});
+
+test('the logprobs judge may point elsewhere, and pi\'s key never goes to another endpoint', () => {
+  const judge = (value: unknown, piConfig: unknown = compatiblePi()) => ({ ...base(), pi: piConfig, slack: { ...slack(), judge: value } });
+  assert.deepEqual(parseConfig(judge({ baseUrl: 'https://judge.example.test/v1', model: 'judge-model', concurrency: 2, timeoutSeconds: 60,
+    thresholds: { owner: 0.4, return: 0.8 } })).slack?.judge, {
+    method: 'logprobs', baseUrl: 'https://judge.example.test/v1', model: 'judge-model', concurrency: 2, timeoutSeconds: 60,
+    thresholds: { owner: 0.4, return: 0.8 },
+  });
+  assert.deepEqual(parseConfig(judge({ baseUrl: 'https://judge.example.test/v1', model: 'm', apiKeyFile: '/run/secrets/judge-key' }, pi())).slack?.judge?.apiKey,
+    { file: '/run/secrets/judge-key' });
+  assert.equal(parseConfig(judge({ model: 'another-model' })).slack?.judge?.baseUrl, 'https://llm.example.test/v1');
+  rejects(judge({}, pi()), 'slack.judge.baseUrl', /compatible/);
+  rejects(judge({ baseUrl: 'https://judge.example.test/v1' }, pi()), 'slack.judge.model', /compatible/);
+  for (const concurrency of [0, 17, 1.5]) rejects(judge({ concurrency }), 'slack.judge.concurrency');
+  for (const timeoutSeconds of [4, 301]) rejects(judge({ timeoutSeconds }), 'slack.judge.timeoutSeconds');
+  rejects(judge({ method: 'guess' }), 'slack.judge.method');
+});
+
+test('the Jev method: TypeSafe or a server that answers the same API, with or without a key', () => {
+  const judge = (value: unknown) => ({ ...base(), slack: { ...slack(), judge: { method: 'jev', ...value as object } } });
+  assert.deepEqual(parseConfig(judge({ apiKeyFile: '/run/secrets/jev-api-key' })).slack?.judge, {
+    method: 'jev', baseUrl: 'https://api.typesafe.ai', apiKey: { file: '/run/secrets/jev-api-key' }, model: 'jev-latest',
+    concurrency: 4, timeoutSeconds: 30, thresholds: JUDGE_THRESHOLDS,
+  });
+  assert.deepEqual(parseConfig(judge({ baseUrl: 'http://jev.example.internal:8080', model: 'local-judge' })).slack?.judge,
+    { method: 'jev', baseUrl: 'http://jev.example.internal:8080', model: 'local-judge', concurrency: 4, timeoutSeconds: 30, thresholds: JUDGE_THRESHOLDS });
+  assert.equal(parseConfig(judge({ baseUrl: 'http://127.0.0.1:8080', apiKeyEnv: 'K' })).slack?.judge?.baseUrl, 'http://127.0.0.1:8080');
+  rejects(judge({ baseUrl: 'http://jev.example.internal:8080', apiKeyEnv: 'K' }), 'slack.judge.baseUrl', /https/);
+  rejects(judge({ baseUrl: 'ftp://jev.example.internal' }), 'slack.judge.baseUrl');
+  rejects(judge({ baseUrl: 'https://user:pw@jev.example.internal' }), 'slack.judge.baseUrl');
+  rejects(judge({ baseUrl: 'https://jev.example.internal/?q=1' }), 'slack.judge.baseUrl');
+  rejects(judge({ apiKey: 'fixture-key' }), 'slack.judge.apiKey', /secrets must not be written/);
+  rejects(judge({ thresholds: { owner: 0.8, return: 0.5 } }), 'slack.judge.thresholds', /owner/);
+  rejects(judge({ thresholds: { owner: -0.1 } }), 'slack.judge.thresholds.owner');
+  rejects(judge({ thresholds: { return: 1.5 } }), 'slack.judge.thresholds.return');
+  rejects(judge({ model: '' }), 'slack.judge.model');
+  rejects(judge({ url: 'https://example.test' }), 'slack.judge.url', /unknown/);
+  rejects({ ...base(), slack: { ...slack(), jev: {} } }, 'slack.jev', /unknown/);
+});
+
+test('the approvals, the reactions and where a reply goes are checked', () => {
+  const tuned = parseConfig({ ...base(), slack: { ...slack(), approvalExpiryDays: 1, reactions: ['eyes'], placementFollowing: 0,
+    judgeContext: { messages: 10, chars: 100 } } }).slack;
+  assert.equal(tuned?.approvalExpiryDays, 1);
+  assert.deepEqual(tuned?.reactions, ['eyes']);
+  assert.equal(tuned?.placementFollowing, 0);
+  assert.deepEqual(tuned?.judgeContext, { messages: 10, chars: 100 });
+  for (const approvalExpiryDays of [0, 91, 1.5]) rejects({ ...base(), slack: { ...slack(), approvalExpiryDays } }, 'slack.approvalExpiryDays');
+  for (const reactions of [[], ['eyes', 'eyes'], [':eyes:'], 'eyes']) rejects({ ...base(), slack: { ...slack(), reactions } }, 'slack.reactions');
+  for (const placementFollowing of [-1, 21, 1.5]) rejects({ ...base(), slack: { ...slack(), placementFollowing } }, 'slack.placementFollowing');
+  rejects({ ...base(), slack: { ...slack(), judgeContext: { messages: 0 } } }, 'slack.judgeContext.messages');
+  rejects({ ...base(), slack: { ...slack(), judgeContext: { chars: 10 } } }, 'slack.judgeContext.chars');
+});
+
+test('poppo is the dove\'s name, and no outside agent may take it', () => {
+  rejects({ ...base(), a2a: { ...a2a(), agents: { poppo: { url: 'https://agents.example.test/poppo' } } } }, 'a2a.agents.poppo', /dove/);
 });

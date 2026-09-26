@@ -19,7 +19,9 @@ export const CLOSE_TOO_SLOW = 4002;
 const KNOWN_COMMANDS = new Set(['session.sync', 'conversation.send', 'conversation.read', 'conversation.interrupt', 'approval.decide',
   'notification.ack', 'device.activity', 'push.register']);
 /** Commands that act for a device, and so need `session.sync` first and the connection's own device ID. */
-const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register']);
+const DEVICE_COMMANDS = new Set(['conversation.send', 'conversation.read', 'notification.ack', 'push.register', 'approval.decide']);
+const DECISIONS = new Set(['approve', 'edit', 'reject']);
+const PLACEMENTS = new Set(['thread', 'channel']);
 
 interface Connection {
   session: VerifiedSession;
@@ -66,6 +68,17 @@ export interface HubPush {
   register(deviceId: string, payload: Record<string, unknown>): { kind: 'accepted'; environment: string } | { kind: 'rejected'; code: string };
 }
 
+/**
+ * What waits for the owner's decision (ADR 0002, ADR 0040), as the hub uses it: the list a snapshot carries, the
+ * decision itself, and the events every device is shown. Without Slack there are none, and a decision names nothing.
+ */
+export interface HubApprovals {
+  pending(): unknown[];
+  decide(input: { approvalId: string; revision: number; decision: 'approve' | 'edit' | 'reject'; text?: string;
+    placement?: 'thread' | 'channel'; deviceId: string }): RelayedOutcome;
+  subscribe(listener: (event: { type: string; payload: Record<string, unknown> }) => void): () => void;
+}
+
 export interface ConnectionHubOptions {
   publicOrigin: string;
   /** The live session presented by an upgrade request, or undefined. Its use is already recorded. */
@@ -76,6 +89,7 @@ export interface ConnectionHubOptions {
   db: DatabaseSync;
   loop: HubLoop;
   push: HubPush;
+  approvals?: HubApprovals;
   /** Events kept per device stream for replay after a reconnect. */
   streamBufferSize?: number;
 }
@@ -94,6 +108,7 @@ export class ConnectionHub {
   private readonly options: ConnectionHubOptions;
   private readonly devices: DeviceStreams;
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeApprovals: () => void;
 
   constructor(options: ConnectionHubOptions) {
     this.options = options;
@@ -104,6 +119,7 @@ export class ConnectionHub {
       if (event.ephemeral) this.devices.broadcastEphemeral(event.type, event.payload);
       else this.devices.broadcast(event.type, event.payload);
     });
+    this.unsubscribeApprovals = options.approvals?.subscribe(event => this.devices.broadcast(event.type, event.payload)) ?? (() => {});
   }
 
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -146,6 +162,7 @@ export class ConnectionHub {
 
   close(): Promise<void> {
     this.unsubscribe();
+    this.unsubscribeApprovals();
     for (const ws of this.connections.keys()) ws.terminate();
     return new Promise(resolve => this.server.close(() => resolve()));
   }
@@ -212,6 +229,19 @@ export class ConnectionHub {
         if (!isId(notificationId)) return reject('invalid-request');
         return answer(stream!, this.options.loop.acknowledgeNotice({ notificationId, deviceId: connection.deviceId! }), id);
       }
+      case 'approval.decide': {
+        const { approvalId, revision, decision, text, placement } = payload;
+        if (!isId(approvalId) || !Number.isInteger(revision) || typeof decision !== 'string' || !DECISIONS.has(decision)
+          || (placement !== undefined && (typeof placement !== 'string' || !PLACEMENTS.has(placement)))
+          || (decision === 'edit' && (typeof text !== 'string' || text.trim() === '' || Buffer.byteLength(text) > MAX_TEXT_BYTES))) {
+          return reject('invalid-request');
+        }
+        const approvals = this.options.approvals;
+        if (!approvals) return reject('invalid-request');
+        return answer(stream!, approvals.decide({ approvalId, revision: revision as number, decision: decision as 'approve' | 'edit' | 'reject',
+          ...(decision === 'edit' ? { text: text as string } : {}), ...(placement ? { placement: placement as 'thread' | 'channel' } : {}),
+          deviceId: connection.deviceId! }), id);
+      }
       case 'push.register':
         // Independent of the loop: a device registers even while natsumi cannot talk.
         return answer(stream!, this.options.push.register(connection.deviceId!, payload), id);
@@ -257,7 +287,8 @@ export class ConnectionHub {
     }
     // A different epoch or stream, a gap, or events already gone from the buffer: start over from a snapshot.
     // Its own seq is the barrier; events numbered after it apply on top.
-    stream.publish('session.snapshot', { deviceId, ...loop.snapshot(), sessionExpiresAt }, requestId);
+    stream.publish('session.snapshot', { deviceId, ...loop.snapshot(), pendingApprovals: this.options.approvals?.pending() ?? [], sessionExpiresAt },
+      requestId);
   }
 
   private send(stream: EventStream, deviceId: string, payload: Payload, requestId: string) {

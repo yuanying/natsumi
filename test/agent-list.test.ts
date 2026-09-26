@@ -112,3 +112,17 @@ test('the list is readable by the shared group and by nobody else, and takes the
   assert.equal(file.mode & 0o777, 0o640);
   assert.equal(file.gid, (await stat(dir)).gid);
 });
+
+// ADR 0040: with Slack configured, the dove is one of those she can ask, served by the server and needing no card.
+test('with Slack the dove is listed first, pointing at the manual, and without it she is not', async t => {
+  const dir = await directory(t);
+  const outcome = await writeAgentList({ directory: dir, client: undefined, config: undefined, now: NOW, timeZone: 'Asia/Tokyo', dove: true });
+  assert.deepEqual(outcome, { listed: ['poppo'], unreachable: [] });
+  const text = await readFile(join(dir, AGENT_LIST_FILE), 'utf8');
+  assert.match(text, /^## poppo$/m);
+  assert.match(text, /ポッポさん/);
+  assert.match(text, /\/manual\/slack\.md/);
+  assert.doesNotMatch(text, /頼める相手はいません/);
+  await writeAgentList({ directory: dir, client: undefined, config: undefined, now: NOW, timeZone: 'Asia/Tokyo' });
+  assert.doesNotMatch(await readFile(join(dir, AGENT_LIST_FILE), 'utf8'), /poppo/);
+});
