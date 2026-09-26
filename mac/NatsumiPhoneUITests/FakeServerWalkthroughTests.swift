@@ -128,6 +128,52 @@ final class FakeServerWalkthroughTests: XCTestCase {
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
     }
 
+    /// Pictures (ADR 0044, ADR 0045): the reply of the fake server that shows two pictures has them small in the
+    /// history, and the post to the channel has its two on the page of the approval. Each opens full screen and
+    /// closes with 閉じる.
+    func testImageWalkthrough() throws {
+        app.launch()
+        logInIfAsked()
+        XCTAssertTrue(app.staticTexts["つながっています"].waitForExistence(timeout: 15), "つながらない")
+
+        app.buttons["会話の履歴"].tap()
+        XCTAssertTrue(app.navigationBars["会話"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["昨日描いた絵も見てね。"].waitForExistence(timeout: 5))
+        // A picture is a button once it has come.
+        let first = app.buttons["画像 1/2"]
+        XCTAssertTrue(first.waitForExistence(timeout: 10), "履歴に画像が出ない")
+        XCTAssertTrue(app.buttons["画像 2/2"].waitForExistence(timeout: 10))
+        shoot("i1-history-images")
+        first.tap()
+        let close = app.buttons["閉じる"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "拡大が開かない")
+        shoot("i2-history-viewer")
+        close.tap()
+        XCTAssertTrue(app.navigationBars["会話"].waitForExistence(timeout: 5))
+        back()
+
+        let entry = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "承認待ち")).firstMatch
+        XCTAssertTrue(entry.waitForExistence(timeout: 10))
+        entry.tap()
+        row("work/#random").tap()
+        XCTAssertTrue(app.navigationBars["承認"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["一緒に送る画像"].waitForExistence(timeout: 5))
+        let picture = app.buttons["画像 2/2"]
+        XCTAssertTrue(picture.waitForExistence(timeout: 10), "承認の詳細に画像が出ない")
+        shoot("i3-approval-images")
+        picture.tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        shoot("i4-approval-viewer")
+        close.tap()
+        XCTAssertTrue(app.navigationBars["承認"].waitForExistence(timeout: 5))
+        back()
+        back()
+
+        app.buttons["設定"].tap()
+        app.buttons["ログアウト"].tap()
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5))
+    }
+
     /// The row of the list for a channel.
     private func row(_ channel: String) -> XCUIElement {
         let row = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", channel)).firstMatch
