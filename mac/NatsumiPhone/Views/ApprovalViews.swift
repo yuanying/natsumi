@@ -310,6 +310,7 @@ struct ApprovalEditor: View {
         let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         VStack(alignment: .trailing, spacing: 10) {
             TextField("送る本文", text: $text, axis: .vertical)
+                .accessibilityIdentifier("approval.editor.text")
                 .font(Comic.font(15))
                 .lineLimit(3...12)
                 .padding(10)

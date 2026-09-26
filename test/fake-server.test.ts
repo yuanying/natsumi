@@ -1,0 +1,164 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import WebSocket from 'ws';
+import { startFakeServer, type FakeServerOptions } from '../src/fake-server/main.ts';
+
+type Envelope = { seq: number; type: string; requestId?: string; payload: Record<string, any> };
+
+/** A connection to the fake server that keeps everything it is sent, to wait on. */
+async function connect(port: number) {
+  const ws = new WebSocket(`ws://localhost:${port}/v1/ws`);
+  const received: Envelope[] = [];
+  const waiters: (() => void)[] = [];
+  ws.on('message', data => {
+    received.push(JSON.parse(String(data)));
+    for (const wake of waiters.splice(0)) wake();
+  });
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  let requests = 0;
+  return {
+    received,
+    send(type: string, payload: Record<string, unknown>) {
+      const requestId = `r${++requests}`;
+      ws.send(JSON.stringify({ v: 1, requestId, type, payload }));
+      return requestId;
+    },
+    /** The first envelope, from `from` on, that matches. */
+    async next(match: (e: Envelope) => boolean, from = 0): Promise<Envelope> {
+      for (;;) {
+        const found = received.slice(from).find(match);
+        if (found) return found;
+        await new Promise<void>(wake => waiters.push(wake));
+      }
+    },
+    close: () => ws.close(),
+  };
+}
+
+async function withServer(fn: (port: number) => Promise<void>, options: Partial<FakeServerOptions> = {}) {
+  const server = await startFakeServer({
+    port: 0, replyDelayMs: 0, short: true, approvalDelayMs: 0, sendDelayMs: 0, log: false, ...options,
+  });
+  try { await fn(server.port); } finally { await server.close(); }
+}
+
+async function synced(port: number) {
+  const client = await connect(port);
+  const sync = client.send('session.sync', { resume: null });
+  const snapshot = await client.next(e => e.requestId === sync);
+  return { client, snapshot };
+}
+
+test('the snapshot carries the approvals waiting at the start', () => withServer(async port => {
+  const { client, snapshot } = await synced(port);
+  assert.equal(snapshot.type, 'session.snapshot');
+  const approvals = snapshot.payload.pendingApprovals;
+  assert.deepEqual(approvals.map((a: any) => a.approvalId), ['approval-review', 'approval-lunch']);
+  const [review, lunch] = approvals;
+  assert.equal(review.kind, 'slack-post');
+  assert.equal(review.revision, 1);
+  assert.deepEqual(review.target.replyTo, { speaker: '山田', at: '2026-09-25 14:32:05', text: '明日のレビュー、何時からなら大丈夫そう？' });
+  assert.equal(review.reason.verdict, 'rewrite-limit');
+  assert.equal(review.reason.issues[0].flagged, true);
+  assert.equal('flagged' in review.reason.issues[1], false);
+  assert.equal(review.history.length, 2);
+  // A post to the channel itself has no line to answer, no verdict and no odds.
+  assert.equal(lunch.target.replyTo, undefined);
+  assert.equal(lunch.target.placement, 'channel');
+  assert.equal(lunch.reason.verdict, 'no-verdict');
+  assert.equal(lunch.reason.placement, undefined);
+  client.close();
+}));
+
+test('approving is accepted, and approval.resolved says it was sent with the draft', () => withServer(async port => {
+  const { client } = await synced(port);
+  const request = client.send('approval.decide', { approvalId: 'approval-review', revision: 1, decision: 'approve', placement: 'channel' });
+  const accepted = await client.next(e => e.requestId === request);
+  assert.equal(accepted.type, 'command.accepted');
+  assert.deepEqual(accepted.payload, { approvalId: 'approval-review', revision: 1, state: 'approved' });
+  const resolved = await client.next(e => e.type === 'approval.resolved');
+  assert.equal(resolved.payload.state, 'approved');
+  assert.equal(resolved.payload.delivery, 'sent');
+  assert.equal(resolved.payload.sentText, '明日は 10 時からなら大丈夫です。資料は今日中に共有しておきますね。');
+  assert.equal(typeof resolved.payload.resolvedAt, 'string');
+
+  // It is no longer waiting.
+  const sync = client.send('session.sync', { resume: null });
+  const snapshot = await client.next(e => e.requestId === sync);
+  assert.deepEqual(snapshot.payload.pendingApprovals.map((a: any) => a.approvalId), ['approval-lunch']);
+  client.close();
+}));
+
+test('an edit sends the owner\'s text, and a rejection closes without delivery', () => withServer(async port => {
+  const { client } = await synced(port);
+  client.send('approval.decide', { approvalId: 'approval-review', revision: 1, decision: 'edit', text: '10 時からでお願いします。' });
+  const edited = await client.next(e => e.type === 'approval.resolved');
+  assert.equal(edited.payload.state, 'edited');
+  assert.equal(edited.payload.sentText, '10 時からでお願いします。');
+
+  const from = client.received.length;
+  client.send('approval.decide', { approvalId: 'approval-lunch', revision: 1, decision: 'reject' });
+  const rejected = await client.next(e => e.type === 'approval.resolved', from);
+  assert.equal(rejected.payload.state, 'rejected');
+  assert.equal('delivery' in rejected.payload, false);
+  assert.equal('sentText' in rejected.payload, false);
+  client.close();
+}));
+
+test('a second decision is answered with the first one\'s state and changes nothing', () => withServer(async port => {
+  const { client } = await synced(port);
+  client.send('approval.decide', { approvalId: 'approval-lunch', revision: 1, decision: 'reject' });
+  await client.next(e => e.type === 'approval.resolved');
+  const from = client.received.length;
+  const again = client.send('approval.decide', { approvalId: 'approval-lunch', revision: 1, decision: 'approve' });
+  const answer = await client.next(e => e.requestId === again);
+  assert.equal(answer.type, 'command.accepted');
+  assert.equal(answer.payload.state, 'rejected');
+  // Nothing more is resolved for it.
+  const sync = client.send('session.sync', { resume: null });
+  await client.next(e => e.requestId === sync, from);
+  assert.equal(client.received.slice(from).some(e => e.type === 'approval.resolved'), false);
+  client.close();
+}));
+
+test('a decision for another revision is stale, and malformed ones are invalid', () => withServer(async port => {
+  const { client } = await synced(port);
+  const code = async (payload: Record<string, unknown>) => {
+    const request = client.send('approval.decide', payload);
+    const answer = await client.next(e => e.requestId === request);
+    assert.equal(answer.type, 'command.rejected');
+    return answer.payload.code;
+  };
+  assert.equal(await code({ approvalId: 'approval-review', revision: 2, decision: 'approve' }), 'stale-revision');
+  assert.equal(await code({ approvalId: 'approval-unknown', revision: 1, decision: 'approve' }), 'invalid-request');
+  assert.equal(await code({ approvalId: 'approval-review', revision: 1, decision: 'maybe' }), 'invalid-request');
+  assert.equal(await code({ approvalId: 'approval-review', revision: 1, decision: 'edit', text: '  ' }), 'invalid-request');
+  // Still waiting after all of that.
+  const sync = client.send('session.sync', { resume: null });
+  const snapshot = await client.next(e => e.requestId === sync);
+  assert.equal(snapshot.payload.pendingApprovals.length, 2);
+  client.close();
+}));
+
+test('one more approval arrives after the first sync', () => withServer(async port => {
+  const { client } = await synced(port);
+  const pending = await client.next(e => e.type === 'approval.pending');
+  assert.equal(pending.payload.approvalId, 'approval-dm');
+  assert.equal(pending.payload.target.channel, 'work/@佐藤');
+  const sync = client.send('session.sync', { resume: null });
+  const snapshot = await client.next(e => e.requestId === sync);
+  assert.deepEqual(snapshot.payload.pendingApprovals.map((a: any) => a.approvalId), ['approval-review', 'approval-lunch', 'approval-dm']);
+  client.close();
+}, { approvalDelayMs: 10 }));
+
+test('logging out puts the approvals back as they were at the start', () => withServer(async port => {
+  const { client } = await synced(port);
+  client.send('approval.decide', { approvalId: 'approval-lunch', revision: 1, decision: 'reject' });
+  await client.next(e => e.type === 'approval.resolved');
+  const logout = await fetch(`http://localhost:${port}/auth/logout`, { method: 'POST' });
+  assert.equal(logout.status, 204);
+  const sync = client.send('session.sync', { resume: null });
+  const snapshot = await client.next(e => e.requestId === sync);
+  assert.deepEqual(snapshot.payload.pendingApprovals.map((a: any) => a.approvalId), ['approval-review', 'approval-lunch']);
+  client.close();
+}));
