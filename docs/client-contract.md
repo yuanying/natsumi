@@ -324,7 +324,7 @@ CryptoKit では、`P256.KeyAgreement` で `epk` との共有の秘密を取り�
 
 natsumi が Slack に出したい投稿のうち、ポッポさんの判定で本人に回されたもの（`owner`）、判定できなかったもの（`no-verdict`）、
 同じ返信先で 3 回目に突き返されたもの（`rewrite-limit`）が承認待ちになる。判定が通った投稿は承認なしに送られる。
-理由は [ADR 0040](adr/0040-the-dove-sends-what-jev-passes.md) にある。リアクションは承認を通らない。
+理由は [ADR 0040](adr/0040-the-dove-sends-what-the-judge-passes.md) にある。リアクションは承認を通らない。
 
 承認（`approval.pending` の payload、`pendingApprovals` の各要素）は次を持つ。作った時点の中身で固定され、変わらない。
 

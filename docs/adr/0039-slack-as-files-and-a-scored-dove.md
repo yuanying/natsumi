@@ -1,7 +1,7 @@
 # 0039. Slack は読むファイルとして受け取り、ポッポさんは問題点ごとの点数で判定する
 
 - Date: 2026-09-25
-- Status: Accepted（「ADR 0012 のまま進めるもの」のうち「本文のある投稿は、判定が『送る』でも最初はすべて本人の承認を待つ」は [ADR 0040](0040-the-dove-sends-what-jev-passes.md) で置き換え、アイコンの置き場所と渡し方は同 ADR で決定、Jev の接続先は同 ADR で互換サーバーにも広げる）
+- Status: Accepted（「ADR 0012 のまま進めるもの」のうち「本文のある投稿は、判定が『送る』でも最初はすべて本人の承認を待つ」は [ADR 0040](0040-the-dove-sends-what-the-judge-passes.md) で置き換え、アイコンの置き場所と渡し方は同 ADR で決定、判定のモデルを Jev に限る点は同 ADR で置き換え（Jev の API と OpenAI 互換のモデルの logprobs の 2 つの方式、既定は後者））
 
 ## Context
 
