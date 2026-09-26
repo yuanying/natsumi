@@ -11,7 +11,7 @@ import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
 import { ThinkingLoop } from '../src/server/thinking-loop.ts';
 import type { UpdateSource } from '../src/server/updates.ts';
-import { PNG } from './support/fake-slack.ts';
+import { DECODABLE_PNG, PNG } from './support/fake-slack.ts';
 import { fixtureRuntime } from './support/fixture.ts';
 import { ScriptedModel } from './support/scripted-model.ts';
 
@@ -78,7 +78,7 @@ async function setup(t: test.TestContext, options: { shell?: boolean } = {}) {
     updates: [source],
     slack: {
       eventLine: eventId => lines.get(eventId) ?? { type: 'slack_mention' },
-      images: async () => [{ type: 'image', mimeType: 'image/png', data: PNG.toString('base64') }],
+      images: async () => [{ type: 'image', mimeType: 'image/png', data: DECODABLE_PNG.toString('base64') }],
     },
     dove,
   });
@@ -107,7 +107,7 @@ test('a Slack mention is handed to natsumi as its own event, with its images bes
   assert.match(textOf(prompt), /"type":"slack_mention"/);
   assert.match(textOf(prompt), /work\/#dev 2026-09-25 14:32:05 山田/);
   const parts = (prompt as { content: { type: string; data?: string }[] }).content;
-  assert.deepEqual(parts.filter(part => part.type === 'image').map(part => part.data), [PNG.toString('base64')]);
+  assert.deepEqual(parts.filter(part => part.type === 'image').map(part => part.data), [DECODABLE_PNG.toString('base64')]);
   await f.loop.idle();
   const row = f.db.prepare(`SELECT kind, state FROM loop_events`).get() as { kind: string; state: string };
   assert.deepEqual({ ...row }, { kind: 'slack-mention', state: 'no-reply' });

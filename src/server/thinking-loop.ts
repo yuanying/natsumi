@@ -182,7 +182,8 @@ export interface DoveEvents {
 /** The kinds of event something outside the loop may raise. */
 export type RaisedKind = 'slack-mention' | 'dove-reply';
 
-type StopContext = Parameters<NonNullable<AgentSession['agent']['shouldStopAfterTurn']>>[0];
+type FinishTurn = NonNullable<AgentSession['agent']['finishTurn']>;
+type StopContext = Parameters<FinishTurn>[0];
 
 /**
  * An event handed to Pi in the current turn. Only owner messages have a message. `shown` is whether natsumi has it
@@ -661,7 +662,14 @@ export class ThinkingLoop {
     });
     // Every steered message waiting at a boundary goes in together.
     session.setSteeringMode('all');
-    session.agent.shouldStopAfterTurn = context => this.shouldStop(context);
+    // Pi keeps its own hook here, so the limit is chained after it. Errors and aborts end the run anyway and are not
+    // model calls that came back, so they are not counted.
+    const finish = session.agent.finishTurn;
+    session.agent.finishTurn = async (turn, signal) => {
+      const decision = await finish?.(turn, signal) ?? undefined;
+      if (turn.message.stopReason === 'error' || turn.message.stopReason === 'aborted') return decision;
+      return this.shouldStop(turn) ? { action: 'end' } : decision;
+    };
   }
 
   private fail(code: UnavailableCode) {

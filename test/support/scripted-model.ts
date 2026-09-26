@@ -1,5 +1,6 @@
-import type { AssistantMessage, AssistantMessageEvent, Context } from '@earendil-works/pi-ai';
+import type { AssistantMessage, AssistantMessageEvent, Context, JsonObject } from '@earendil-works/pi-ai';
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream';
+import { getCurrentSystemPrompt } from '@earendil-works/pi-ai/utils/transcript';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../../src/probe/session.ts';
 
@@ -28,7 +29,11 @@ type Block = AssistantMessage['content'][number];
  * An abort ends the reply as `aborted`.
  */
 export class ScriptedModel {
-  /** The messages each call saw. Tool definitions are left out: they carry functions. */
+  /**
+   * The system prompt and the messages each call saw. Pi hands both over as one transcript; the system messages that
+   * carry the prompt and the tool definitions are folded back into the prompt, and the tools are left out: they carry
+   * functions.
+   */
   readonly contexts: Context[] = [];
   auto: ((context: Context) => ScriptedStep | string) | undefined;
   private readonly waiting: ((reply: ScriptedReply) => void)[] = [];
@@ -49,7 +54,8 @@ export class ScriptedModel {
   }
 
   readonly streamFunction: AgentSession['agent']['streamFunction'] = (_model, context, options) => {
-    const seen: Context = { systemPrompt: context.systemPrompt, messages: structuredClone(context.messages) };
+    const seen: Context = { systemPrompt: getCurrentSystemPrompt(context.messages),
+      messages: structuredClone(context.messages.filter(message => message.role !== 'system')) };
     this.contexts.push(seen);
     const stream = createAssistantMessageEventStream();
     const message: AssistantMessage = { role: 'assistant', api: 'openai-codex-responses', provider: SUBSCRIPTION_TARGET.provider,
@@ -94,7 +100,7 @@ export class ScriptedModel {
       call(name, args) {
         if (ended) return;
         close();
-        const toolCall = { type: 'toolCall' as const, id: `call-${this.context.messages.length}-${message.content.length}`, name, arguments: args };
+        const toolCall = { type: 'toolCall' as const, id: `call-${this.context.messages.length}-${message.content.length}`, name, arguments: args as JsonObject };
         const index = message.content.length;
         message.content.push(toolCall);
         stream.push({ type: 'toolcall_start', contentIndex: index, partial: message });

@@ -11,7 +11,7 @@
 ## Decision
 
 初期バックエンドは Pi Coding Agent のみとする。TypeScript サーバーへ
-`@earendil-works/pi-coding-agent@0.85.1` の SDK を組み込む。
+`@earendil-works/pi-coding-agent@0.87.1` の SDK を組み込む。
 公式 npm package と同梱型・文書を基準にし、更新時は保存・再開とツール制限を再検証する。
 Node 内で型付き API とツール登録を直接使えるため SDK を採用する。
 RPC は他言語・子プロセス統合向けの選択肢として確認したが、この設計では採用しない。

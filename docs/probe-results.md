@@ -11,7 +11,7 @@
 
 旧 `@mariozechner/pi-coding-agent` は npm 上で deprecated と表示され、`@earendil-works` への移行が案内されている。
 この検証は現行 package の同梱文書（`docs/sdk.md`、`docs/models.md`、`docs/custom-provider.md`）と型定義を基準にした。
-ハーネスは Pi のバージョンが 0.85.1 でない場合に実行を拒否する。
+ハーネスは Pi のバージョンが 0.87.1 でない場合に実行を拒否する。
 
 ## 再実行
 

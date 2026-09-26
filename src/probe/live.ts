@@ -14,7 +14,7 @@ try {
   if (route.kind === 'subscription') {
     try { await access(route.authPath); } catch { throw new Error('missing-auth'); }
   }
-  if (VERSION !== '0.85.1') throw new Error('unsupported-version');
+  if (VERSION !== '0.87.1') throw new Error('unsupported-version');
   const worker = new URL('./worker.ts', import.meta.url);
   const json = JSON.stringify(route); // Contains no key: compatible keys stay in the environment.
   await exerciseRestart(worker, json);
