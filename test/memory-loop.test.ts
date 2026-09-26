@@ -731,7 +731,9 @@ test('a failed compaction says why in the log, without the conversation, and wai
   const f = await setup();
   try {
     const logs: string[] = [];
-    const { loop, events } = await f.open({ loop: { compactionThreshold: 1_500, compactionKeepRecent: 400 }, log: line => { logs.push(line); } });
+    // Pi counts the system prompt and the tools in the context too (about 1,500 tokens here), so the limit sits above
+    // them: the first compaction comes after some turns, when there is a conversation to summarize.
+    const { loop, events } = await f.open({ loop: { compactionThreshold: 3_000, compactionKeepRecent: 400 }, log: line => { logs.push(line); } });
     behave(f, {});
     const answer = f.model.auto!;
     // The summary runs out of tokens while it is still thinking, the way it did on a slow local model.

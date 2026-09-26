@@ -94,9 +94,10 @@ async function capture(workspace: boolean): Promise<Prefix & { activeToolNames: 
   });
   try {
     assert.ok(session, 'the loop made no session');
-    // Pi appends a line of its own. Splitting it off keeps the temporary path out of the fixture and pins the shape
-    // of what Pi adds: an upgrade that adds more would move the prefix just as a reworded instruction would.
-    const split = session.systemPrompt.indexOf('\nCurrent working directory: ');
+    // Pi appends a section of its own, the working directory. Splitting it off keeps the temporary path out of the
+    // fixture and pins the shape of what Pi adds: an upgrade that adds more would move the prefix just as a reworded
+    // instruction would.
+    const split = session.systemPrompt.indexOf('\n\n<cwd>\n');
     assert.ok(split > 0, 'Pi no longer appends the working directory; the prefix has moved');
     return {
       systemPrompt: session.systemPrompt.slice(0, split),

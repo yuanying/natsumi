@@ -1,10 +1,10 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Type } from 'typebox';
-import { AgentSession, ModelRuntime, defineTool } from '@earendil-works/pi-coding-agent';
+import { AgentSession, ModelRuntime, defineTool, type SessionEntry, type SessionMessageEntry } from '@earendil-works/pi-coding-agent';
 import { openPiSession, type PiTarget } from '../pi/session.ts';
 
-// Pi subscription provider and its default model in Pi 0.85.1, not a separate agent backend. The server never
+// Pi subscription provider and its default model in Pi 0.87.1, not a separate agent backend. The server never
 // reads it: its provider and model come from the config. Only the probe and the test fixtures pin a target here.
 export const SUBSCRIPTION_TARGET: PiTarget = { provider: 'openai-codex', model: 'gpt-5.5' };
 
@@ -35,8 +35,10 @@ export class PiConversation {
   private busy = false;
   constructor(session: AgentSession) { this.session = session; }
 
+  /** The conversation's messages. Pi also records the system prompt and the tools as system messages; they are left out. */
   history() {
-    return this.session.sessionManager.getBranch().filter(entry => entry.type === 'message');
+    return this.session.sessionManager.getBranch().filter((entry: SessionEntry): entry is SessionMessageEntry =>
+      entry.type === 'message' && entry.message.role !== 'system');
   }
 
   async send(text: string, timeout = 120_000): Promise<void> {

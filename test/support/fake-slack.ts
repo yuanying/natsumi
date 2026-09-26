@@ -3,6 +3,13 @@ import { SlackCallError, type SlackApi, type SlackConversation, type SlackMessag
 /** A PNG's first bytes, enough for the server to take a file for an image. */
 export const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 1)]);
 
+/**
+ * A whole 1×1 PNG, for an image that must reach the model: Pi decodes what a prompt carries and leaves out what it
+ * cannot read.
+ */
+export const DECODABLE_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+
 /** A PNG whose header says its size, as a real one's does. */
 export function pngOf(width: number, height: number): Buffer {
   const ihdr = Buffer.alloc(13);
