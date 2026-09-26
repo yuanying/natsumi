@@ -58,7 +58,7 @@ test('an OpenAI-compatible endpoint receives exactly the referenced key, from an
     const keyFile = join(f.root, 'pi-api-key');
     await writeFile(keyFile, `${KEY}\n`, { mode: 0o600 });
     for (const apiKey of [{ env: 'FIXTURE_PI_API_KEY' }, { file: keyFile }]) {
-      const pi = f.config({ model: { provider: COMPATIBLE_PROVIDER, id: 'fixture-model' }, compatible: { baseUrl: endpoint.baseUrl, apiKey } });
+      const pi = f.config({ model: { provider: COMPATIBLE_PROVIDER, id: 'fixture-model' }, compatible: { baseUrl: endpoint.baseUrl, apiKey, contextWindow: 128_000 } });
       const { runtime, target } = await createModelRuntime(pi, { FIXTURE_PI_API_KEY: KEY });
       assert.deepEqual(target, { provider: COMPATIBLE_PROVIDER, model: 'fixture-model' });
       const session = await openPiSession({ ...f.paths, modelRuntime: runtime, target, systemPrompt: 'fixture', thinkingLevel: 'off' });
@@ -77,7 +77,7 @@ test('thinking is requested from a compatible endpoint only when it is switched 
   const f = await setup();
   try {
     const pi = f.config({ model: { provider: COMPATIBLE_PROVIDER, id: 'fixture-model' },
-      compatible: { baseUrl: endpoint.baseUrl, apiKey: { env: 'FIXTURE_PI_API_KEY' } } });
+      compatible: { baseUrl: endpoint.baseUrl, apiKey: { env: 'FIXTURE_PI_API_KEY' }, contextWindow: 128_000 } });
     const { runtime, target } = await createModelRuntime(pi, { FIXTURE_PI_API_KEY: KEY });
     for (const thinkingLevel of ['medium', 'off'] as const) {
       const session = await openPiSession({ ...f.paths, modelRuntime: runtime, target, systemPrompt: 'fixture', thinkingLevel });
@@ -92,7 +92,7 @@ test('a missing key or login stops before any request, with no fallback to anoth
   const f = await setup();
   try {
     const compatible = (apiKey: { env: string } | { file: string }) =>
-      f.config({ model: { provider: COMPATIBLE_PROVIDER, id: 'fixture-model' }, compatible: { baseUrl: endpoint.baseUrl, apiKey } });
+      f.config({ model: { provider: COMPATIBLE_PROVIDER, id: 'fixture-model' }, compatible: { baseUrl: endpoint.baseUrl, apiKey, contextWindow: 128_000 } });
     const refused = (pi: PiConfig, env: Record<string, string | undefined> = {}) =>
       assert.rejects(createModelRuntime(pi, env), (error: unknown) => {
         assert.ok(error instanceof PiUnavailableError, String(error));
@@ -114,7 +114,7 @@ test('a compaction summary from a compatible endpoint may use all of Pi\'s summa
   const f = await setup();
   try {
     const pi = f.config({ model: { provider: COMPATIBLE_PROVIDER, id: 'fixture-model' },
-      compatible: { baseUrl: endpoint.baseUrl, apiKey: { env: 'FIXTURE_PI_API_KEY' } } });
+      compatible: { baseUrl: endpoint.baseUrl, apiKey: { env: 'FIXTURE_PI_API_KEY' }, contextWindow: 128_000 } });
     const { runtime, target } = await createModelRuntime(pi, { FIXTURE_PI_API_KEY: KEY });
     const session = await openPiSession({ ...f.paths, modelRuntime: runtime, target, systemPrompt: 'fixture', thinkingLevel: 'medium',
       keepRecentTokens: 1_000 });
@@ -127,5 +127,18 @@ test('a compaction summary from a compatible endpoint may use all of Pi\'s summa
     // Pi gives a summary 80% of its 16384-token reserve. Thinking spends the same budget, and on a slow local model a
     // summary cut at 4096 tokens stopped at the cap every time, so no compaction ever succeeded.
     assert.equal(summary.max_tokens, Math.floor(0.8 * 16_384));
+  } finally { await f.cleanup(); await endpoint.close(); }
+});
+
+test('Pi measures a compatible model against the configured context window', async () => {
+  const endpoint = await startEndpoint();
+  const f = await setup();
+  try {
+    const pi = f.config({ model: { provider: COMPATIBLE_PROVIDER, id: 'fixture-model' },
+      compatible: { baseUrl: endpoint.baseUrl, apiKey: { env: 'FIXTURE_PI_API_KEY' }, contextWindow: 262_144 } });
+    const { runtime, target } = await createModelRuntime(pi, { FIXTURE_PI_API_KEY: KEY });
+    assert.equal(runtime.getModel(target.provider, target.model)?.contextWindow, 262_144);
+    const session = await openPiSession({ ...f.paths, modelRuntime: runtime, target, systemPrompt: 'fixture', thinkingLevel: 'off' });
+    try { assert.equal(session.getContextUsage()?.contextWindow, 262_144); } finally { session.dispose(); }
   } finally { await f.cleanup(); await endpoint.close(); }
 });

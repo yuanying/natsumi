@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
-import { COMPATIBLE_PROVIDER } from '../pi/compatible.ts';
+import { COMPATIBLE_MAX_TOKENS, COMPATIBLE_PROVIDER, DEFAULT_CONTEXT_WINDOW, PI_CONTEXT_SAFETY_TOKENS } from '../pi/compatible.ts';
 import { isLoopbackHost } from '../pi/loopback.ts';
 // The only thing this file takes from the server modules above it is their `DEFAULT_*` constants, for LOOP_DEFAULTS below.
 // Applying a default is this parser's job alone: nothing downstream falls back again (see LoopOptions.loop).
@@ -39,6 +39,8 @@ export interface PiConfig {
 export interface CompatibleConfig {
   baseUrl: string;
   apiKey: SecretReference;
+  /** The context window Pi measures the model against. The endpoint's own may be larger; this is what Pi may use. */
+  contextWindow: number;
 }
 
 export { COMPATIBLE_PROVIDER };
@@ -336,6 +338,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     const judge = parseJudge((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
     if (judge) config.slack.judge = judge;
   }
+  if (config.pi.compatible) checkContextRoom(config.pi.compatible.contextWindow, config.loop.compactionThreshold);
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
   }
@@ -382,7 +385,7 @@ function parsePi(value: unknown, path: string): PiConfig {
 
 function parseCompatible(value: unknown, path: string): CompatibleConfig {
   const compatible = object(value, path);
-  onlyKeys(compatible, path, ['baseUrl', 'apiKeyEnv', 'apiKeyFile']);
+  onlyKeys(compatible, path, ['baseUrl', 'apiKeyEnv', 'apiKeyFile', 'contextWindow']);
   const baseUrlPath = `${path}.baseUrl`;
   const url = parseUrl(required(compatible, 'baseUrl', path), baseUrlPath);
   if (url.username || url.password || url.search || url.hash) {
@@ -391,7 +394,30 @@ function parseCompatible(value: unknown, path: string): CompatibleConfig {
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
     throw new ConfigError(baseUrlPath, 'must use https (http is accepted only for a loopback host)');
   }
-  return { baseUrl: url.href, apiKey: secretReference(compatible, path, 'apiKey') };
+  const contextWindow = compatible.contextWindow === undefined ? DEFAULT_CONTEXT_WINDOW : compatible.contextWindow;
+  if (!positiveInteger(contextWindow, 1)) throw new ConfigError(`${path}.contextWindow`, 'must be a positive integer');
+  return { baseUrl: url.href, apiKey: secretReference(compatible, path, 'apiKey'), contextWindow: contextWindow as number };
+}
+
+/**
+ * Room a turn is given to grow past the compaction threshold: an ordinary turn's model calls with their thinking and
+ * shell answers (8000 characters each). A rough allowance, not a bound: the check below is against settings that fail
+ * on an ordinary day, not a proof that no turn can overflow.
+ */
+const TURN_GROWTH_TOKENS = 32_768;
+
+/**
+ * Compaction runs only between turns (ADR 0009), so a turn may start just under the threshold and must still fit the
+ * window: its own growth, the longest reply it may ask for, and the margin Pi keeps when it sizes a request. Near the
+ * window Pi shortens each reply to what is left, so replies and thinking are cut off; Pi's own compaction is off.
+ */
+function checkContextRoom(contextWindow: number, threshold: number) {
+  const room = TURN_GROWTH_TOKENS + COMPATIBLE_MAX_TOKENS + PI_CONTEXT_SAFETY_TOKENS;
+  if (threshold + room > contextWindow) {
+    throw new ConfigError('loop.compactionThreshold',
+      `must leave ${room} tokens below pi.compatible.contextWindow (${contextWindow}) for a turn to finish; ` +
+      `lower it to ${contextWindow - room} or raise the window`);
+  }
 }
 
 function parsePublicOrigin(value: unknown, path: string): string {
