@@ -1,5 +1,5 @@
 import { LogLevel, SocketModeClient } from '@slack/socket-mode';
-import { WebClient } from '@slack/web-api';
+import { ErrorCode, WebClient } from '@slack/web-api';
 
 /**
  * The edge of Slack (ADR 0012, ADR 0039): the few Web API calls the server makes with the bot token, and the Socket
@@ -58,6 +58,56 @@ export interface SlackSocket {
   stop(): Promise<void>;
 }
 
+/**
+ * A Web API call Slack refused or that never got an answer: the method, and Slack's own code for why (`missing_scope`,
+ * `not_in_channel`, `http_403`, `ratelimited`...), with the scope it lacked when Slack says. Nothing asked for or
+ * answered is kept, so the log can say it whole.
+ */
+export class SlackCallError extends Error {
+  readonly method: string;
+  readonly reason: string;
+  readonly needed: string | undefined;
+
+  constructor(method: string, reason: string, needed?: string) {
+    super(`${method} failed (${reason})`);
+    this.name = 'SlackCallError';
+    this.method = method;
+    this.reason = reason;
+    this.needed = needed;
+  }
+}
+
+/** Slack's codes and scopes are plain words; anything else is not copied into the log. */
+const PLAIN = /^[A-Za-z0-9_.:,-]{1,64}$/;
+const plain = (value: unknown): string | undefined => typeof value === 'string' && PLAIN.test(value) ? value : undefined;
+
+/** What the official SDK threw on `method`, as a `SlackCallError`. */
+export function callError(method: string, error: unknown): SlackCallError {
+  if (error instanceof SlackCallError) return error;
+  const failure = (error ?? {}) as { code?: unknown; data?: { error?: unknown; needed?: unknown }; statusCode?: unknown;
+    original?: { code?: unknown; name?: unknown } };
+  switch (failure.code) {
+    case ErrorCode.PlatformError: return new SlackCallError(method, plain(failure.data?.error) ?? 'unknown', plain(failure.data?.needed));
+    case ErrorCode.HTTPError: return new SlackCallError(method, `http_${Number(failure.statusCode) || 'error'}`);
+    case ErrorCode.RateLimitedError: return new SlackCallError(method, 'ratelimited');
+    case ErrorCode.RequestError: return new SlackCallError(method, plain(failure.original?.code) ?? plain(failure.original?.name) ?? 'request_error');
+    default: return new SlackCallError(method, plain(failure.code) ?? (error instanceof Error ? plain(error.name) : undefined) ?? 'error');
+  }
+}
+
+/** One failure as the log says it: the call and Slack's code, or else the kind of error. Never a message or a path. */
+export function describeFailure(error: unknown): string {
+  if (error instanceof SlackCallError) return `${error.method}: ${error.reason}${error.needed ? `, needed ${error.needed}` : ''}`;
+  if (!(error instanceof Error)) return 'error';
+  const code = plain((error as { code?: unknown }).code);
+  return `${plain(error.name) ?? 'Error'}${code ? `: ${code}` : ''}`;
+}
+
+/** Runs one Web API call, so that what it throws names the call. */
+async function calling<T>(method: string, work: () => Promise<T>): Promise<T> {
+  try { return await work(); } catch (error) { throw callError(method, error); }
+}
+
 export type SlackConnector = (tokens: { botToken: string; appToken: string }) => { api: SlackApi; socket: SlackSocket };
 
 /** A message from the Events API or the Web API, in the server's shape. Anything else in it is dropped. */
@@ -93,28 +143,29 @@ export const connectSlack: SlackConnector = ({ botToken, appToken }) => {
   const socketClient = new SocketModeClient({ appToken, logLevel: LogLevel.ERROR });
   const api: SlackApi = {
     async whoAmI() {
-      const answer = await web.auth.test();
+      const answer = await calling('auth.test', () => web.auth.test());
       return { userId: String(answer.user_id), ...(answer.bot_id ? { botId: String(answer.bot_id) } : {}) };
     },
     async conversations() {
       const found: SlackConversation[] = [];
       let cursor: string | undefined;
       do {
-        const page = await web.users.conversations({ types: 'public_channel,private_channel,im', limit: 200, exclude_archived: true, cursor });
+        const page = await calling('users.conversations', () =>
+          web.users.conversations({ types: 'public_channel,private_channel,im', limit: 200, exclude_archived: true, cursor }));
         for (const channel of page.channels ?? []) found.push(conversation(channel as Record<string, unknown>));
         cursor = page.response_metadata?.next_cursor || undefined;
       } while (cursor);
       return found;
     },
     async conversation(id) {
-      const answer = await web.conversations.info({ channel: id });
+      const answer = await calling('conversations.info', () => web.conversations.info({ channel: id }));
       return conversation(answer.channel as Record<string, unknown>);
     },
     async history(channel, oldest) {
       const found: SlackMessage[] = [];
       let cursor: string | undefined;
       do {
-        const page = await web.conversations.history({ channel, oldest, limit: 200, cursor });
+        const page = await calling('conversations.history', () => web.conversations.history({ channel, oldest, limit: 200, cursor }));
         for (const message of page.messages ?? []) found.push(toSlackMessage(message as Record<string, unknown>));
         cursor = page.response_metadata?.next_cursor || undefined;
       } while (cursor);
@@ -124,28 +175,32 @@ export const connectSlack: SlackConnector = ({ botToken, appToken }) => {
       const found: SlackMessage[] = [];
       let cursor: string | undefined;
       do {
-        const page = await web.conversations.replies({ channel, ts: threadTs, limit: 200, cursor });
+        const page = await calling('conversations.replies', () => web.conversations.replies({ channel, ts: threadTs, limit: 200, cursor }));
         for (const message of page.messages ?? []) found.push(toSlackMessage(message as Record<string, unknown>));
         cursor = page.response_metadata?.next_cursor || undefined;
       } while (cursor);
       return found.sort((a, b) => Number(a.ts) - Number(b.ts));
     },
     async userName(userId) {
-      const answer = await web.users.info({ user: userId });
+      const answer = await calling('users.info', () => web.users.info({ user: userId }));
       const user = answer.user;
       return user?.profile?.display_name || user?.real_name || user?.name || userId;
     },
     async addReaction(channel, ts, name) {
-      try { await web.reactions.add({ channel, timestamp: ts, name }); } catch (error) {
+      try { await calling('reactions.add', () => web.reactions.add({ channel, timestamp: ts, name })); } catch (error) {
         // Already there (a retry that raced the first try) is what was wanted.
-        if ((error as { data?: { error?: string } }).data?.error !== 'already_reacted') throw error;
+        if ((error as SlackCallError).reason !== 'already_reacted') throw error;
       }
     },
     async download(url, maxBytes) {
-      const response = await fetch(url, { headers: { authorization: `Bearer ${botToken}` } });
-      if (!response.ok || !response.body) throw new Error(`download failed (${response.status})`);
+      let response: Response;
+      try { response = await fetch(url, { headers: { authorization: `Bearer ${botToken}` } }); } catch (error) {
+        const cause = (error as { cause?: { code?: unknown } }).cause;
+        throw new SlackCallError('files.download', plain(cause?.code) ?? 'request_error');
+      }
+      if (!response.ok || !response.body) throw new SlackCallError('files.download', `http_${response.status}`);
       // Slack answers a missing scope with its sign-in page rather than an error.
-      if ((response.headers.get('content-type') ?? '').startsWith('text/html')) throw new Error('download answered with a page');
+      if ((response.headers.get('content-type') ?? '').startsWith('text/html')) throw new SlackCallError('files.download', 'answered_with_a_page');
       const chunks: Buffer[] = [];
       let size = 0;
       for await (const chunk of response.body) {
