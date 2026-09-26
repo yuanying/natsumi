@@ -460,3 +460,50 @@ test('the polling interval and the wait limit are whole numbers with a floor', (
   }
   rejects({ ...base(), a2a: { ...a2a(), retries: 3 } }, 'a2a.retries', /unknown/);
 });
+
+const slack = () => ({
+  workspaces: { work: { botTokenEnv: 'NATSUMI_SLACK_WORK_BOT_TOKEN', appTokenFile: '/run/secrets/slack-work-app-token' } },
+});
+
+test('Slack is off unless the slack section is given, and has defaults for the rest (ADR 0012)', () => {
+  assert.equal('slack' in parseConfig(base()), false);
+  assert.deepEqual(parseConfig({ ...base(), slack: slack() }).slack, {
+    workspaces: { work: { botToken: { env: 'NATSUMI_SLACK_WORK_BOT_TOKEN' }, appToken: { file: '/run/secrets/slack-work-app-token' } } },
+    reaction: 'eyes', backfillDays: 3, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
+  });
+  const tuned = parseConfig({ ...base(), slack: { ...slack(), reaction: 'white_check_mark', backfillDays: 1, maxImageBytes: 1048576,
+    mentionContext: { messages: 3, chars: 200 }, updates: false } }).slack;
+  assert.equal(tuned?.reaction, 'white_check_mark');
+  assert.equal(tuned?.backfillDays, 1);
+  assert.equal(tuned?.maxImageBytes, 1048576);
+  assert.deepEqual(tuned?.mentionContext, { messages: 3, chars: 200 });
+  assert.equal(tuned?.updates, false);
+});
+
+test('the Slack tokens are referenced by environment variable or file, never written in the config', () => {
+  const workspace = (value: unknown) => ({ ...base(), slack: { workspaces: { work: value } } });
+  rejects(workspace({ appTokenEnv: 'APP' }), 'slack.workspaces.work.botTokenEnv', /required/);
+  rejects(workspace({ botTokenEnv: 'BOT' }), 'slack.workspaces.work.appTokenEnv', /required/);
+  rejects(workspace({ botToken: 'xoxb-1-2-3', appTokenEnv: 'APP' }), 'slack.workspaces.work.botToken', /secrets must not be written/);
+  rejects(workspace({ botTokenEnv: 'BOT', appTokenEnv: 'APP', userTokenEnv: 'USER' }), 'slack.workspaces.work.userTokenEnv', /unknown/);
+});
+
+test('each Slack workspace is a short lower-case name, and there is at least one', () => {
+  const tokens = { botTokenEnv: 'BOT', appTokenEnv: 'APP' };
+  for (const name of ['Work', 'my work', '-work', 'しごと', 'a'.repeat(33)]) {
+    rejects({ ...base(), slack: { workspaces: { [name]: tokens } } }, `slack.workspaces.${name}`, /name/);
+  }
+  assert.ok(parseConfig({ ...base(), slack: { workspaces: { 'side-project2': tokens } } }).slack?.workspaces['side-project2']);
+  rejects({ ...base(), slack: { workspaces: {} } }, 'slack.workspaces', /at least one/);
+  rejects({ ...base(), slack: {} }, 'slack.workspaces', /required/);
+});
+
+test('the Slack limits are checked', () => {
+  for (const reaction of ['', ':eyes:', 'Eyes', 'a b']) rejects({ ...base(), slack: { ...slack(), reaction } }, 'slack.reaction');
+  for (const backfillDays of [0, 31, 1.5, '3']) rejects({ ...base(), slack: { ...slack(), backfillDays } }, 'slack.backfillDays');
+  for (const maxImageBytes of [0, 1023, 20 * 1024 * 1024 + 1]) rejects({ ...base(), slack: { ...slack(), maxImageBytes } }, 'slack.maxImageBytes');
+  rejects({ ...base(), slack: { ...slack(), mentionContext: { messages: 21 } } }, 'slack.mentionContext.messages');
+  rejects({ ...base(), slack: { ...slack(), mentionContext: { chars: 10 } } }, 'slack.mentionContext.chars');
+  rejects({ ...base(), slack: { ...slack(), updates: 'yes' } }, 'slack.updates');
+  rejects({ ...base(), slack: { ...slack(), channels: ['dev'] } }, 'slack.channels', /unknown/);
+});

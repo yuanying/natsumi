@@ -179,6 +179,40 @@ const MIN_A2A_POLL_INTERVAL_SECONDS = 5;
 /** An agent's name as natsumi writes it in `ask_agent`: short, lower case, no spaces. */
 const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
+/** One Slack workspace natsumi's own App is installed in (ADR 0039). The channels are the ones its bot is invited to. */
+export interface SlackWorkspaceConfig {
+  /** The bot token (`xoxb-`), for the Web API. */
+  botToken: SecretReference;
+  /** The app-level token (`xapp-`) with `connections:write`, for Socket Mode. */
+  appToken: SecretReference;
+}
+
+/** Slack, received (ADR 0012, ADR 0039). Without it nothing connects to Slack. */
+export interface SlackConfig {
+  /** Name → tokens. The name is what natsumi reads in paths and references, such as `work/#dev`. */
+  workspaces: Record<string, SlackWorkspaceConfig>;
+  /** The reaction the server puts on a mention or a DM as it arrives, by Slack's emoji name. */
+  reaction: string;
+  /** How far back a channel never recorded before is filled in, in days. */
+  backfillDays: number;
+  /** The largest image fetched; a larger one, or a file that is not an image, is only noted. */
+  maxImageBytes: number;
+  /** The messages before a mention its event carries, and the characters each keeps. */
+  mentionContext: { messages: number; chars: number };
+  /** Whether Slack is counted in the `updates` of pings and self-checks. */
+  updates: boolean;
+}
+
+export const SLACK_DEFAULTS = {
+  reaction: 'eyes', backfillDays: 3, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
+};
+const MAX_SLACK_BACKFILL_DAYS = 30;
+const MAX_SLACK_IMAGE_BYTES = 20 * 1024 * 1024;
+const MAX_MENTION_CONTEXT_MESSAGES = 20;
+const MIN_MENTION_CONTEXT_CHARS = 50;
+/** Slack's emoji names: lower case, digits and a few marks, without the colons. */
+const EMOJI_NAME = /^[a-z0-9_+'-]+$/;
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -188,6 +222,7 @@ export interface ServerConfig {
   loop: LoopConfig;
   apns?: ApnsConfig;
   a2a?: A2AConfig;
+  slack?: SlackConfig;
 }
 
 export const GITHUB_CALLBACK_PATH = '/auth/github/callback';
@@ -206,6 +241,7 @@ const SECTIONS = {
   loop: parseLoop,
   apns: parseApns,
   a2a: parseA2A,
+  slack: parseSlack,
 } satisfies { [K in keyof ServerConfig]: Section<ServerConfig[K]> };
 
 /** Settings ADR 0019 renamed. The old name stops startup rather than being ignored: it would switch the shell off. */
@@ -240,6 +276,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     loop: SECTIONS.loop(root.loop ?? {}, 'loop'),
     ...(root.apns === undefined ? {} : { apns: SECTIONS.apns(root.apns, 'apns') }),
     ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
+    ...(root.slack === undefined ? {} : { slack: SECTIONS.slack(root.slack, 'slack') }),
   };
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
@@ -447,6 +484,50 @@ function parseA2A(value: unknown, path: string): A2AConfig {
     tokenFile: absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`),
     pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents,
   };
+}
+
+function parseSlack(value: unknown, path: string): SlackConfig {
+  const slack = object(value, path);
+  onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', 'mentionContext', 'updates']);
+  const workspacesPath = `${path}.workspaces`;
+  const listed = object(required(slack, 'workspaces', path), workspacesPath);
+  const workspaces: SlackConfig['workspaces'] = {};
+  for (const [name, entry] of Object.entries(listed)) {
+    const entryPath = `${workspacesPath}.${name}`;
+    // The name becomes a directory and the first part of every reference she writes, so it is kept plain.
+    if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
+    const workspace = object(entry, entryPath);
+    onlyKeys(workspace, entryPath, ['botTokenEnv', 'botTokenFile', 'appTokenEnv', 'appTokenFile']);
+    workspaces[name] = { botToken: secretReference(workspace, entryPath, 'botToken'), appToken: secretReference(workspace, entryPath, 'appToken') };
+  }
+  if (Object.keys(workspaces).length === 0) throw new ConfigError(workspacesPath, 'must name at least one workspace');
+  const reaction = slack.reaction ?? SLACK_DEFAULTS.reaction;
+  if (typeof reaction !== 'string' || !EMOJI_NAME.test(reaction)) {
+    throw new ConfigError(`${path}.reaction`, 'must be an emoji name without colons, such as eyes');
+  }
+  const days = slack.backfillDays ?? SLACK_DEFAULTS.backfillDays;
+  if (!positiveInteger(days, 1) || (days as number) > MAX_SLACK_BACKFILL_DAYS) {
+    throw new ConfigError(`${path}.backfillDays`, `must be an integer from 1 to ${MAX_SLACK_BACKFILL_DAYS}`);
+  }
+  const bytes = slack.maxImageBytes ?? SLACK_DEFAULTS.maxImageBytes;
+  if (!positiveInteger(bytes, 1024) || (bytes as number) > MAX_SLACK_IMAGE_BYTES) {
+    throw new ConfigError(`${path}.maxImageBytes`, `must be an integer from 1024 to ${MAX_SLACK_IMAGE_BYTES}`);
+  }
+  const contextPath = `${path}.mentionContext`;
+  const context = object(slack.mentionContext ?? {}, contextPath);
+  onlyKeys(context, contextPath, ['messages', 'chars']);
+  const messages = context.messages ?? SLACK_DEFAULTS.mentionContext.messages;
+  if (!(typeof messages === 'number' && Number.isInteger(messages) && messages >= 0 && messages <= MAX_MENTION_CONTEXT_MESSAGES)) {
+    throw new ConfigError(`${contextPath}.messages`, `must be an integer from 0 to ${MAX_MENTION_CONTEXT_MESSAGES}`);
+  }
+  const chars = context.chars ?? SLACK_DEFAULTS.mentionContext.chars;
+  if (!positiveInteger(chars, MIN_MENTION_CONTEXT_CHARS)) {
+    throw new ConfigError(`${contextPath}.chars`, `must be an integer of at least ${MIN_MENTION_CONTEXT_CHARS}`);
+  }
+  const updates = slack.updates ?? SLACK_DEFAULTS.updates;
+  if (typeof updates !== 'boolean') throw new ConfigError(`${path}.updates`, 'must be true or false');
+  return { workspaces, reaction, backfillDays: days as number, maxImageBytes: bytes as number,
+    mentionContext: { messages, chars: chars as number }, updates };
 }
 
 function parseLoop(value: unknown, path: string): LoopConfig {
