@@ -64,12 +64,12 @@ test('the page on images says how to draw with the default params, where to put 
   for (const word of ['sdctl txt2img --prompt ', '/work/images', 'view ', '画像:', 'anima_mignolia_v10', 'kutara_aki_anima.v3', '-o ']) {
     assert.ok(page.includes(word), word);
   }
-  // The defaults come from the image's environment (sdctl v0.3.1): no flag for them, and nothing to throw away.
+  // The defaults come from the image's sdctl config file: no flag for them, and nothing to throw away.
   assert.doesNotMatch(page, /--params/);
   assert.doesNotMatch(page, /\/dev\/null/);
   const dockerfile = await read('Dockerfile');
   assert.match(dockerfile, /^COPY docker\/sdctl\/anima\.yaml \/etc\/sdctl\/anima\.yaml$/m);
-  assert.match(dockerfile, /^ENV SDCTL_OUTPUT_DIR=\/work\/images$/m);
+  assert.match(await read('docker/sdctl/config.yaml'), /^output_dir: \/work\/images$/m);
   // Her own look, as the owner wrote it, line breaks and all.
   assert.ok(page.includes([
     '<lora:kutara_aki_anima.v3:1> ,',

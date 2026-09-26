@@ -1,7 +1,7 @@
 # 0044. なつみは作業環境の sdctl で画像を作り、ポッポさんへの依頼で Slack に投稿する
 
 - Date: 2026-09-26
-- Status: Accepted（未決としていた画像を Mac に出すかと、画像を取る道が会話の行の画像も返すことは [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で決定）
+- Status: Accepted（2026-09-26: sdctl の既定を image の設定ファイルに置くことを「追記」の節に加えた。未決としていた画像を Mac に出すかと、画像を取る道が会話の行の画像も返すことは [ADR 0045](0045-showing-the-owner-images-with-a-reply.md) で決定）
 
 ## Context
 
@@ -137,3 +137,13 @@
 2. 環境の設定（private のリポジトリ）: 出口の proxy の中継（通す API はこの ADR の表）、token の秘密、作業環境の `SDCTL_URL`
 
 1 と 2 は並行して進める。iPhone の承認画面の画像と、token の発行は本人が行う。
+
+## 追記（2026-09-26）: sdctl の既定は image の設定ファイルに置く
+
+- 作業環境の runner は、コマンドに `PATH`・`HOME`・`LANG`・`TZ` しか渡さない（[ADR 0019](0019-a-workspace-not-a-memory-tool.md)）。
+  このため、コンテナの環境変数 `SDCTL_URL` も、image の環境変数の既定の設定と出力先も、なつみのコマンドには届かず、sdctl は既定の接続先（`localhost:7860`）へつなごうとして失敗した。
+- runner の環境の規則は変えない。sdctl の接続先・既定の設定・出力先は、image の設定ファイル（`/etc/sdctl/config.yaml`）に置く。
+  PATH の `sdctl` は、本物の sdctl にいつもこのファイルを渡すラッパーとする。どのシェルから使っても同じ既定になる。
+- 接続先は中継の loopback のアドレス（`127.0.0.1:17860`）を image に書く。環境の設定の約束と同じ値であり、変えるときは両方を直す。
+  「作業環境の `SDCTL_URL` は、この中継の loopback のアドレスを指す」は、コンテナのシェル（本人の `kubectl exec` など）のための値として残る。sdctl では環境変数が設定ファイルより勝つが、値は同じである。
+- 既定を本人の HOME（永続領域）の下に置く形は取らない。image の版と既定の版がずれるからである。

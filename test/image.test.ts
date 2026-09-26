@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFile, spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
 const dockerfile = () => readFile(new URL('../Dockerfile', import.meta.url).pathname, 'utf8');
 
@@ -55,11 +57,11 @@ test('the workspace image has sdctl built from a fixed version of its source', a
   assert.ok(text.includes(' AS sdctl\n'), 'no stage builds sdctl');
   assert.match(stage, /go install [^\n]*github\.com\/yuanying\/sdctl@v0\.3\.1\b/);
   assert.doesNotMatch(stage, /@latest/);
-  assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/local\/bin\/sdctl$/m);
+  assert.match(await workspaceStage(), /^COPY --from=sdctl \/out\/sdctl \/usr\/libexec\/sdctl$/m);
 });
 
 test('the default params are in the workspace image, for Anima, with a negative prompt and the model set per request', async () => {
-  const copy = /^COPY (docker\/sdctl\/\S+) (\/etc\/sdctl\/\S+)$/m.exec(await workspaceStage());
+  const copy = /^COPY (docker\/sdctl\/\S+) (\/etc\/sdctl\/anima\.yaml)$/m.exec(await workspaceStage());
   assert.ok(copy, 'the params are not copied into the workspace image');
   assert.equal(copy[2], '/etc/sdctl/anima.yaml');
   const params = await readFile(`${root}${copy[1]}`, 'utf8');
@@ -70,10 +72,142 @@ test('the default params are in the workspace image, for Anima, with a negative 
   assert.doesNotMatch(params, /^prompt:/m, 'the prompt is hers to write');
 });
 
-// sdctl v0.3.1 reads its defaults from the environment: she writes the prompt and nothing else.
-test('the workspace image makes the default params and /work/images sdctl\'s own defaults, and leaves the URL to the environment', async () => {
+// The runner gives a command none of the container's environment (ADR 0019), so the defaults cannot live there: sdctl
+// in PATH is a wrapper that points the real one at a config file in the image, whichever shell runs it.
+test('the workspace image gives sdctl its defaults in a config file that the sdctl in PATH always reads', async () => {
   const stage = await workspaceStage();
-  assert.match(stage, /^ENV SDCTL_PARAMS=\/etc\/sdctl\/anima\.yaml$/m);
-  assert.match(stage, /^ENV SDCTL_OUTPUT_DIR=\/work\/images$/m);
-  assert.doesNotMatch(stage, /^ENV SDCTL_URL/m, 'the relay is the environment\'s to name');
+  assert.match(stage, /^COPY --chmod=755 docker\/sdctl\/sdctl \/usr\/local\/bin\/sdctl$/m);
+  assert.match(stage, /^COPY docker\/sdctl\/config\.yaml \/etc\/sdctl\/config\.yaml$/m);
+  assert.doesNotMatch(stage, /^ENV SDCTL_/m, 'a command run by the runner never sees the image\'s environment');
+  const wrapper = await readFile(`${root}docker/sdctl/sdctl`, 'utf8');
+  assert.match(wrapper, /^exec \/usr\/libexec\/sdctl --config \/etc\/sdctl\/config\.yaml "\$@"$/m);
+  const config = await readFile(`${root}docker/sdctl/config.yaml`, 'utf8');
+  // The relay's address is the environment overlay's promise: the egress proxy listens there.
+  assert.match(config, /^url: http:\/\/127\.0\.0\.1:17860$/m);
+  assert.match(config, /^params: \/etc\/sdctl\/anima\.yaml$/m);
+  assert.match(config, /^output_dir: \/work\/images$/m);
+});
+
+// What natsumi runs reaches the runner, and the runner gives a command only PATH, HOME, LANG and TZ (ADR 0019): none of
+// the container's environment. So sdctl's defaults are checked where she uses it, through the runner of the built
+// workspace image, against a fake image server on the relay's address. It needs docker, and skips without it.
+const hasDocker = await promisify(execFile)('docker', ['info']).then(() => true, () => false);
+const workspaceTag = 'natsumi-workspace:test';
+const relay = 'http://127.0.0.1:17860';
+
+function docker(args: string[], input?: string) {
+  return new Promise<string>((resolvePromise, reject) => {
+    const child = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', code => code === 0 ? resolvePromise(stdout) : reject(new Error(`docker ${args[0]} exited ${code}: ${stderr}`)));
+    child.stdin.end(input ?? '');
+  });
+}
+
+// A client of the runner's socket, run inside the container so the test needs no socket shared with the host.
+const runnerClient = [
+  'import socket, sys',
+  's = socket.socket(socket.AF_UNIX)',
+  's.connect("/run/natsumi-workspace/runner.sock")',
+  's.sendall(sys.stdin.buffer.read())',
+  'sys.stdout.buffer.write(s.makefile("rb").readline())',
+].join('\n');
+
+type RunnerResult = { exitCode: number | null; stdout: string; stderr: string };
+
+async function throughRunner(container: string, command: string): Promise<RunnerResult> {
+  const answer = await docker(['exec', '-i', container, 'python3', '-c', runnerClient], `${JSON.stringify({ command })}\n`);
+  return JSON.parse(answer) as RunnerResult;
+}
+
+// Answers what `sdctl txt2img` asks with default params that name modules, and writes down every request.
+const fakeImageServer = `
+import base64, http.server, json
+class Handler(http.server.BaseHTTPRequestHandler):
+    def answer(self, body):
+        data = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def record(self, body):
+        with open("/tmp/fake-sd/requests.jsonl", "a") as log:
+            log.write(json.dumps({"method": self.command, "path": self.path, "body": body}) + "\\n")
+    def do_GET(self):
+        self.record(None)
+        if self.path == "/sdapi/v1/sd-modules":
+            return self.answer([])
+        self.send_error(404)
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.record(body)
+        if self.path == "/sdapi/v1/txt2img":
+            return self.answer({"images": [base64.b64encode(b"not really a png").decode()], "info": "{}"})
+        self.send_error(404)
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(("127.0.0.1", 17860), Handler)
+open("/tmp/fake-sd/ready", "w").close()
+server.serve_forever()
+`;
+
+test('through the runner, as run_shell runs it, sdctl draws through the relay with the default params into /work/images', {
+  skip: hasDocker ? false : 'docker is not available',
+  timeout: 30 * 60_000,
+}, async t => {
+  // The host network only for the build: some hosts resolve no names on the default bridge.
+  await docker(['build', '--network', 'host', '--target', 'workspace', '--tag', workspaceTag, root]);
+  const container = `natsumi-workspace-test-${process.pid}`;
+  await docker(['run', '--detach', '--rm', '--name', container, '--network', 'none', '--read-only', '--init',
+    '--tmpfs', '/tmp:mode=1777', '--tmpfs', '/run/natsumi-workspace:uid=1000,gid=1000,mode=755',
+    '--tmpfs', '/work:uid=1000,gid=1000,mode=755', '--tmpfs', '/home/natsumi:uid=1000,gid=1000,mode=755',
+    workspaceTag, 'serve']);
+  t.after(() => docker(['rm', '--force', container]).catch(() => undefined));
+  for (let attempt = 0; ; attempt++) {
+    const ready = await docker(['exec', container, '/usr/libexec/natsumi-workspace-runner', 'check']).then(() => true, () => false);
+    if (ready) break;
+    assert.ok(attempt < 50, 'the runner never answered');
+    await new Promise(wait => setTimeout(wait, 100));
+  }
+
+  const started = await throughRunner(container, [
+    'mkdir -p /tmp/fake-sd',
+    `cat > /tmp/fake-sd/server.py <<'PY'${fakeImageServer}PY`,
+    'python3 /tmp/fake-sd/server.py >/tmp/fake-sd/log 2>&1 &',
+    'for _ in $(seq 100); do [ -e /tmp/fake-sd/ready ] && exit 0; sleep 0.1; done; cat /tmp/fake-sd/log; exit 1',
+  ].join('\n'));
+  assert.equal(started.exitCode, 0, `the fake image server did not start: ${started.stdout}${started.stderr}`);
+  const prompt = await throughRunner(container, `mkdir -p /work/prompts && printf 'prompt: "a white cat"\\n' > /work/prompts/cat.yaml`);
+  assert.equal(prompt.exitCode, 0, prompt.stderr);
+
+  const params = await readFile(`${root}docker/sdctl/anima.yaml`, 'utf8');
+  const negative = /^negative_prompt: "([^"]+)"$/m.exec(params)![1];
+  const drawn = async (saved: string) => {
+    assert.match(saved, /^\/work\/images\/output-[^/\s]+\.png\n$/);
+    const requests = (await throughRunner(container, 'cat /tmp/fake-sd/requests.jsonl')).stdout.trim().split('\n')
+      .map(line => JSON.parse(line) as { method: string; path: string; body: Record<string, unknown> | null });
+    const drawing = requests.findLast(request => request.path === '/sdapi/v1/txt2img');
+    assert.ok(drawing, 'no txt2img reached the relay');
+    assert.equal(drawing.body!.prompt, 'a white cat');
+    assert.equal(drawing.body!.negative_prompt, negative);
+    assert.equal(drawing.body!.steps, 30);
+    assert.equal((drawing.body!.override_settings as Record<string, unknown>).sd_model_checkpoint, 'anima_mignolia_v10');
+    const listed = await throughRunner(container, `test -s ${saved.trim()} && echo saved`);
+    assert.equal(listed.stdout, 'saved\n');
+  };
+
+  // natsumi's run_shell: the runner's environment only.
+  const viaRunner = await throughRunner(container, 'sdctl txt2img --prompt /work/prompts/cat.yaml');
+  assert.equal(viaRunner.exitCode, 0, `sdctl failed through the runner: ${viaRunner.stderr}`);
+  await drawn(viaRunner.stdout);
+
+  // The owner's shell in the container (kubectl exec), which has the environment the Pod gives it.
+  const viaShell = await docker(['exec', '--env', `SDCTL_URL=${relay}`, container,
+    'bash', '-c', 'sdctl txt2img --prompt /work/prompts/cat.yaml']);
+  await drawn(viaShell);
 });
