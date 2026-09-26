@@ -10,7 +10,7 @@ import { login, startFixture, type Fixture } from './support/server-fixture.ts';
 // The model routes as the clients see them (ADR 0046): in the snapshot, by command, and as an event.
 
 const ROUTES = {
-  routes: { main: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, spare: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } },
+  routes: { main: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, spare: { model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } } },
   defaultRoute: 'main',
 };
 
@@ -55,7 +55,7 @@ test('the snapshot carries the routes; model.list reads them and model.use choos
     const routes = {
       defaultRoute: 'main', current: 'main', chosen: 'main',
       routes: [{ name: 'main', provider: 'openai-codex', model: 'gpt-5.5', ready: true },
-        { name: 'spare', provider: 'openai-codex', model: 'gpt-5.4', ready: true }],
+        { name: 'spare', provider: 'openai-codex', model: 'gpt-5.6-sol', ready: true }],
     };
     assert.deepEqual(snapshot.payload.modelRoutes, routes);
     const listed = await c.request('model.list');
