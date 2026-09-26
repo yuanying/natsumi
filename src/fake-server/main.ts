@@ -8,9 +8,11 @@
  * docs/client-contract.md for the conversation: a snapshot for every `session.sync`, reads, notice checks, and a
  * reply to each message after a line of thinking. It also keeps Slack posts waiting for the owner's approval: two at
  * the start, one more arriving `--approval-delay` seconds after the first sync (0 for none), and `approval.decide`
- * answered the way the contract says. Logging out puts the approvals back as they were at the start. Everything it
+ * answered the way the contract says. The post to a channel carries two images, served at `/v1/images/<imageId>` to
+ * the fake token (the faces of the avatar stand in for pictures she drew). Logging out puts the approvals back as they were at the start. Everything it
  * says is fictional and kept in memory only.
  */
+import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { parseArgs } from 'node:util';
@@ -66,6 +68,7 @@ interface Approval {
   target: { channel: string; placement: Placement; replyTo?: { speaker: string; at: string; text: string } };
   text: string;
   expression?: string;
+  images?: { imageId: string; mimeType: string; bytes: number }[];
   reason: {
     verdict: 'owner' | 'no-verdict' | 'rewrite-limit';
     issues: Issue[];
@@ -94,6 +97,11 @@ const longReply = [
 
 const promise: Issue = { name: 'promise-for-owner', label: '本人に代わる約束・期限', score: 0.82, flagged: true };
 
+/** The images the approvals show, by ID: two of the avatar's faces, read once. */
+const IMAGES = new Map(['happy', 'laughing'].map(face => [`image-fake-${face}`,
+  readFileSync(new URL(`../../assets/avatar/${face}.png`, import.meta.url))]));
+const listed = (imageId: string) => ({ imageId, mimeType: 'image/png', bytes: IMAGES.get(imageId)!.length });
+
 /** The approvals waiting at the start: a reply in a thread sent back twice before, and a post to a channel. */
 function startingApprovals(): Approval[] {
   return [
@@ -118,6 +126,7 @@ function startingApprovals(): Approval[] {
       approvalId: 'approval-lunch', revision: 1, kind: 'slack-post', createdAt: ago(3), expiresAt: fromNow(7),
       target: { channel: 'work/#random', placement: 'channel' },
       text: '今日のお昼は新しくできたカレー屋さんが空いてるみたいです。',
+      images: [listed('image-fake-happy'), listed('image-fake-laughing')],
       reason: { verdict: 'no-verdict', issues: [] }, history: [],
     },
   ];
@@ -293,6 +302,15 @@ export function startFakeServer(options: FakeServerOptions): Promise<FakeServer>
       response.writeHead(302, { Location: `natsumi://oauth/callback?code=fake-code&state=${state}` }).end();
     } else if (url.pathname === '/auth/session' && request.method === 'POST') {
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ token: 'fake-token', expiresAt: sessionEnd() }));
+    } else if (url.pathname.startsWith('/v1/images/') && request.method === 'GET') {
+      const image = IMAGES.get(url.pathname.slice('/v1/images/'.length));
+      if (request.headers.authorization !== 'Bearer fake-token') {
+        response.writeHead(401, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'unauthorized' }));
+      } else if (!image) {
+        response.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'not-found' }));
+      } else {
+        response.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': image.length }).end(image);
+      }
     } else if (url.pathname === '/auth/logout' && request.method === 'POST') {
       // The next login finds the approvals as they were at the start, so a walkthrough can be run again.
       approvals = startingApprovals();

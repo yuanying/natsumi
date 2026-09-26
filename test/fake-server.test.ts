@@ -162,3 +162,25 @@ test('logging out puts the approvals back as they were at the start', () => with
   assert.deepEqual(snapshot.payload.pendingApprovals.map((a: any) => a.approvalId), ['approval-review', 'approval-lunch']);
   client.close();
 }));
+
+// docs/client-contract.md (ADR 0044): an approval with images, and each image fetched with the session.
+test('the post to a channel carries two images, each fetched with the token and refused without it', () => withServer(async port => {
+  const { client, snapshot } = await synced(port);
+  const lunch = snapshot.payload.pendingApprovals.find((a: any) => a.approvalId === 'approval-lunch');
+  assert.equal(lunch.images.length, 2);
+  assert.equal(snapshot.payload.pendingApprovals.find((a: any) => a.approvalId === 'approval-review').images, undefined);
+  for (const image of lunch.images) {
+    assert.deepEqual(Object.keys(image).sort(), ['bytes', 'imageId', 'mimeType']);
+    const path = `http://localhost:${port}/v1/images/${image.imageId}`;
+    const fetched = await fetch(path, { headers: { authorization: 'Bearer fake-token' } });
+    assert.equal(fetched.status, 200);
+    assert.equal(fetched.headers.get('content-type'), image.mimeType);
+    const body = Buffer.from(await fetched.arrayBuffer());
+    assert.equal(body.length, image.bytes);
+    assert.deepEqual([...body.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+    assert.equal((await fetch(path)).status, 401);
+  }
+  const unknown = await fetch(`http://localhost:${port}/v1/images/image-none`, { headers: { authorization: 'Bearer fake-token' } });
+  assert.equal(unknown.status, 404);
+  client.close();
+}));
