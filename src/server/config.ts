@@ -201,8 +201,11 @@ export interface SlackConfig {
   mentionContext: { messages: number; chars: number };
   /** Whether Slack is counted in the `updates` of pings and self-checks. */
   updates: boolean;
-  /** The dove's judge (ADR 0040). Without it every draft is "no verdict" and goes to the owner. */
-  jev?: JevConfig;
+  /**
+   * The dove's judge (ADR 0040), resolved against `pi`: the logprobs of pi's own compatible model unless told otherwise.
+   * Absent when there is nothing to judge with; every draft is then "no verdict" and goes to the owner.
+   */
+  judge?: JudgeConfig;
   /** How long an approval waits for the owner before it expires. */
   approvalExpiryDays: number;
   /** The reactions natsumi may ask the dove for, by Slack's emoji name. */
@@ -213,13 +216,21 @@ export interface SlackConfig {
   judgeContext: { messages: number; chars: number };
 }
 
-/** TypeSafe AI's Jev, which the dove judges drafts with (ADR 0039, ADR 0040). */
-export interface JevConfig {
-  /** TypeSafe's, or a server of the owner's own that answers the same API (ADR 0040). */
+/**
+ * How the dove judges drafts (ADR 0040). `logprobs` asks an OpenAI-compatible model each question for one token and
+ * reads the probabilities of its answers; `jev` calls TypeSafe AI's Jev API, or a server that answers the same API.
+ */
+export interface JudgeConfig {
+  method: 'logprobs' | 'jev';
+  /** For `logprobs` the OpenAI-compatible base (`…/v1`); for `jev` the base of `/v1/systemone`. */
   baseUrl: string;
-  /** Absent for a server that needs none: then no Authorization header is sent. */
+  /** Absent when the endpoint needs none: then no Authorization header is sent. */
   apiKey?: SecretReference;
   model: string;
+  /** Questions asked at once by the logprobs method, one request each. */
+  concurrency: number;
+  /** A judgement not done in this time is "no verdict". */
+  timeoutSeconds: number;
   /** A score at or over `owner` hands the draft to the owner; one at or over `return` turns it back to natsumi. */
   thresholds: { owner: number; return: number };
 }
@@ -229,7 +240,13 @@ export const SLACK_DEFAULTS = {
   approvalExpiryDays: 7, reactions: ['+1', 'eyes', 'pray', 'white_check_mark', 'bow', 'tada'], placementFollowing: 2,
   judgeContext: { messages: 5, chars: 500 },
 };
-export const JEV_DEFAULTS = { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest', thresholds: { owner: 0.3, return: 0.7 } };
+export const JUDGE_DEFAULTS = {
+  method: 'logprobs' as const, concurrency: 4, timeoutSeconds: 30, thresholds: { owner: 0.5, return: 0.9 },
+  jev: { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest' },
+};
+const MAX_JUDGE_CONCURRENCY = 16;
+const MIN_JUDGE_TIMEOUT_SECONDS = 5;
+const MAX_JUDGE_TIMEOUT_SECONDS = 300;
 const MAX_APPROVAL_EXPIRY_DAYS = 90;
 const MAX_REACTIONS = 50;
 const MAX_PLACEMENT_FOLLOWING = 20;
@@ -312,6 +329,10 @@ export function parseConfig(raw: unknown): ServerConfig {
     ...(root.a2a === undefined ? {} : { a2a: SECTIONS.a2a(root.a2a, 'a2a') }),
     ...(root.slack === undefined ? {} : { slack: SECTIONS.slack(root.slack, 'slack') }),
   };
+  if (config.slack) {
+    const judge = parseJudge((root.slack as Record<string, unknown>).judge, 'slack.judge', config.pi);
+    if (judge) config.slack.judge = judge;
+  }
   if (new URL(config.github.callbackUrl).origin !== config.publicOrigin) {
     throw new ConfigError('github.callbackUrl', 'must be on publicOrigin');
   }
@@ -523,7 +544,8 @@ function parseA2A(value: unknown, path: string): A2AConfig {
 
 function parseSlack(value: unknown, path: string): SlackConfig {
   const slack = object(value, path);
-  onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', 'mentionContext', 'updates', 'jev', 'approvalExpiryDays',
+  // `judge` is read by parseJudge once pi is known: by default it borrows pi's compatible endpoint.
+  onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', 'mentionContext', 'updates', 'judge', 'approvalExpiryDays',
     'reactions', 'placementFollowing', 'judgeContext']);
   const workspacesPath = `${path}.workspaces`;
   const listed = object(required(slack, 'workspaces', path), workspacesPath);
@@ -588,37 +610,68 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   }
   return { workspaces, reaction, backfillDays: days as number, maxImageBytes: bytes as number,
     mentionContext: { messages, chars: chars as number }, updates,
-    ...(slack.jev === undefined ? {} : { jev: parseJev(slack.jev, `${path}.jev`) }),
     approvalExpiryDays: expiry as number, reactions: reactions as string[], placementFollowing: following,
     judgeContext: { messages: judgeMessages as number, chars: judgeChars as number } };
 }
 
-function parseJev(value: unknown, path: string): JevConfig {
-  const jev = object(value, path);
-  onlyKeys(jev, path, ['baseUrl', 'apiKeyEnv', 'apiKeyFile', 'model', 'thresholds']);
-  const apiKey = jev.apiKeyEnv === undefined && jev.apiKeyFile === undefined ? undefined : secretReference(jev, path, 'apiKey');
+/**
+ * The judge, resolved against pi (ADR 0040). The logprobs method borrows pi's compatible endpoint, key and model for
+ * whatever the section leaves out; a key is borrowed only with the endpoint it belongs to. Without a section and
+ * without a compatible model there is no judge. A key set here goes over plain http only to a loopback host.
+ */
+function parseJudge(value: unknown, path: string, pi: PiConfig): JudgeConfig | undefined {
+  if (value === undefined && !pi.compatible) return undefined;
+  const judge = object(value ?? {}, path);
+  onlyKeys(judge, path, ['method', 'baseUrl', 'apiKeyEnv', 'apiKeyFile', 'model', 'concurrency', 'timeoutSeconds', 'thresholds']);
+  const method = judge.method ?? JUDGE_DEFAULTS.method;
+  if (method !== 'logprobs' && method !== 'jev') throw new ConfigError(`${path}.method`, 'must be logprobs or jev');
+  const ownKey = judge.apiKeyEnv === undefined && judge.apiKeyFile === undefined ? undefined : secretReference(judge, path, 'apiKey');
   const basePath = `${path}.baseUrl`;
-  const base = jev.baseUrl === undefined ? new URL(JEV_DEFAULTS.baseUrl) : parseUrl(jev.baseUrl, basePath);
-  if (base.protocol !== 'https:' && base.protocol !== 'http:') throw new ConfigError(basePath, 'must be an http or https URL');
-  if (base.username || base.password || base.search || base.hash) throw new ConfigError(basePath, 'must not carry credentials, a query or a fragment');
-  // Every draft and what surrounds it go there; a key on top of that goes over plain http only to this machine.
-  if (apiKey && base.protocol === 'http:' && !isLoopbackHost(base.hostname)) {
-    throw new ConfigError(basePath, 'must use https when an API key is sent (http is accepted with a key only for a loopback host)');
+  let baseUrl: string;
+  let apiKey = ownKey;
+  if (judge.baseUrl !== undefined) {
+    const base = parseUrl(judge.baseUrl, basePath);
+    if (base.protocol !== 'https:' && base.protocol !== 'http:') throw new ConfigError(basePath, 'must be an http or https URL');
+    if (base.username || base.password || base.search || base.hash) throw new ConfigError(basePath, 'must not carry credentials, a query or a fragment');
+    // Every draft and what surrounds it go there; a key on top of that goes over plain http only to this machine.
+    if (ownKey && base.protocol === 'http:' && !isLoopbackHost(base.hostname)) {
+      throw new ConfigError(basePath, 'must use https when an API key is sent (http is accepted with a key only for a loopback host)');
+    }
+    baseUrl = (judge.baseUrl as string).replace(/\/+$/, '');
+  } else if (method === 'jev') {
+    baseUrl = JUDGE_DEFAULTS.jev.baseUrl;
+  } else if (pi.compatible) {
+    baseUrl = pi.compatible.baseUrl.replace(/\/+$/, '');
+    apiKey ??= pi.compatible.apiKey;
+  } else {
+    throw new ConfigError(basePath, 'is required when pi has no compatible provider to borrow it from');
   }
-  const baseUrl = jev.baseUrl === undefined ? JEV_DEFAULTS.baseUrl : (jev.baseUrl as string).replace(/\/+$/, '');
-  const model = jev.model === undefined ? JEV_DEFAULTS.model : nonEmptyString(jev.model, `${path}.model`);
+  let model: string;
+  if (judge.model !== undefined) model = nonEmptyString(judge.model, `${path}.model`);
+  else if (method === 'jev') model = JUDGE_DEFAULTS.jev.model;
+  else if (pi.compatible) model = pi.model.id;
+  else throw new ConfigError(`${path}.model`, 'is required when pi has no compatible provider to borrow it from');
+  const concurrency = judge.concurrency ?? JUDGE_DEFAULTS.concurrency;
+  if (!positiveInteger(concurrency, 1) || (concurrency as number) > MAX_JUDGE_CONCURRENCY) {
+    throw new ConfigError(`${path}.concurrency`, `must be an integer from 1 to ${MAX_JUDGE_CONCURRENCY}`);
+  }
+  const timeout = judge.timeoutSeconds ?? JUDGE_DEFAULTS.timeoutSeconds;
+  if (!positiveInteger(timeout, MIN_JUDGE_TIMEOUT_SECONDS) || (timeout as number) > MAX_JUDGE_TIMEOUT_SECONDS) {
+    throw new ConfigError(`${path}.timeoutSeconds`, `must be an integer from ${MIN_JUDGE_TIMEOUT_SECONDS} to ${MAX_JUDGE_TIMEOUT_SECONDS}`);
+  }
   const thresholdsPath = `${path}.thresholds`;
-  const thresholds = object(jev.thresholds ?? {}, thresholdsPath);
+  const thresholds = object(judge.thresholds ?? {}, thresholdsPath);
   onlyKeys(thresholds, thresholdsPath, ['owner', 'return']);
   const read = (name: 'owner' | 'return') => {
-    const threshold = thresholds[name] ?? JEV_DEFAULTS.thresholds[name];
+    const threshold = thresholds[name] ?? JUDGE_DEFAULTS.thresholds[name];
     if (typeof threshold !== 'number' || !(threshold > 0 && threshold <= 1)) throw new ConfigError(`${thresholdsPath}.${name}`, 'must be a number over 0 and at most 1');
     return threshold;
   };
   const owner = read('owner');
   const returnAt = read('return');
   if (owner > returnAt) throw new ConfigError(thresholdsPath, 'owner must not be over return');
-  return { baseUrl, ...(apiKey ? { apiKey } : {}), model, thresholds: { owner, return: returnAt } };
+  return { method, baseUrl, ...(apiKey ? { apiKey } : {}), model, concurrency: concurrency as number, timeoutSeconds: timeout as number,
+    thresholds: { owner, return: returnAt } };
 }
 
 function parseLoop(value: unknown, path: string): LoopConfig {

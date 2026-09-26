@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { JevClient } from '../../src/server/jev.ts';
+import type { JudgeClient } from '../../src/server/judge.ts';
 import { startServer, type RunningServer } from '../../src/server/server.ts';
 import type { SlackApi, SlackSocket } from '../../src/server/slack-api.ts';
 import { fixtureRuntime } from './fixture.ts';
@@ -96,7 +96,7 @@ export interface FixtureOptions {
   /** Turns APNs on, sending to a local stand-in for both environments with this throwaway key (ADR 0029). */
   apns?: { origin: string; pem: string; retryDelaysMs?: number[] };
   /** Turns Slack on with this section, connecting every workspace to the stand-in `api` (ADR 0039, ADR 0040). */
-  slack?: { section: Record<string, unknown>; api: SlackApi & SlackSocket; jev?: JevClient };
+  slack?: { section: Record<string, unknown>; api: SlackApi & SlackSocket; judge?: JudgeClient };
 }
 
 export const APNS_KEY_ENV = 'NATSUMI_APNS_KEY';
@@ -120,12 +120,12 @@ export async function startFixture(options: FixtureOptions = {}) {
     server = await startServer({
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
       env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET, ...(apns ? { [APNS_KEY_ENV]: apns.pem } : {}),
-        ...(slack ? { SLACK_BOT: 'fixture-bot-token', SLACK_APP: 'fixture-app-token', JEV_API_KEY: 'fixture-jev-key' } : {}) },
+        ...(slack ? { SLACK_BOT: 'fixture-bot-token', SLACK_APP: 'fixture-app-token' } : {}) },
       github: stub.endpoints, clock: () => clock.now, log: line => { logs.push(line); },
       pi: { runtime: fixtureRuntime, configureSession: session => { session.agent.streamFunction = model.streamFunction; } },
       streamBufferSize: options.streamBufferSize,
       ...(apns ? { apns: { origins: { sandbox: apns.origin, production: apns.origin }, retryDelaysMs: apns.retryDelaysMs } } : {}),
-      ...(slack ? { slack: { connector: () => ({ api: slack.api, socket: slack.api }) }, ...(slack.jev ? { jev: { client: slack.jev } } : {}) } : {}),
+      ...(slack ? { slack: { connector: () => ({ api: slack.api, socket: slack.api }) }, ...(slack.judge ? { judge: { client: slack.judge } } : {}) } : {}),
     });
   };
   try { await launch(options.allowedUserId ?? OWNER.id); } catch (error) {

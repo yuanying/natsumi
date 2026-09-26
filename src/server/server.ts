@@ -6,7 +6,7 @@ import { AGENT_LIST_DIRECTORY, writeAgentList } from './agent-list.ts';
 import { ApnsClient, parseApnsKey, type ApnsEnvironment } from './apns.ts';
 import { CertificateManager, type Certificate } from './certificates.ts';
 import { openChallengeListener, type ChallengeListener } from './challenge.ts';
-import { ConfigError, JEV_DEFAULTS, loadConfig, type ServerConfig } from './config.ts';
+import { ConfigError, JUDGE_DEFAULTS, loadConfig, type JudgeConfig, type ServerConfig } from './config.ts';
 import { ConnectionHub } from './connections.ts';
 import { initializeDataDirectory, resolveDataDirectory, STATE_DIRECTORY } from './data-directory.ts';
 import { GITHUB_ENDPOINTS, GitHubLogin, type GitHubEndpoints } from './github-login.ts';
@@ -20,7 +20,9 @@ import { parseRegistration, PushNotifier, PushRegistrations } from './push.ts';
 import { readSecret, readTlsFiles } from './secrets.ts';
 import { SessionStore } from './sessions.ts';
 import { SlackDove } from './dove.ts';
-import { HttpJevClient, type JevClient } from './jev.ts';
+import { HttpJevClient } from './jev.ts';
+import { LogprobJudgeClient } from './logprob-judge.ts';
+import type { JudgeClient } from './judge.ts';
 import { SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
 import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
@@ -62,8 +64,8 @@ export interface StartOptions {
   a2a?: { pollIntervalMs?: number };
   /** Replaces the Slack SDKs. Tests hand in a stand-in for the Web API and Socket Mode. */
   slack?: { connector?: SlackConnector };
-  /** Replaces the Jev client built from `slack.jev`. Tests hand in a stand-in; nothing reaches TypeSafe from them. */
-  jev?: { client?: JevClient };
+  /** Replaces the judge built from `slack.judge`. Tests hand in a stand-in; nothing reaches a model or TypeSafe from them. */
+  judge?: { client?: JudgeClient };
 }
 
 type Address = { host: string; port: number };
@@ -106,7 +108,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     botToken: await readSecret(workspace.botToken, `slack.workspaces.${name}.botToken`, options.env),
     appToken: await readSecret(workspace.appToken, `slack.workspaces.${name}.appToken`, options.env),
   }))) : [];
-  const jevKey = config.slack?.jev?.apiKey ? await readSecret(config.slack.jev.apiKey, 'slack.jev.apiKey', options.env) : undefined;
+  const judgeKey = config.slack?.judge?.apiKey ? await readSecret(config.slack.judge.apiKey, 'slack.judge.apiKey', options.env) : undefined;
   const tls = config.listen.tls;
   const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
   const now = options.clock ?? Date.now;
@@ -162,14 +164,18 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // The dove (ADR 0040): what natsumi asks to post is judged and sent, or handed to the owner, from here. Its answers
     // are raised into the loop, which is opened next with the dove as one of the agents she can ask.
     let raiseInto: ThinkingLoop | undefined;
+    const judge = options.judge?.client ?? judgeClient(slackConfig?.judge, judgeKey);
     const theDove = dove = archive && slackConfig ? new SlackDove({
       db, archive, workspaces: Object.fromEntries(slackConnections.map(({ name, api }) => [name, api])),
-      jev: options.jev?.client ?? (slackConfig.jev ? new HttpJevClient({ baseUrl: slackConfig.jev.baseUrl, model: slackConfig.jev.model,
-        ...(jevKey ? { apiKey: jevKey } : {}) }) : undefined),
-      config: { thresholds: slackConfig.jev?.thresholds ?? JEV_DEFAULTS.thresholds, approvalDays: slackConfig.approvalExpiryDays,
+      ...(judge ? { judge } : {}),
+      config: { thresholds: slackConfig.judge?.thresholds ?? JUDGE_DEFAULTS.thresholds, approvalDays: slackConfig.approvalExpiryDays,
         reactions: slackConfig.reactions, placementFollowing: slackConfig.placementFollowing, judgeContext: slackConfig.judgeContext },
       publicOrigin: config.publicOrigin, now, log, raise: record => raiseInto?.raise('dove-reply', record),
     }) : undefined;
+    if (slackConfig) {
+      log(slackConfig.judge ? `slack: drafts are judged by ${slackConfig.judge.method}`
+        : 'slack: no judge is configured; every draft goes to the owner');
+    }
 
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
@@ -339,4 +345,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
 
 function shutdown(db: DatabaseSync | undefined, lock: ProcessLock) {
   try { db?.close(); } finally { lock.release(); }
+}
+
+/** The dove's judge by the method the config names (ADR 0040), or none. */
+function judgeClient(judge: JudgeConfig | undefined, apiKey: string | undefined): JudgeClient | undefined {
+  if (!judge) return undefined;
+  const common = { baseUrl: judge.baseUrl, model: judge.model, timeoutMs: judge.timeoutSeconds * 1000, ...(apiKey ? { apiKey } : {}) };
+  return judge.method === 'jev' ? new HttpJevClient(common) : new LogprobJudgeClient({ ...common, concurrency: judge.concurrency });
 }

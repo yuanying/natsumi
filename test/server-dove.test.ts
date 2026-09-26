@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createECDH } from 'node:crypto';
 import test from 'node:test';
 import WebSocket from 'ws';
-import { JEV_ISSUES, type JevClient, type JevJudgement } from '../src/server/jev.ts';
+import { JUDGE_ISSUES, type JudgeClient, type Judgement } from '../src/server/judge.ts';
 import { openPush } from '../src/server/push-crypto.ts';
 import { apnsTestKey, FakeApns } from './support/fake-apns.ts';
 import { FakeSlack, tsAt } from './support/fake-slack.ts';
@@ -67,16 +67,16 @@ class Client {
   }
 }
 
-class OwnerJev implements JevClient {
+class OwnerJev implements JudgeClient {
   asked = 0;
-  async judge(): Promise<JevJudgement> {
+  async judge(): Promise<Judgement> {
     this.asked += 1;
-    return { issues: JEV_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: index === 1 ? 0.5 : 0.01 })),
+    return { issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: index === 1 ? 0.5 : 0.01 })),
       placement: { choice: 'thread', probabilities: { thread: 0.8, channel: 0.2 } } };
   }
 }
 
-const SLACK = { workspaces: { work: { botTokenEnv: 'SLACK_BOT', appTokenEnv: 'SLACK_APP' } }, jev: { apiKeyEnv: 'JEV_API_KEY' } };
+const SLACK = { workspaces: { work: { botTokenEnv: 'SLACK_BOT', appTokenEnv: 'SLACK_APP' } }, judge: { method: 'jev', baseUrl: 'https://judge.example.test' } };
 
 async function withDove(fn: (f: Fixture, slack: FakeSlack, apns: FakeApns, jev: OwnerJev) => Promise<void>) {
   const apns = await new FakeApns().start();
@@ -84,7 +84,7 @@ async function withDove(fn: (f: Fixture, slack: FakeSlack, apns: FakeApns, jev: 
   slack.addChannel({ id: 'C1', name: 'dev', isIm: false });
   const jev = new OwnerJev();
   const f = await startFixture({ apns: { origin: apns.origin, pem: apnsTestKey().pem, retryDelaysMs: [1] },
-    slack: { section: SLACK, api: slack, jev } });
+    slack: { section: SLACK, api: slack, judge: jev } });
   // natsumi answers a mention by asking the dove to reply to it, copying the reference the event gave her.
   f.model.auto = context => {
     const last = context.messages.at(-1);
@@ -131,6 +131,8 @@ test('a draft handed to the owner is an approval on every device and a push to t
     assert.deepEqual(snapshot.payload.pendingApprovals, []);
 
     await until(() => slack.started === 1);
+    assert.ok(f.logs.includes('slack: drafts are judged by jev'), 'the log names the method, and not where it goes');
+    assert.ok(!f.logs.some(line => line.includes('judge.example.test')));
     slack.emit({ type: 'message', channel: 'C1', user: 'U1', text: '<@UBOT> 明日のレビュー大丈夫？', ts: tsAt('2026-09-25T05:32:05Z') });
     const pending = await mac.until(message => message.type === 'approval.pending');
     const approval = pending.payload;

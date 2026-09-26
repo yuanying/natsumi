@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { decideVerdict, DEFAULT_JEV_BASE_URL, HttpJevClient, JEV_ISSUES, JevError, type JevJudgement } from '../src/server/jev.ts';
+import { DEFAULT_JEV_BASE_URL, HttpJevClient } from '../src/server/jev.ts';
+import { decideVerdict, JUDGE_ISSUES, JudgeError, type Judgement } from '../src/server/judge.ts';
 
 /**
  * The dove's judge (ADR 0039, ADR 0040): one call to Jev with a Noul per issue and a Choice for where a reply goes,
@@ -22,7 +23,7 @@ function answering(status: number, body: unknown) {
 const fullAnswer = () => ({
   model: 'jev-1.13.0',
   answers: {
-    ...Object.fromEntries(JEV_ISSUES.map((issue, index) => [issue.name, { type: 'noul', noul: index === 1 ? 0.9 : 0.05 }])),
+    ...Object.fromEntries(JUDGE_ISSUES.map((issue, index) => [issue.name, { type: 'noul', noul: index === 1 ? 0.9 : 0.05 }])),
     placement: { type: 'choice', choice: 'thread', probabilities: { thread: 0.8, channel: 0.2 }, confidence: 0.7 },
   },
   usage: { input_tokens: 321, output_tokens: 0 },
@@ -41,7 +42,7 @@ test('one call asks every issue as a Noul and the placement as a Choice, in Engl
   const body = JSON.parse(String(init.body));
   assert.equal(body.model, 'jev-latest');
   assert.deepEqual(body.state, STATE);
-  for (const issue of JEV_ISSUES) {
+  for (const issue of JUDGE_ISSUES) {
     assert.equal(body.questions[issue.name].type, 'noul');
     assert.doesNotMatch(body.questions[issue.name].instructions, /[぀-ヿ一-鿿]/, `${issue.name} is asked in English`);
   }
@@ -52,8 +53,8 @@ test('one call asks every issue as a Noul and the placement as a Choice, in Engl
 test('the answer becomes a score per issue, with its Japanese label, and the placement', async () => {
   const client = new HttpJevClient({ apiKey: 'k', model: 'jev-latest', fetch: answering(200, fullAnswer()).fetch });
   const judged = await client.judge(STATE, { placement: true });
-  assert.equal(judged.issues.length, JEV_ISSUES.length);
-  assert.deepEqual(judged.issues[1], { name: JEV_ISSUES[1]!.name, label: JEV_ISSUES[1]!.label, score: 0.9 });
+  assert.equal(judged.issues.length, JUDGE_ISSUES.length);
+  assert.deepEqual(judged.issues[1], { name: JUDGE_ISSUES[1]!.name, label: JUDGE_ISSUES[1]!.label, score: 0.9 });
   assert.deepEqual(judged.placement, { choice: 'thread', probabilities: { thread: 0.8, channel: 0.2 } });
 });
 
@@ -75,7 +76,7 @@ test('a compatible server that leaves out confidence and the probabilities still
 });
 
 test('without a message to reply to, the placement is not asked', async () => {
-  const stub = answering(200, { ...fullAnswer(), answers: Object.fromEntries(JEV_ISSUES.map(issue => [issue.name, { type: 'noul', noul: 0.1 }])) });
+  const stub = answering(200, { ...fullAnswer(), answers: Object.fromEntries(JUDGE_ISSUES.map(issue => [issue.name, { type: 'noul', noul: 0.1 }])) });
   const client = new HttpJevClient({ apiKey: 'k', model: 'jev-latest', fetch: stub.fetch });
   const judged = await client.judge({ ...STATE, reply_to: null }, { placement: false });
   assert.equal(JSON.parse(String(stub.calls[0]!.init.body)).questions.placement, undefined);
@@ -88,14 +89,14 @@ for (const [name, status, body, kind] of [
   ['an overload', 529, { error: 'x' }, 'http-529'],
   ['a body that is not JSON', 200, 'not json', 'malformed'],
   ['a question kind the server refuses', 400, { error: 'unsupported question type' }, 'http-400'],
-  ['a placement with no choice', 200, { answers: { ...Object.fromEntries(JEV_ISSUES.map(issue => [issue.name, { noul: 0.1 }])), placement: { confidence: 0.5 } } }, 'malformed'],
+  ['a placement with no choice', 200, { answers: { ...Object.fromEntries(JUDGE_ISSUES.map(issue => [issue.name, { noul: 0.1 }])), placement: { confidence: 0.5 } } }, 'malformed'],
   ['an answer missing an issue', 200, { answers: { placement: { choice: 'thread', probabilities: { thread: 1, channel: 0 } } } }, 'malformed'],
-  ['a score out of range', 200, { answers: Object.fromEntries(JEV_ISSUES.map(issue => [issue.name, { noul: 2 }])) }, 'malformed'],
+  ['a score out of range', 200, { answers: Object.fromEntries(JUDGE_ISSUES.map(issue => [issue.name, { noul: 2 }])) }, 'malformed'],
 ] as const) {
   test(`${name} is no verdict, and the error names only its kind`, async () => {
     const client = new HttpJevClient({ apiKey: 'fixture-jev-key', model: 'jev-latest', fetch: answering(status, body).fetch });
     await assert.rejects(client.judge(STATE, { placement: true }), (error: unknown) => {
-      assert.ok(error instanceof JevError);
+      assert.ok(error instanceof JudgeError);
       assert.equal(error.kind, kind);
       assert.doesNotMatch(error.message, /fixture-jev-key|大丈夫/);
       return true;
@@ -108,11 +109,11 @@ test('a call that never answers is cut off and is no verdict', async () => {
     init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
   })) as typeof fetch;
   const client = new HttpJevClient({ apiKey: 'k', model: 'jev-latest', fetch: never, timeoutMs: 20 });
-  await assert.rejects(client.judge(STATE, { placement: false }), (error: unknown) => error instanceof JevError && error.kind === 'timeout');
+  await assert.rejects(client.judge(STATE, { placement: false }), (error: unknown) => error instanceof JudgeError && error.kind === 'timeout');
 });
 
-const judged = (scores: number[]): JevJudgement => ({
-  issues: JEV_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: scores[index] ?? 0 })),
+const judged = (scores: number[]): Judgement => ({
+  issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: scores[index] ?? 0 })),
 });
 
 test('the verdict: send under the owner threshold, the owner between, returned at or over the return threshold', () => {
@@ -120,9 +121,9 @@ test('the verdict: send under the owner threshold, the owner between, returned a
   assert.equal(decideVerdict(judged([0.1, 0.29]), thresholds).verdict, 'send');
   const owner = decideVerdict(judged([0.1, 0.3]), thresholds);
   assert.equal(owner.verdict, 'owner');
-  assert.deepEqual(owner.issues.filter(issue => issue.flagged).map(issue => issue.name), [JEV_ISSUES[1]!.name]);
+  assert.deepEqual(owner.issues.filter(issue => issue.flagged).map(issue => issue.name), [JUDGE_ISSUES[1]!.name]);
   const returned = decideVerdict(judged([0.7, 0.4]), thresholds);
   assert.equal(returned.verdict, 'return');
-  assert.deepEqual(returned.issues.filter(issue => issue.flagged).map(issue => issue.name), [JEV_ISSUES[0]!.name, JEV_ISSUES[1]!.name]);
+  assert.deepEqual(returned.issues.filter(issue => issue.flagged).map(issue => issue.name), [JUDGE_ISSUES[0]!.name, JUDGE_ISSUES[1]!.name]);
   assert.equal(returned.issues[2]!.flagged, undefined, 'an issue under the threshold carries no flag');
 });

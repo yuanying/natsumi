@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { ConversationStore } from '../src/server/conversation-store.ts';
 import { SlackDove, type DoveConfig } from '../src/server/dove.ts';
-import { JEV_ISSUES, JevError, type JevClient, type JevJudgement } from '../src/server/jev.ts';
+import { JUDGE_ISSUES, JudgeError, type JudgeClient, type Judgement } from '../src/server/judge.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
@@ -25,10 +25,10 @@ const CONFIG: DoveConfig = {
 };
 
 /** A Jev that answers what the test queued, and records what it was asked. */
-class FakeJev implements JevClient {
+class FakeJev implements JudgeClient {
   readonly asked: { state: Record<string, unknown>; placement: boolean }[] = [];
-  readonly answers: (JevJudgement | Error)[] = [];
-  async judge(state: Record<string, unknown>, options: { placement: boolean }): Promise<JevJudgement> {
+  readonly answers: (Judgement | Error)[] = [];
+  async judge(state: Record<string, unknown>, options: { placement: boolean }): Promise<Judgement> {
     this.asked.push({ state, placement: options.placement });
     const answer = this.answers.shift() ?? scores([], 'thread');
     if (answer instanceof Error) throw answer;
@@ -36,9 +36,9 @@ class FakeJev implements JevClient {
   }
 }
 
-function scores(values: number[], choice: 'thread' | 'channel' = 'thread'): JevJudgement {
+function scores(values: number[], choice: 'thread' | 'channel' = 'thread'): Judgement {
   return {
-    issues: JEV_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: values[index] ?? 0.01 })),
+    issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: values[index] ?? 0.01 })),
     placement: { choice, probabilities: choice === 'thread' ? { thread: 0.8, channel: 0.2 } : { thread: 0.1, channel: 0.9 } },
   };
 }
@@ -65,7 +65,7 @@ async function setup(t: test.TestContext, options: { jev?: boolean } = {}) {
   const logs: string[] = [];
   const open = () => {
     const dove = new SlackDove({
-      db, archive, workspaces: { work: slack }, ...(options.jev === false ? {} : { jev }), config: CONFIG, publicOrigin: ORIGIN,
+      db, archive, workspaces: { work: slack }, ...(options.jev === false ? {} : { judge: jev }), config: CONFIG, publicOrigin: ORIGIN,
       now: () => clock.now, log: line => { logs.push(line); },
       raise: record => {
         events.push(store.transaction(transaction => {
@@ -122,7 +122,7 @@ test('a draft Jev passes is sent at once, without the owner, into the thread, un
   assert.equal(row.placement, 'thread');
   assert.equal(row.state, 'sent');
   assert.equal(row.sent_text, '大丈夫です。明日の 10 時に始めましょう。');
-  assert.equal(JSON.parse(row.scores!).length, JEV_ISSUES.length, 'the scores are kept for looking back');
+  assert.equal(JSON.parse(row.scores!).length, JUDGE_ISSUES.length, 'the scores are kept for looking back');
 });
 
 test('Jev sees the draft and the message it answers, and nothing natsumi said about it', async t => {
@@ -165,7 +165,7 @@ test('a draft Jev hands to the owner waits for her approval, and the approval ca
   assert.equal(f.slack.posts.length, 0, 'nothing is sent before the owner decides');
   const [line] = f.lines();
   assert.equal(line!.result, 'to_owner');
-  assert.match(String(line!.text), new RegExp(JEV_ISSUES[1]!.label));
+  assert.match(String(line!.text), new RegExp(JUDGE_ISSUES[1]!.label));
   assertNoIds(line!);
   assert.equal(f.clientEvents.length, 1);
   const { type, payload } = f.clientEvents[0]!;
@@ -180,8 +180,8 @@ test('a draft Jev hands to the owner waits for her approval, and the approval ca
   assert.equal(payload.text, '大丈夫です。');
   assert.equal(payload.expression, 'thinking');
   assert.equal(payload.reason.verdict, 'owner');
-  assert.equal(payload.reason.issues.length, JEV_ISSUES.length);
-  assert.deepEqual(payload.reason.issues[1], { name: JEV_ISSUES[1]!.name, label: JEV_ISSUES[1]!.label, score: 0.5, flagged: true });
+  assert.equal(payload.reason.issues.length, JUDGE_ISSUES.length);
+  assert.deepEqual(payload.reason.issues[1], { name: JUDGE_ISSUES[1]!.name, label: JUDGE_ISSUES[1]!.label, score: 0.5, flagged: true });
   assert.equal(payload.reason.issues[0].flagged, undefined);
   assert.deepEqual(payload.reason.placement, { probabilities: { thread: 0.8, channel: 0.2 } });
   assert.deepEqual(payload.history, []);
@@ -190,7 +190,7 @@ test('a draft Jev hands to the owner waits for her approval, and the approval ca
 
 test('with no verdict the draft goes to the owner, and the server places it: the channel when little came after', async t => {
   const f = await setup(t);
-  f.jev.answers.push(new JevError('http-529'));
+  f.jev.answers.push(new JudgeError('http-529'));
   await f.dove.ask(post('大丈夫です。'));
   await f.dove.idle();
   assert.equal(f.slack.posts.length, 0);
@@ -223,7 +223,7 @@ test('a returned draft comes back with its reasons; the third return on the same
   await f.dove.idle();
   const [first, second] = f.lines();
   assert.equal(first!.result, 'returned');
-  assert.match(String(first!.text), new RegExp(JEV_ISSUES[0]!.label));
+  assert.match(String(first!.text), new RegExp(JUDGE_ISSUES[0]!.label));
   assert.match(String(first!.text), /あと 1 回/);
   assert.equal(second!.result, 'returned');
   assert.equal(f.clientEvents.length, 0);
@@ -234,7 +234,7 @@ test('a returned draft comes back with its reasons; the third return on the same
   assert.equal(approval.reason.verdict, 'rewrite-limit');
   assert.equal(approval.text, '下書き 3');
   assert.deepEqual(approval.history.map((entry: { text: string }) => entry.text), ['下書き 1', '下書き 2']);
-  assert.deepEqual(approval.history[0].issues.map((issue: { name: string }) => issue.name), [JEV_ISSUES[0]!.name]);
+  assert.deepEqual(approval.history[0].issues.map((issue: { name: string }) => issue.name), [JUDGE_ISSUES[0]!.name]);
   assert.equal(approval.history[0].issues[0].flagged, true);
   assert.equal(f.lines()[2]!.result, 'to_owner');
 });

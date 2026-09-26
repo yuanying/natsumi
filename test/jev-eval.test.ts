@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { JEV_CASES, type JevCase } from '../src/probe/jev-cases.ts';
-import { evaluate, parseEvalArgs } from '../src/probe/jev-eval.ts';
-import { JEV_ISSUES, JevError, type JevClient, type JevJudgement } from '../src/server/jev.ts';
+import { describeRun, evaluate, parseEvalArgs } from '../src/probe/jev-eval.ts';
+import { JUDGE_ISSUES, JudgeError, type JudgeClient, type Judgement } from '../src/server/judge.ts';
 
 /**
  * The evaluation of the dove's judge before thresholds are chosen (ADR 0040): the failures of the loop evaluation and
@@ -23,13 +23,13 @@ test('the cases are made up, cover every failure of the loop evaluation, and inc
   }
 });
 
-class ScriptedJev implements JevClient {
+class ScriptedJev implements JudgeClient {
   private readonly score: (draft: string) => number | Error;
   constructor(score: (draft: string) => number | Error) { this.score = score; }
-  async judge(state: Record<string, unknown>): Promise<JevJudgement> {
+  async judge(state: Record<string, unknown>): Promise<Judgement> {
     const score = this.score(String(state.draft));
     if (score instanceof Error) throw score;
-    return { issues: JEV_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: index === 0 ? score : 0 })) };
+    return { issues: JUDGE_ISSUES.map((issue, index) => ({ name: issue.name, label: issue.label, score: index === 0 ? score : 0 })) };
   }
 }
 
@@ -41,7 +41,7 @@ test('each case is judged once, and the counts are given for every threshold, wi
     { name: 'c', category: 'ok', expect: 'pass', state: state('pass-mid') },
     { name: 'd', category: 'ok', expect: 'pass', state: state('broken') },
   ];
-  const scores: Record<string, number | Error> = { 'stop-high': 0.9, 'stop-low': 0.2, 'pass-mid': 0.5, broken: new JevError('http-400') };
+  const scores: Record<string, number | Error> = { 'stop-high': 0.9, 'stop-low': 0.2, 'pass-mid': 0.5, broken: new JudgeError('http-400') };
   const report = await evaluate(new ScriptedJev(draft => scores[draft]!), cases, [0.3, 0.6]);
   assert.deepEqual(report.cases.map(result => [result.name, result.max]), [['a', 0.9], ['b', 0.2], ['c', 0.5], ['d', null]]);
   assert.deepEqual(report.cases[3]!.error, 'http-400');
@@ -52,9 +52,29 @@ test('each case is judged once, and the counts are given for every threshold, wi
   assert.equal(report.noVerdict, 1);
 });
 
-test('the endpoint, the model and the key come from the environment, and the key may be left out', () => {
-  assert.deepEqual(parseEvalArgs([], {}), { baseUrl: 'https://api.typesafe.ai', model: 'jev-latest', thresholds: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9] });
-  assert.deepEqual(parseEvalArgs(['--thresholds', '0.25,0.5'], { JEV_BASE_URL: 'http://127.0.0.1:8080', JEV_MODEL: 'local-judge', JEV_API_KEY: 'k' }),
-    { baseUrl: 'http://127.0.0.1:8080', model: 'local-judge', apiKey: 'k', thresholds: [0.25, 0.5] });
-  assert.throws(() => parseEvalArgs(['--thresholds', '2'], {}), /thresholds/);
+test('the method, the endpoint and the model come from the environment, and the key only by the name of its variable', () => {
+  assert.throws(() => parseEvalArgs([], {}), /JUDGE_BASE_URL/, 'the logprobs method needs somewhere to ask');
+  assert.deepEqual(parseEvalArgs([], { JUDGE_BASE_URL: 'https://llm.example.test/v1', JUDGE_MODEL: 'fixture-model' }), {
+    method: 'logprobs', baseUrl: 'https://llm.example.test/v1', model: 'fixture-model', concurrency: 4, timeoutSeconds: 30,
+    thresholds: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+  });
+  assert.throws(() => parseEvalArgs([], { JUDGE_BASE_URL: 'https://llm.example.test/v1' }), /JUDGE_MODEL/);
+  assert.deepEqual(parseEvalArgs(['--thresholds', '0.25,0.5'], { JUDGE_METHOD: 'jev', JUDGE_API_KEY_ENV: 'MY_JEV_KEY', MY_JEV_KEY: 'k',
+    JUDGE_CONCURRENCY: '2', JUDGE_TIMEOUT_SECONDS: '60' }), {
+    method: 'jev', baseUrl: 'https://api.typesafe.ai', model: 'jev-latest', apiKeyEnv: 'MY_JEV_KEY', apiKey: 'k', concurrency: 2, timeoutSeconds: 60,
+    thresholds: [0.25, 0.5],
+  });
+  assert.throws(() => parseEvalArgs([], { JUDGE_METHOD: 'jev', JUDGE_API_KEY_ENV: 'MISSING_KEY' }), /MISSING_KEY/);
+  assert.throws(() => parseEvalArgs([], { JUDGE_METHOD: 'guess' }), /JUDGE_METHOD/);
+  assert.throws(() => parseEvalArgs(['--thresholds', '2'], { JUDGE_METHOD: 'jev' }), /thresholds/);
+});
+
+test('the report says how long each case took, and never the key', async () => {
+  const state = { channel: 'example/#team', reply_to: null, conversation: [], draft: 'x' };
+  const report = await evaluate(new ScriptedJev(() => 0.1), [{ name: 'a', category: 'ok', expect: 'pass', state }], [0.5]);
+  assert.equal(typeof report.cases[0]!.ms, 'number');
+  assert.equal(report.slowestMs, report.cases[0]!.ms);
+  const shown = describeRun(parseEvalArgs([], { JUDGE_METHOD: 'jev', JUDGE_API_KEY_ENV: 'MY_JEV_KEY', MY_JEV_KEY: 'fixture-secret' }));
+  assert.deepEqual(shown, { method: 'jev', baseUrl: 'https://api.typesafe.ai', model: 'jev-latest', apiKeyEnv: 'MY_JEV_KEY', concurrency: 4, timeoutSeconds: 30 });
+  assert.doesNotMatch(JSON.stringify(shown), /fixture-secret/);
 });

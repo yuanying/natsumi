@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Transaction } from './conversation-store.ts';
 import { parseDoveRequest } from './dove-request.ts';
-import { decideVerdict, JevError, type JevClient, type ScoredIssue, type Thresholds } from './jev.ts';
+import { decideVerdict, JudgeError, type JudgeClient, type ScoredIssue, type Thresholds } from './judge.ts';
 import type { ToolOutcome } from './loop-tools.ts';
 import { isoAt } from './nightly.ts';
 import { checkOutgoingText, refusalText } from './output-checks.ts';
@@ -54,7 +54,7 @@ export interface SlackDoveOptions {
   /** The Web API of each configured workspace, by its name in the config. */
   workspaces: Record<string, SlackApi>;
   /** Without it every draft is "no verdict" and goes to the owner. */
-  jev?: JevClient;
+  judge?: JudgeClient;
   config: DoveConfig;
   /** Where Slack fetches the icons from: `<publicOrigin>/avatar/<feeling>.png` (ADR 0040). */
   publicOrigin: string;
@@ -263,11 +263,11 @@ export class SlackDove {
     const { judgeContext, thresholds } = this.options.config;
     let judged: { verdict: 'send' | 'owner' | 'return'; issues: ScoredIssue[]; placement?: { choice: Placement; probabilities?: Record<string, number> } }
       | undefined;
-    const jev = this.options.jev;
-    if (jev) {
+    const judge = this.options.judge;
+    if (judge) {
       const replyTo = target.message;
       try {
-        const answer = await jev.judge({
+        const answer = await judge.judge({
           channel: target.label,
           reply_to: replyTo ? { from: replyTo.speaker, at: replyTo.at, text: cut(replyTo.text, judgeContext.chars) } : null,
           conversation: this.options.archive.around(target, judgeContext.messages, judgeContext.chars),
@@ -275,7 +275,7 @@ export class SlackDove {
         }, { placement: replyTo !== undefined });
         judged = { ...decideVerdict(answer, thresholds), ...(answer.placement ? { placement: answer.placement } : {}) };
       } catch (error) {
-        this.log(`dove: ${error instanceof JevError ? error.message : `jev: no verdict (${describeFailure(error)})`}`);
+        this.log(`dove: ${error instanceof JudgeError ? error.message : `judge: no verdict (${describeFailure(error)})`}`);
       }
     }
     if (this.closed) return;
