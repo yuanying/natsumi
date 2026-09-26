@@ -205,6 +205,8 @@ PI_CODING_AGENT_DIR=<pi.agentDirectory> node node_modules/@earendil-works/pi-cod
 ```
 
 image の中では `/app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js` です。
+Pi の CLI が起動時に探す `rg` と `fd`（`fdfind` の名前）は image に入れてあるので、`--offline` で起動しても
+それらが無いという警告は出ません。思考ループでは、Pi の組み込みの grep・find のツールは使いません。
 起動したときにログインのファイルが無かった場合は、ログインしたあとに一度起動し直してください。
 ファイルがあれば、ログインのし直しは起動し直さなくても効きます。
 
