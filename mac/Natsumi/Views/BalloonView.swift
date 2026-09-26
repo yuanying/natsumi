@@ -8,6 +8,7 @@ struct BalloonView: View {
     let text: EventSink
     let close: EventSink
     let historyLink: EventSink
+    let images: EventSink
 
     /// The room kept below (or above) the box for what points at the character: a tail for a reply, and the
     /// wider trail of circles for a thought.
@@ -67,6 +68,12 @@ struct BalloonView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityAddTraits(.isButton)
                     .help(reply.help)
+                // The pictures she attached, small and at sizes fixed before they come, so the balloon keeps its
+                // size; each is its own button, apart from the text's click (ADR 0045).
+                if !reply.images.isEmpty {
+                    ImageStripView(tiles: reply.images, spacing: 6 * scale) { images(.imageClicked(imageId: $0)) }
+                        .padding(.vertical, 2 * scale)
+                }
                 // She is still at it after saying this: what she is thinking goes under what she said, in grey and
                 // one line high, so the reply stays in front (ADR 0025).
                 if let thinking = reply.thinking {
