@@ -108,14 +108,15 @@ iPhone も `UIProps` の同じ関数で決め、2 つのクライアントでず
 | `Natsumi/Views/` | SwiftUI の Passive View、舞台（`StageView`）、`Comic` の見た目 |
 | `Natsumi/Adapters/` | Mac だけの OS に触る部分（グローバルなショートカットの登録） |
 | `Shared/` | Mac と iPhone の両方のアプリに入るアダプタ（WebSocket・GitHub ログイン）と、本文のリンクの描き方（`LinkedText`） |
-| `NatsumiCore/Phone/` | iPhone の `PhoneEvent`・`PhoneEffect`・`PhoneState`・`PhoneMediator`・`PhoneProps` |
+| `NatsumiCore/Phone/` | iPhone の `PhoneEvent`・`PhoneEffect`・`PhoneState`・`PhoneMediator`・`PhoneProps`、承認の画面の Props（`PhoneApprovalProps`）（ADR 0041） |
+| `NatsumiCore/Session/ApprovalBook.swift` | 承認待ちの一覧と、送っている本人の決定（ADR 0041） |
 | `NatsumiPhone/Components/` | iPhone の Root（`PhoneRootComponent`）と各画面のコンポーネント、Props の受け渡しの箱（`ScreenModel`） |
 | `NatsumiPhone/Views/` | iPhone の SwiftUI の Passive View と `Comic` の見た目 |
 | `NatsumiWidgets/` | iPhone のウィジェットの拡張。ロック画面からアプリを開くボタンと丸いウィジェット（ADR 0028） |
 | `NatsumiLaunch/` | iPhone のアプリと `NatsumiWidgets` の両方に入る、アプリを開く App Intent（`OpenNatsumiIntent`） |
 | `NatsumiCore/Push/` | 通知の登録（`PushRegistration`・`PushEnvironment`）と、届いている通知の片づけの規則（`PushTidy`）（ADR 0029） |
 | `NatsumiPush/` | `NatsumiCore` と `NatsumiNotifications` の両方に入る、通知の payload の読み方・本文の復号（`PushCrypto`）・鍵の保存（`PushKeyStore`） |
-| `NatsumiNotifications/` | iPhone の Notification Service Extension。届いた通知の本文を開き、気持ちの顔を添える（ADR 0029） |
+| `NatsumiNotifications/` | iPhone の Notification Service Extension。届いた通知の本文を開き、気持ちの顔を添える（ADR 0029）。承認待ちの通知はチャンネルと下書きの先頭を出す（ADR 0041） |
 | `NatsumiPhoneUITests/` | 偽のサーバー（`npm run fake-server`）を相手に画面を辿って撮る UI テスト。関門ではない |
 
 名前の付け方は、パネルのコンポーネントが `<名前>Component`、その View が `<名前>View`、
