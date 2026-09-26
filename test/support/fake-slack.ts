@@ -1,4 +1,4 @@
-import type { SlackApi, SlackConversation, SlackMessage, SlackSocket } from '../../src/server/slack-api.ts';
+import { SlackCallError, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from '../../src/server/slack-api.ts';
 
 /** A PNG's first bytes, enough for the server to take a file for an image. */
 export const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 1)]);
@@ -23,6 +23,8 @@ export class FakeSlack implements SlackApi, SlackSocket {
   readonly reactions: { channel: string; ts: string; name: string }[] = [];
   readonly historyCalls: { channel: string; oldest: string }[] = [];
   readonly downloads: string[] = [];
+  /** Calls that fail as Slack would refuse them, by `<call> <argument>` (`history C2`, `userName U3`, `download <url>`). */
+  readonly failures = new Map<string, SlackCallError>();
   started = 0;
   stopped = 0;
   private eventHandler: ((event: Record<string, unknown>) => void) | undefined;
@@ -36,6 +38,16 @@ export class FakeSlack implements SlackApi, SlackSocket {
   /** A message Slack already holds, as a backfill would find it. */
   post(channel: string, message: SlackMessage): void {
     this.messages.get(channel)!.push(message);
+  }
+
+  /** From now on, `call` with `argument` fails with Slack's error `code` (and the scope it lacked, if given). */
+  fail(call: string, argument: string, method: string, code: string, needed?: string): void {
+    this.failures.set(`${call} ${argument}`, new SlackCallError(method, code, needed));
+  }
+
+  private check(call: string, argument: string): void {
+    const failure = this.failures.get(`${call} ${argument}`);
+    if (failure) throw failure;
   }
 
   /** Slack sends an event over the socket. */
@@ -58,6 +70,7 @@ export class FakeSlack implements SlackApi, SlackSocket {
   async conversations(): Promise<SlackConversation[]> { return [...this.channels.values()]; }
 
   async conversation(id: string): Promise<SlackConversation> {
+    this.check('conversation', id);
     const found = this.channels.get(id);
     if (!found) throw new Error('channel_not_found');
     return found;
@@ -65,6 +78,7 @@ export class FakeSlack implements SlackApi, SlackSocket {
 
   async history(channel: string, oldest: string): Promise<SlackMessage[]> {
     this.historyCalls.push({ channel, oldest });
+    this.check('history', channel);
     const all = this.messages.get(channel) ?? [];
     return all
       .filter(message => (!message.threadTs || message.threadTs === message.ts) && Number(message.ts) > Number(oldest))
@@ -72,17 +86,25 @@ export class FakeSlack implements SlackApi, SlackSocket {
   }
 
   async replies(channel: string, threadTs: string): Promise<SlackMessage[]> {
+    this.check('replies', threadTs);
     const all = this.messages.get(channel) ?? [];
     return all.filter(message => message.ts === threadTs || message.threadTs === threadTs)
       .sort((a, b) => Number(a.ts) - Number(b.ts));
   }
 
-  async userName(userId: string): Promise<string> { return this.users.get(userId) ?? userId; }
+  async userName(userId: string): Promise<string> {
+    this.check('userName', userId);
+    return this.users.get(userId) ?? userId;
+  }
 
-  async addReaction(channel: string, ts: string, name: string): Promise<void> { this.reactions.push({ channel, ts, name }); }
+  async addReaction(channel: string, ts: string, name: string): Promise<void> {
+    this.check('addReaction', ts);
+    this.reactions.push({ channel, ts, name });
+  }
 
   async download(url: string, maxBytes: number): Promise<Buffer | undefined> {
     this.downloads.push(url);
+    this.check('download', url);
     const body = this.files.get(url);
     if (!body) throw new Error('not found');
     return body.length > maxBytes ? undefined : body;

@@ -2,7 +2,7 @@ import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { Transaction } from './conversation-store.ts';
 import type { ArchivedMessage, ChannelRow, SlackArchive } from './slack-archive.ts';
-import { toSlackMessage, type SlackApi, type SlackMessage, type SlackSocket } from './slack-api.ts';
+import { describeFailure, toSlackMessage, type SlackApi, type SlackConversation, type SlackMessage, type SlackSocket } from './slack-api.ts';
 import { imageType } from './view.ts';
 
 /** The images the server fetches. Anything else attached is only noted. */
@@ -37,12 +37,18 @@ export interface SlackWorkspaceOptions {
  * On every (re)connection each channel is filled in from its last recorded message. What happens here happens in
  * order, one thing at a time, so a fill-in and the live events never write the same day at once.
  *
- * The log names the workspace and the kind of failure, never what anyone said.
+ * A failure is closed where it happens: a conversation Slack refuses is skipped and the rest are filled in, and a
+ * thread, a name or an image that cannot be fetched leaves the message recorded without it. The log names the
+ * workspace, the Web API method and Slack's code for the failure, never what anyone said nor any Slack ID.
  */
 export class SlackWorkspace {
   private readonly options: SlackWorkspaceOptions;
   private self: { userId: string; botId?: string } | undefined;
   private readonly names = new Map<string, string>();
+  /** People whose name Slack would not give, not asked again until the next fill-in. */
+  private readonly unnamed = new Set<string>();
+  /** While a fill-in runs: the failures it has logged, each once, and how many other failures it met. */
+  private filling: { logged: Set<string>; others: number } | undefined;
   private chain: Promise<void> = Promise.resolve();
   private stopped = false;
 
@@ -72,7 +78,7 @@ export class SlackWorkspace {
     this.chain = this.chain.then(async () => {
       if (this.stopped) return;
       try { await work(); } catch (error) {
-        this.log(`handling ${what} failed (${error instanceof Error ? error.name : 'error'})`);
+        this.log(`handling ${what} failed (${describeFailure(error)})`);
       }
     });
   }
@@ -103,24 +109,63 @@ export class SlackWorkspace {
    * recorded is removed. A first fill-in raises no mention: they are old news, and natsumi finds them in the files.
    */
   private async backfill(): Promise<void> {
-    const { api, archive, name } = this.options;
+    const conversations = await this.options.api.conversations();
+    this.unnamed.clear();
+    const filling = this.filling = { logged: new Set<string>(), others: 0 };
     let filled = 0;
-    for (const conversation of await api.conversations()) {
-      if (this.stopped) return;
-      const channel = await this.channel(conversation.id, conversation);
-      const cursor = archive.cursor(name, conversation.id);
-      const oldest = cursor ?? String(Math.floor(this.options.now() / 1000) - this.options.backfillDays * 86_400);
-      for (const message of await api.history(conversation.id, oldest)) {
-        if (!SPOKEN.has(message.subtype)) continue;
-        if (await this.receive(channel, message, { live: false, mayRaise: cursor !== undefined })) filled += 1;
-        if (!message.replyCount) continue;
-        for (const reply of await api.replies(conversation.id, message.ts)) {
-          if (reply.ts === message.ts || !SPOKEN.has(reply.subtype)) continue;
-          if (await this.receive(channel, reply, { live: false, mayRaise: cursor !== undefined })) filled += 1;
+    let done = 0;
+    let failed = 0;
+    try {
+      for (const conversation of conversations) {
+        if (this.stopped) return;
+        try {
+          filled += await this.fillIn(conversation);
+          done += 1;
+        } catch (error) {
+          failed += 1;
+          this.report('filling in a conversation failed', error, false);
         }
       }
+    } finally {
+      this.filling = undefined;
     }
-    if (filled > 0) this.log(`filled in ${filled} message(s)`);
+    if (filled > 0 || failed > 0 || filling.others > 0) {
+      this.log(`filled in ${filled} message(s) from ${done} conversation(s); ${failed} conversation(s) failed`
+        + (filling.others > 0 ? `; ${filling.others} other failure(s)` : ''));
+    }
+  }
+
+  /** One conversation, from its last recorded message. Returns how many messages were new. */
+  private async fillIn(conversation: SlackConversation): Promise<number> {
+    const { api, archive, name } = this.options;
+    const channel = await this.channel(conversation.id, conversation);
+    const cursor = archive.cursor(name, conversation.id);
+    const oldest = cursor ?? String(Math.floor(this.options.now() / 1000) - this.options.backfillDays * 86_400);
+    const how = { live: false, mayRaise: cursor !== undefined };
+    let filled = 0;
+    for (const message of await api.history(conversation.id, oldest)) {
+      if (!SPOKEN.has(message.subtype)) continue;
+      if (await this.fillInOne(channel, message, how)) filled += 1;
+      if (!message.replyCount) continue;
+      let thread: SlackMessage[];
+      try { thread = await api.replies(conversation.id, message.ts); } catch (error) {
+        this.report('a thread could not be fetched', error);
+        continue;
+      }
+      for (const reply of thread) {
+        if (reply.ts === message.ts || !SPOKEN.has(reply.subtype)) continue;
+        if (await this.fillInOne(channel, reply, how)) filled += 1;
+      }
+    }
+    return filled;
+  }
+
+  /** One message of a fill-in: one that cannot be recorded is logged and passed over. */
+  private async fillInOne(channel: ChannelRow, message: SlackMessage, how: { live: boolean; mayRaise: boolean }): Promise<boolean> {
+    try { return await this.receive(channel, message, how); } catch (error) {
+      this.report('a message could not be recorded', error);
+      return false;
+    }
   }
 
   /** Records one message and, when it is for her, raises it once. Returns whether it was new. */
@@ -128,13 +173,16 @@ export class SlackWorkspace {
     const { archive, name } = this.options;
     if (!message.ts) return false;
     const reply = message.threadTs && message.threadTs !== message.ts ? message.threadTs : undefined;
-    if (reply && !archive.has(name, channel.channel_id, reply)) await this.fetchParent(channel, reply, message.ts);
+    if (reply && !archive.has(name, channel.channel_id, reply)) {
+      // Without its parent the reply still stands, on its own.
+      try { await this.fetchParent(channel, reply, message.ts); } catch (error) { this.report('a thread could not be fetched', error); }
+    }
     const isNew = await archive.record(name, channel.channel_id, { ...await this.archived(channel, message), ...(reply ? { threadTs: reply } : {}) }, true);
     if (!how.mayRaise || !(isNew || how.live) || !this.forHer(channel, message)) return isNew;
     if (archive.hasMention(name, channel.channel_id, message.ts)) return isNew;
     this.options.raise((eventId, transaction) => archive.recordMention(eventId, name, channel.channel_id, message.ts, transaction));
-    try { await this.options.api.addReaction(channel.channel_id, message.ts, this.options.reaction); } catch {
-      this.log('the reaction could not be added');
+    try { await this.options.api.addReaction(channel.channel_id, message.ts, this.options.reaction); } catch (error) {
+      this.report('the reaction could not be added', error);
     }
     return isNew;
   }
@@ -205,8 +253,8 @@ export class SlackWorkspace {
         await mkdir(dirname(path.disk), { recursive: true, mode: 0o750 });
         await writeFile(path.disk, body, { mode: 0o640 });
         noted.push({ name: file.name, path: path.shown });
-      } catch {
-        this.log('an image could not be fetched');
+      } catch (error) {
+        this.report('an image could not be fetched', error);
         noted.push({ name: file.name });
       }
     }
@@ -216,12 +264,31 @@ export class SlackWorkspace {
   private async userName(userId: string): Promise<string> {
     const known = this.names.get(userId);
     if (known) return known;
+    if (this.unnamed.has(userId)) return 'someone';
     let name: string;
-    try { name = (await this.options.api.userName(userId)).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim() || 'someone'; } catch {
+    try { name = (await this.options.api.userName(userId)).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim() || 'someone'; } catch (error) {
+      this.unnamed.add(userId);
+      this.report('a name could not be looked up', error);
       return 'someone';
     }
     this.names.set(userId, name);
     return name;
+  }
+
+  /**
+   * A failure that was closed where it happened. During a fill-in the same line is logged once and the rest are
+   * counted, so a scope missing for every image makes one line, not one per image. A failed conversation is counted
+   * by the fill-in itself, not among the others.
+   */
+  private report(what: string, error: unknown, other = true): void {
+    const line = `${what} (${describeFailure(error)})`;
+    const filling = this.filling;
+    if (filling) {
+      if (other) filling.others += 1;
+      if (filling.logged.has(line)) return;
+      filling.logged.add(line);
+    }
+    this.log(line);
   }
 
   private log(line: string) { this.options.log?.(`slack (${this.options.name}): ${line}`); }

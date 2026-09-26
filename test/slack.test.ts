@@ -282,3 +282,88 @@ test('a reply to a thread whose parent was never recorded fetches the parent, wh
   assert.match(text, /古いスレッドへの返信/);
   assert.deepEqual(f.archive.take()?.new, { 'work/#dev': 1 });
 });
+
+/** No Slack ID of a channel, a person or a message, and no token, in a log line. */
+function assertNoIds(logs: string[]) {
+  for (const line of logs) {
+    assert.doesNotMatch(line, /\b(?:[CDFGUW][A-Z0-9]*\d|UBOT)\b|\d{10}\.\d{6}|xox[a-z]-/, line);
+  }
+}
+
+test('when one conversation\'s history is refused, the others are still filled in, and the log names the call and Slack\'s error', async t => {
+  const f = await setup(t, { backfillDays: 2 });
+  f.slack.addChannel({ id: 'D1', isIm: true, user: 'U2' });
+  f.slack.addChannel({ id: 'C2', name: 'random', isIm: false });
+  f.slack.post('C1', { ts: tsAt(AT), user: 'U1', text: 'dev の発言', files: [] });
+  f.slack.post('D1', { ts: tsAt(AT), user: 'U2', text: 'DM の秘密の発言', files: [] });
+  f.slack.post('C2', { ts: tsAt(AT), user: 'U1', text: 'random の発言', files: [] });
+  f.slack.fail('history', 'D1', 'conversations.history', 'missing_scope', 'im:history');
+  f.slack.connect();
+  await f.workspace.idle();
+  assert.match(await f.read('work/dev/2026-09-25.md'), /dev の発言/);
+  assert.match(await f.read('work/random/2026-09-25.md'), /random の発言/);
+  assert.ok(f.logs.includes('slack (work): filling in a conversation failed (conversations.history: missing_scope, needed im:history)'), f.logs.join('\n'));
+  assert.ok(f.logs.includes('slack (work): filled in 2 message(s) from 2 conversation(s); 1 conversation(s) failed'), f.logs.join('\n'));
+  assert.ok(!f.logs.some(line => line.includes('発言')), 'no text in the log');
+  assertNoIds(f.logs);
+});
+
+test('when a thread cannot be fetched, its parent and the rest are still recorded', async t => {
+  const f = await setup(t, { backfillDays: 2 });
+  const parent = tsAt('2026-09-25T05:00:00Z');
+  f.slack.post('C1', { ts: parent, user: 'U1', text: 'スレッドの親', files: [] });
+  f.slack.post('C1', { ts: tsAt('2026-09-25T05:01:00Z'), threadTs: parent, user: 'U2', text: '取れない返信', files: [] });
+  f.slack.post('C1', { ts: tsAt('2026-09-25T05:10:00Z'), user: 'U2', text: '次の発言', files: [] });
+  f.slack.fail('replies', parent, 'conversations.replies', 'thread_not_found');
+  f.slack.connect();
+  await f.workspace.idle();
+  const text = await f.read('work/dev/2026-09-25.md');
+  assert.match(text, /スレッドの親/);
+  assert.match(text, /次の発言/);
+  assert.ok(f.logs.includes('slack (work): a thread could not be fetched (conversations.replies: thread_not_found)'), f.logs.join('\n'));
+  assert.ok(f.logs.includes('slack (work): filled in 2 message(s) from 1 conversation(s); 0 conversation(s) failed; 1 other failure(s)'), f.logs.join('\n'));
+  assertNoIds(f.logs);
+});
+
+test('a speaker whose name cannot be looked up is recorded under a stand-in name, and the lookup is logged once per fill-in', async t => {
+  const f = await setup(t, { backfillDays: 2 });
+  f.slack.users.set('U3', '鈴木');
+  f.slack.fail('userName', 'U3', 'users.info', 'user_not_found');
+  f.slack.post('C1', { ts: tsAt(AT), user: 'U3', text: '一つ目', files: [] });
+  f.slack.post('C1', { ts: tsAt('2026-09-25T05:33:00Z'), user: 'U3', text: '二つ目', files: [] });
+  f.slack.connect();
+  await f.workspace.idle();
+  const text = await f.read('work/dev/2026-09-25.md');
+  assert.match(text, /^## 14:32:05 someone$/m);
+  assert.match(text, /^## 14:33:00 someone$/m);
+  const lines = f.logs.filter(line => line.includes('users.info'));
+  assert.deepEqual(lines, ['slack (work): a name could not be looked up (users.info: user_not_found)']);
+  assertNoIds(f.logs);
+});
+
+test('an image that cannot be fetched is only noted, and the message is recorded', async t => {
+  const f = await setup(t);
+  f.slack.fail('download', 'https://files.example.test/a.png', 'files.download', 'http_403');
+  f.slack.emit(message({ text: '画像です', files: [
+    { id: 'F1', name: 'a.png', mimetype: 'image/png', size: PNG.length, url_private_download: 'https://files.example.test/a.png' }] }));
+  await f.workspace.idle();
+  const text = await f.read('work/dev/2026-09-25.md');
+  assert.match(text, /画像です/);
+  assert.match(text, /- 添付あり（取り込まず）: a\.png/);
+  assert.ok(f.logs.includes('slack (work): an image could not be fetched (files.download: http_403)'), f.logs.join('\n'));
+  assertNoIds(f.logs);
+});
+
+test('a live event that fails, or a reaction Slack refuses, is logged with the call and Slack\'s error', async t => {
+  const f = await setup(t);
+  f.slack.fail('conversation', 'C7', 'conversations.info', 'channel_not_found');
+  f.slack.emit(message({ channel: 'C7', text: '知らないチャンネル' }));
+  const ts = tsAt('2026-09-25T05:40:00Z');
+  f.slack.fail('addReaction', ts, 'reactions.add', 'missing_scope', 'reactions:write');
+  f.slack.emit(message({ text: '<@UBOT> 見て', ts }));
+  await f.workspace.idle();
+  assert.ok(f.logs.includes('slack (work): handling an event failed (conversations.info: channel_not_found)'), f.logs.join('\n'));
+  assert.ok(f.logs.includes('slack (work): the reaction could not be added (reactions.add: missing_scope, needed reactions:write)'), f.logs.join('\n'));
+  assert.equal(f.events.length, 1, 'the mention is still an event');
+  assertNoIds(f.logs);
+});
