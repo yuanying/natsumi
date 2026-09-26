@@ -208,8 +208,6 @@ export interface SlackConfig {
   judge?: JudgeConfig;
   /** How long an approval waits for the owner before it expires. */
   approvalExpiryDays: number;
-  /** The reactions natsumi may ask the dove for, by Slack's emoji name. */
-  reactions: string[];
   /** Without a verdict, a reply to a top-level message goes to the channel while at most this many came after it. */
   placementFollowing: number;
   /** What Jev is shown around a draft's target: how many messages, and the characters each keeps. */
@@ -237,7 +235,7 @@ export interface JudgeConfig {
 
 export const SLACK_DEFAULTS = {
   reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
-  approvalExpiryDays: 7, reactions: ['+1', 'eyes', 'pray', 'white_check_mark', 'bow', 'tada'], placementFollowing: 2,
+  approvalExpiryDays: 7, placementFollowing: 2,
   judgeContext: { messages: 5, chars: 500 },
 };
 export const JUDGE_DEFAULTS = {
@@ -248,7 +246,6 @@ const MAX_JUDGE_CONCURRENCY = 16;
 const MIN_JUDGE_TIMEOUT_SECONDS = 5;
 const MAX_JUDGE_TIMEOUT_SECONDS = 300;
 const MAX_APPROVAL_EXPIRY_DAYS = 90;
-const MAX_REACTIONS = 50;
 const MAX_PLACEMENT_FOLLOWING = 20;
 const MAX_JUDGE_CONTEXT_MESSAGES = 20;
 /** The dove's name in ask_agent (ADR 0040). The config's outside agents may not take it. */
@@ -545,8 +542,10 @@ function parseA2A(value: unknown, path: string): A2AConfig {
 function parseSlack(value: unknown, path: string): SlackConfig {
   const slack = object(value, path);
   // `judge` is read by parseJudge once pi is known: by default it borrows pi's compatible endpoint.
+  // The list of reactions was dropped (ADR 0042); one still written would promise a limit that is no longer there.
+  if ('reactions' in slack) throw new ConfigError(`${path}.reactions`, 'was removed: any emoji that exists may be asked for (ADR 0042); delete it');
   onlyKeys(slack, path, ['workspaces', 'reaction', 'backfillDays', 'maxImageBytes', 'mentionContext', 'updates', 'judge', 'approvalExpiryDays',
-    'reactions', 'placementFollowing', 'judgeContext']);
+    'placementFollowing', 'judgeContext']);
   const workspacesPath = `${path}.workspaces`;
   const listed = object(required(slack, 'workspaces', path), workspacesPath);
   const workspaces: SlackConfig['workspaces'] = {};
@@ -588,11 +587,6 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   if (!positiveInteger(expiry, 1) || (expiry as number) > MAX_APPROVAL_EXPIRY_DAYS) {
     throw new ConfigError(`${path}.approvalExpiryDays`, `must be an integer from 1 to ${MAX_APPROVAL_EXPIRY_DAYS}`);
   }
-  const reactions = slack.reactions ?? SLACK_DEFAULTS.reactions;
-  if (!Array.isArray(reactions) || reactions.length === 0 || reactions.length > MAX_REACTIONS
-    || !reactions.every(name => typeof name === 'string' && EMOJI_NAME.test(name)) || new Set(reactions).size !== reactions.length) {
-    throw new ConfigError(`${path}.reactions`, `must list 1 to ${MAX_REACTIONS} different emoji names without colons`);
-  }
   const following = slack.placementFollowing ?? SLACK_DEFAULTS.placementFollowing;
   if (!(typeof following === 'number' && Number.isInteger(following) && following >= 0 && following <= MAX_PLACEMENT_FOLLOWING)) {
     throw new ConfigError(`${path}.placementFollowing`, `must be an integer from 0 to ${MAX_PLACEMENT_FOLLOWING}`);
@@ -610,7 +604,7 @@ function parseSlack(value: unknown, path: string): SlackConfig {
   }
   return { workspaces, reaction, backfillDays: days as number, maxImageBytes: bytes as number,
     mentionContext: { messages, chars: chars as number }, updates,
-    approvalExpiryDays: expiry as number, reactions: reactions as string[], placementFollowing: following,
+    approvalExpiryDays: expiry as number, placementFollowing: following,
     judgeContext: { messages: judgeMessages as number, chars: judgeChars as number } };
 }
 

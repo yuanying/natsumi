@@ -1,7 +1,7 @@
 # 0040. ポッポさんは判定が通したものを送り、本人には回されたものだけを承認してもらう
 
 - Date: 2026-09-26
-- Status: Accepted
+- Status: Accepted（リアクションの絵文字を設定の候補の一覧に限る点は [ADR 0042](0042-any-emoji-that-exists.md) で置き換え）
 
 ## Context
 

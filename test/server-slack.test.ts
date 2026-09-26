@@ -19,7 +19,7 @@ async function until<T>(check: () => T | undefined | false | Promise<T | undefin
   }
 }
 
-async function launch(t: test.TestContext, slack: Record<string, unknown> | undefined) {
+async function launch(t: test.TestContext, slack: Record<string, unknown> | undefined, prepare?: (fake: FakeSlack) => void) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-server-slack-')));
   const data = join(root, 'data');
   await mkdir(data);
@@ -29,6 +29,7 @@ async function launch(t: test.TestContext, slack: Record<string, unknown> | unde
   model.auto = () => ({ text: '' });
   const fake = new FakeSlack();
   fake.addChannel({ id: 'C1', name: 'dev', isIm: false });
+  prepare?.(fake);
   const tokens: { botToken: string; appToken: string }[] = [];
   const logs: string[] = [];
   const server = await startServer({
@@ -55,9 +56,20 @@ test('with a slack section, each workspace connects with its own tokens and a me
   assert.ok(!f.logs.some(line => line.includes('fixture-bot-token') || line.includes('こんにちは')), 'no token or text in the log');
 });
 
+test('each workspace\'s custom emoji are read at the start, and a workspace without emoji:read logs one line (ADR 0042)', async t => {
+  const f = await launch(t, { workspaces: { work: { botTokenEnv: 'SLACK_BOT', appTokenEnv: 'SLACK_APP' } } });
+  await until(() => f.fake.emojiCalls === 1);
+  const g = await launch(t, { workspaces: { work: { botTokenEnv: 'SLACK_BOT', appTokenEnv: 'SLACK_APP' } } }, fake => {
+    fake.fail('customEmoji', '', 'emoji.list', 'missing_scope', 'emoji:read');
+  });
+  await until(() => g.logs.includes('slack (work): the custom emoji could not be read (emoji.list: missing_scope, needed emoji:read)'));
+  assert.equal(g.fake.emojiCalls, 1);
+});
+
 test('without a slack section nothing connects, and /sources is still made', async t => {
   const f = await launch(t, undefined);
   assert.deepEqual(f.tokens, []);
   assert.equal(f.fake.started, 0);
+  assert.equal(f.fake.emojiCalls, 0);
   assert.ok((await stat(join(f.data, 'sources'))).isDirectory());
 });

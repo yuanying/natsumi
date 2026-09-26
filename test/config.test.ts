@@ -470,7 +470,7 @@ test('Slack is off unless the slack section is given, and has defaults for the r
   assert.deepEqual(parseConfig({ ...base(), slack: slack() }).slack, {
     workspaces: { work: { botToken: { env: 'NATSUMI_SLACK_WORK_BOT_TOKEN' }, appToken: { file: '/run/secrets/slack-work-app-token' } } },
     reaction: 'eyes', backfillDays: 90, maxImageBytes: 5 * 1024 * 1024, mentionContext: { messages: 5, chars: 500 }, updates: true,
-    approvalExpiryDays: 7, reactions: ['+1', 'eyes', 'pray', 'white_check_mark', 'bow', 'tada'], placementFollowing: 2,
+    approvalExpiryDays: 7, placementFollowing: 2,
     judgeContext: { messages: 5, chars: 500 },
   });
   const tuned = parseConfig({ ...base(), slack: { ...slack(), reaction: 'white_check_mark', backfillDays: 1, maxImageBytes: 1048576,
@@ -564,15 +564,13 @@ test('the Jev method: TypeSafe or a server that answers the same API, with or wi
   rejects({ ...base(), slack: { ...slack(), jev: {} } }, 'slack.jev', /unknown/);
 });
 
-test('the approvals, the reactions and where a reply goes are checked', () => {
-  const tuned = parseConfig({ ...base(), slack: { ...slack(), approvalExpiryDays: 1, reactions: ['eyes'], placementFollowing: 0,
+test('the approvals and where a reply goes are checked', () => {
+  const tuned = parseConfig({ ...base(), slack: { ...slack(), approvalExpiryDays: 1, placementFollowing: 0,
     judgeContext: { messages: 10, chars: 100 } } }).slack;
   assert.equal(tuned?.approvalExpiryDays, 1);
-  assert.deepEqual(tuned?.reactions, ['eyes']);
   assert.equal(tuned?.placementFollowing, 0);
   assert.deepEqual(tuned?.judgeContext, { messages: 10, chars: 100 });
   for (const approvalExpiryDays of [0, 91, 1.5]) rejects({ ...base(), slack: { ...slack(), approvalExpiryDays } }, 'slack.approvalExpiryDays');
-  for (const reactions of [[], ['eyes', 'eyes'], [':eyes:'], 'eyes']) rejects({ ...base(), slack: { ...slack(), reactions } }, 'slack.reactions');
   for (const placementFollowing of [-1, 21, 1.5]) rejects({ ...base(), slack: { ...slack(), placementFollowing } }, 'slack.placementFollowing');
   rejects({ ...base(), slack: { ...slack(), judgeContext: { messages: 0 } } }, 'slack.judgeContext.messages');
   rejects({ ...base(), slack: { ...slack(), judgeContext: { chars: 10 } } }, 'slack.judgeContext.chars');
@@ -580,4 +578,9 @@ test('the approvals, the reactions and where a reply goes are checked', () => {
 
 test('poppo is the dove\'s name, and no outside agent may take it', () => {
   rejects({ ...base(), a2a: { ...a2a(), agents: { poppo: { url: 'https://agents.example.test/poppo' } } } }, 'a2a.agents.poppo', /dove/);
+});
+
+test('the list of reactions is gone: a config that still has one is refused, and says why (ADR 0042)', () => {
+  rejects({ ...base(), slack: { ...slack(), reactions: ['eyes'] } }, 'slack.reactions', /removed.*any emoji/);
+  assert.equal('reactions' in (parseConfig({ ...base(), slack: slack() }).slack ?? {}), false);
 });

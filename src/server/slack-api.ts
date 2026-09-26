@@ -45,6 +45,8 @@ export interface SlackApi {
   replies(channel: string, threadTs: string): Promise<SlackMessage[]>;
   userName(userId: string): Promise<string>;
   addReaction(channel: string, ts: string, name: string): Promise<void>;
+  /** The names of the workspace's custom emoji, aliases included (`emoji.list`, which needs `emoji:read`). */
+  customEmoji(): Promise<string[]>;
   /** Posts as the bot, in a thread when `threadTs` is given, under the icon at `iconUrl`. Returns the new message's ts. */
   postMessage(channel: string, text: string, options: { threadTs?: string; iconUrl: string }): Promise<string>;
   /** A file's bytes, or undefined when it is larger than `maxBytes`. */
@@ -193,6 +195,10 @@ export const connectSlack: SlackConnector = ({ botToken, appToken }) => {
         // Already there (a retry that raced the first try) is what was wanted.
         if ((error as SlackCallError).reason !== 'already_reacted') throw error;
       }
+    },
+    async customEmoji() {
+      const answer = await calling('emoji.list', () => web.emoji.list());
+      return Object.keys(answer.emoji ?? {});
     },
     async postMessage(channel, text, { threadTs, iconUrl }) {
       // icon_url needs chat:write.customize. Links are not unfurled: a preview is more than what was judged.

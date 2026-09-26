@@ -75,7 +75,8 @@ export function parseDoveRequest(message: string): ParsedRequest {
   if (kind === 'reaction') {
     if (!target.at) return refuse('リアクションは発言に付けます。返信先には発言の参照（例: work/#dev 2026-09-25 14:32:05 山田）を書いてください。');
     const emoji = body.trim().replace(/^:(.*):$/, '$1');
-    if (!/^[a-z0-9_+'-]+$/.test(emoji)) return refuse('リアクションの本文には、絵文字の名前を 1 つだけ書いてください（例: +1）。');
+    // Whether it exists is the dove's to say (ADR 0042); here only that it is one name, with a skin tone at most.
+    if (!/^[^\s:]+(?:::skin-tone-\d)?$/u.test(emoji)) return refuse('リアクションの本文には、絵文字の名前を 1 つだけ書いてください（例: +1）。');
     return { ok: true, request: { target, kind, ...(expression ? { expression } : {}), body: emoji } };
   }
   return { ok: true, request: { target, kind, ...(expression ? { expression } : {}), body } };
