@@ -30,6 +30,7 @@ Socket Mode は natsumi から Slack へ外向きにつなぐので、公開す�
 | `users:read` | 発言者の表示名を知る |
 | `files:read` | 添付の画像を取ってくる |
 | `reactions:write` | 受け取ったときに 👀 を付ける |
+| `reactions:read` | 発言に付いたリアクションを受け取り、チャンネルのファイルに書く（[ADR 0043](adr/0043-reactions-in-the-channel-files.md)） |
 | `app_mentions:read` | メンションを受け取る |
 | `reactions:write` | ポッポさんに頼まれたリアクションを付ける（受け取ったときの 👀 と同じ scope） |
 | `chat:write` | ポッポさんが投稿する |
@@ -49,6 +50,8 @@ User Token Scopes には何も足しません。natsumi は本人の user token 
 | `message.groups` | 非公開チャンネルの発言 |
 | `message.im` | DM |
 | `app_mention` | メンション |
+| `reaction_added` | 発言にリアクションが付いた |
+| `reaction_removed` | 発言からリアクションが外された |
 
 3. DM を受け取るには、「App Home」の「Show Tabs」で「Messages Tab」を有効にし、
    「Allow users to send Slash commands and messages from the messages tab」にも印を付けます。
