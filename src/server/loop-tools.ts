@@ -1,3 +1,4 @@
+import type { ImageContent } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { ASK_AGENT_DESCRIPTION, CANCEL_SELF_CHECK_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION,
@@ -9,8 +10,11 @@ import { ASK_AGENT_DESCRIPTION, CANCEL_SELF_CHECK_DESCRIPTION, LIST_SELF_CHECKS_
 export const EXPRESSIONS = ['neutral', 'happy', 'laughing', 'surprised', 'thinking', 'worried', 'sad', 'sleepy'] as const;
 export type Expression = typeof EXPRESSIONS[number];
 
-/** A tool call's effect as a sentence the model reads. `ok: false` means nothing was sent or changed. */
-export interface ToolOutcome { ok: boolean; text: string }
+/**
+ * A tool call's effect as a sentence the model reads. `ok: false` means nothing was sent or changed. `images` go into
+ * the result beside the sentence, as `view` answers (ADR 0039).
+ */
+export interface ToolOutcome { ok: boolean; text: string; images?: ImageContent[] }
 
 type Outcome = ToolOutcome | Promise<ToolOutcome>;
 
@@ -55,7 +59,7 @@ async function result(outcome: Outcome) {
   const settled = await outcome;
   // A thrown error becomes an error tool result carrying this sentence.
   if (!settled.ok) throw new Error(settled.text);
-  return { content: [{ type: 'text' as const, text: settled.text }], details: {} };
+  return { content: [{ type: 'text' as const, text: settled.text }, ...settled.images ?? []], details: {} };
 }
 
 export function createLoopTools(host: LoopToolHost) {

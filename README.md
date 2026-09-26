@@ -7,7 +7,8 @@ HTTPS/WSS の待ち受けと v1 envelope の入口、Let's Encrypt（ACME HTTP-0
 （端末の登録と同期、表情、表示用の会話の記録）、git で持つ Markdown の長期記憶、閉じ込めたコンテナの中の作業環境と、
 夜の思考の記録の切り替えを提供しています。
 Mac アプリは土台（ログイン、会話の同期、デスクトップに常駐するキャラクター、その上の吹き出し、話しかけて読み返す会話のウインドウ）ができています。
-Slack、通知・スケジューラー、承認の表示、Google/Wiki 連携は後続の実装です。
+Slack は受け取り（招待されたチャンネルをファイルに書き、メンションと DM を出来事にする）までができています。
+Slack への投稿、承認の表示、Google 連携は後続の実装です。
 
 Node.js 24.12.0 以降を使用します。通常の検証は外部認証・ネットワーク接続を必要としません
 （初回の npm 依存取得を除く）。Pi は `@earendil-works/pi-coding-agent` の SDK を npm 依存として固定しています。
@@ -62,6 +63,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      永続する書き場所の合計の目安 `workspaceSizeWarnBytes`（既定 1 GiB。超えると次のターンで natsumi に知らせます）。
    - `apns`（省略可）: iPhone に通知を送るための APNs の設定です。下記「iPhone に通知を送る」を見てください。
    - `a2a`（省略可）: 外のエージェントに A2A で頼むための設定です。下記「外のエージェントに頼む」を見てください。
+   - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
 4. ビルドして起動します。
 
 ```sh
@@ -299,6 +301,52 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
   取れなかった相手は「今は取れない」と書きます。URL と token は書きません。相手の説明が変わったら、再起動で反映します。
 - token は natsumi のコンテナにだけマウントし、作業環境には見せません。ログには相手の名前と失敗の種類だけを出し、頼んだ文面や返事は出しません。
+
+### Slack を受け取る
+
+natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待したチャンネルを読みます
+（[ADR 0012](docs/adr/0012-slack-and-colleagues.md)、[ADR 0039](docs/adr/0039-slack-as-files-and-a-scored-dove.md)）。
+外向きの WebSocket でつなぐので、公開する入口は要りません。公式の SDK `@slack/socket-mode` と `@slack/web-api` を使います。
+設定に `slack` がなければ、Slack には何もつなぎません。今は受け取りだけで、Slack への投稿はまだできません。
+
+1. ワークスペースごとに Slack App を作り、bot token（`xoxb-`）と Socket Mode の app-level token（`xapp-`）を用意します。
+   必要な scope とイベントは [Slack App の作り方](docs/slack-app.md) にあります。本人の user token は使いません。
+2. token は秘密なので、設定には値を書かず、環境変数名（`...Env`）かファイル（`...File`）で指します。
+3. 設定に `slack` を足します。値は架空の例です。
+
+   ```json
+   "slack": {
+     "workspaces": {
+       "work": {
+         "botTokenFile": "/run/secrets/natsumi_slack_work_bot_token",
+         "appTokenFile": "/run/secrets/natsumi_slack_work_app_token"
+       }
+     }
+   }
+   ```
+
+   | 項目 | 必須 | 既定 | 中身 |
+   | --- | --- | --- | --- |
+   | `slack.workspaces.<名前>` | 必須 | | ワークスペースごとの `botTokenEnv` か `botTokenFile`、`appTokenEnv` か `appTokenFile`。名前は英小文字・数字・ハイフンで 32 文字まで。natsumi が読むパスと参照（`work/#dev`）に使います |
+   | `slack.reaction` | | `eyes` | メンションと DM を受け取ったときにサーバーが付けるリアクション（コロンなしの絵文字名） |
+   | `slack.backfillDays` | | 90 | 初めて見るチャンネルを何日前から埋めるか（1〜365） |
+   | `slack.maxImageBytes` | | 5 MiB | 取り込む画像の上限（バイト）。超えたものと画像でない添付は「添付あり（取り込まず）」とだけ書きます |
+   | `slack.mentionContext.messages` / `.chars` | | 5 / 500 | メンションの出来事に添える前の発言の件数（0〜20）と、1 件あたりの文字数 |
+   | `slack.updates` | | `true` | 合図（ping・self_check）の `updates` に Slack の件数を載せるか |
+
+- 参加するチャンネルは、bot を招待して決めます。招待した後の最初の接続で、`backfillDays` 日前から埋めます。
+- 発言は data directory の `sources/slack/<ワークスペース>/<チャンネル>/<日付>.md`（DM は `@<名前>/`）に 1 日 1 ファイルで書きます。
+  見出しは natsumi のタイムゾーンの `## 14:32:05 山田` で、スレッドの返信は親の下に字下げします。編集と削除ではその日のファイルを書き直します。
+  画像は同じ場所の `files/` に取ってきます。目次は `sources/slack/INDEX.md` です。ファイルは消さないので、古いものは手で片づけます。
+- 発言そのものは `.natsumi/state.sqlite`（migration 13）にも残り、ファイルはそこから書き直します。個人データとしてバックアップの対象です。
+- 起動したときと Slack につなぎ直したときに、チャンネルごとに最後に記録した発言から後を取り直して埋めます。
+  止まっている間に古いスレッドへ付いた返信は、埋め直しでは拾いません（親が最後に記録した発言より前にあるため）。
+- 出来事になるのは、bot への本物のメンションと DM だけです。受け取るとサーバーが `reaction` を付けます。同じ発言は何度届いても出来事 1 件です。
+  名前が出ただけの発言やほかの発言は、次の合図の `updates` に件数で出ます。bot の発言（自分のものを含む）は出来事になりません。
+- natsumi が読むものには、Slack の ID（ts・チャンネル・ユーザー）を書きません。発言はワークスペース・チャンネル・日付・秒までの時刻・発言者で指します。
+- 作業環境からは、data directory の `sources/` を `/sources` に読み取り専用でマウントします（compose.yaml に入っています）。
+  natsumi は shell で読み、`view <パス>` で画像を見ます（`/sources/` の下の画像だけ、サーバーが答えます）。
+- ログにはワークスペースの名前と失敗の種類だけを出し、発言や token は出しません。
 
 ### natsumi の作業環境（natsumi-workspace）
 

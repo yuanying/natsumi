@@ -341,4 +341,58 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 13,
+    name: 'slack',
+    sql: `
+      -- The channels and DMs of each Slack workspace the bot is in (ADR 0039). directory is where their files go under
+      -- sources/slack/<workspace>/, fixed the first time the channel is seen, so a rename never moves the files natsumi
+      -- has been reading. label is how she names it: #dev, or @name for a DM.
+      CREATE TABLE slack_channels (
+        workspace TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        directory TEXT NOT NULL,
+        label TEXT NOT NULL,
+        is_im INTEGER NOT NULL CHECK (is_im IN (0, 1)),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workspace, channel_id),
+        UNIQUE (workspace, directory)
+      ) STRICT;
+
+      -- Every message recorded, which the day files are written from. A deleted one is kept as deleted: its replies
+      -- still stand under it. file_date is the local date of the file it is written in: its own, or its parent's.
+      -- counted is 1 while it waits to be shown in the updates of a ping or a self-check, and 0 once shown or never
+      -- to be counted (her own posts, the parents fetched for an old thread, what a mention event already showed).
+      CREATE TABLE slack_messages (
+        workspace TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        thread_ts TEXT,
+        speaker TEXT NOT NULL,
+        own INTEGER NOT NULL CHECK (own IN (0, 1)),
+        text TEXT NOT NULL,
+        -- JSON: [{ "name", "path"? }], path being where the workspace sees a fetched image.
+        files TEXT NOT NULL,
+        edited INTEGER NOT NULL CHECK (edited IN (0, 1)),
+        deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+        file_date TEXT NOT NULL,
+        counted INTEGER NOT NULL CHECK (counted IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (workspace, channel_id, ts),
+        FOREIGN KEY (workspace, channel_id) REFERENCES slack_channels (workspace, channel_id)
+      ) STRICT;
+      CREATE INDEX slack_messages_by_file ON slack_messages (workspace, channel_id, file_date);
+      CREATE INDEX slack_messages_counted ON slack_messages (counted) WHERE counted = 1;
+
+      -- The mentions and DMs that became events. One message makes one event, however often Slack sends it.
+      CREATE TABLE slack_mentions (
+        event_id TEXT PRIMARY KEY REFERENCES loop_events (event_id),
+        workspace TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        ts TEXT NOT NULL,
+        UNIQUE (workspace, channel_id, ts)
+      ) STRICT;
+    `,
+  },
 ];

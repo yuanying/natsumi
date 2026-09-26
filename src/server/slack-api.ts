@@ -1,0 +1,179 @@
+import { LogLevel, SocketModeClient } from '@slack/socket-mode';
+import { WebClient } from '@slack/web-api';
+
+/**
+ * The edge of Slack (ADR 0012, ADR 0039): the few Web API calls the server makes with the bot token, and the Socket
+ * Mode connection it listens on with the app token. Everything past this file works on the shapes below, so the
+ * tests put a stand-in here and never touch the network.
+ *
+ * Only the bot's own tokens are used. Nothing here reads as the owner, and nothing posts: sending is the dove's, in
+ * a later unit of work.
+ */
+
+/** A file attached to a message, as far as the server needs it. */
+export interface SlackFile { id: string; name: string; mimetype: string; size: number; url: string }
+
+/** A message as the server records it. `threadTs` is set on a reply, and on a parent equals its own `ts`. */
+export interface SlackMessage {
+  ts: string;
+  threadTs?: string;
+  user?: string;
+  /** Set when a bot posted it, the bot's own included. */
+  botId?: string;
+  /** The name a bot posted under, when it has no user. */
+  username?: string;
+  text: string;
+  files: SlackFile[];
+  subtype?: string;
+  edited?: boolean;
+  /** How many replies a parent has, as `conversations.history` reports it. */
+  replyCount?: number;
+}
+
+/** A channel the bot is in, or a direct message with one person (`user`). */
+export interface SlackConversation { id: string; name?: string; isIm: boolean; user?: string }
+
+export interface SlackApi {
+  /** Who the bot is: its user, to tell a mention, and its bot ID, to tell its own posts. */
+  whoAmI(): Promise<{ userId: string; botId?: string }>;
+  /** The channels and DMs the bot is a member of. */
+  conversations(): Promise<SlackConversation[]>;
+  conversation(id: string): Promise<SlackConversation>;
+  /** Every top-level message after `oldest` (exclusive), oldest first, through all the pages. */
+  history(channel: string, oldest: string): Promise<SlackMessage[]>;
+  /** A thread: its parent and every reply, oldest first. */
+  replies(channel: string, threadTs: string): Promise<SlackMessage[]>;
+  userName(userId: string): Promise<string>;
+  addReaction(channel: string, ts: string, name: string): Promise<void>;
+  /** A file's bytes, or undefined when it is larger than `maxBytes`. */
+  download(url: string, maxBytes: number): Promise<Buffer | undefined>;
+}
+
+export interface SlackSocket {
+  /** An Events API event, already acknowledged. The same event may come again: Slack retries. */
+  onEvent(handler: (event: Record<string, unknown>) => void): void;
+  /** Every (re)connection, the first included. */
+  onConnected(handler: () => void): void;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export type SlackConnector = (tokens: { botToken: string; appToken: string }) => { api: SlackApi; socket: SlackSocket };
+
+/** A message from the Events API or the Web API, in the server's shape. Anything else in it is dropped. */
+export function toSlackMessage(raw: Record<string, unknown>): SlackMessage {
+  const string = (key: string) => typeof raw[key] === 'string' ? raw[key] as string : undefined;
+  const files = Array.isArray(raw.files) ? raw.files as Record<string, unknown>[] : [];
+  return {
+    ts: string('ts') ?? '',
+    ...(string('thread_ts') ? { threadTs: string('thread_ts') } : {}),
+    ...(string('user') ? { user: string('user') } : {}),
+    ...(string('bot_id') ? { botId: string('bot_id') } : {}),
+    ...(string('username') ?? botName(raw) ? { username: string('username') ?? botName(raw) } : {}),
+    text: string('text') ?? '',
+    files: files.map(file => ({
+      id: String(file.id ?? ''), name: String(file.name ?? file.title ?? 'file'), mimetype: String(file.mimetype ?? ''),
+      size: typeof file.size === 'number' ? file.size : 0, url: String(file.url_private_download ?? file.url_private ?? ''),
+    })),
+    ...(string('subtype') ? { subtype: string('subtype') } : {}),
+    ...(raw.edited ? { edited: true } : {}),
+    ...(typeof raw.reply_count === 'number' ? { replyCount: raw.reply_count } : {}),
+  };
+}
+
+function botName(raw: Record<string, unknown>): string | undefined {
+  const profile = raw.bot_profile as { name?: unknown } | undefined;
+  return typeof profile?.name === 'string' ? profile.name : undefined;
+}
+
+/** The official SDKs: they keep the socket alive, reconnect, and wait out Slack's rate limits on the Web API. */
+export const connectSlack: SlackConnector = ({ botToken, appToken }) => {
+  // The SDKs log to the console on their own; only their errors are let through, and natsumi's own log says the rest.
+  const web = new WebClient(botToken, { logLevel: LogLevel.ERROR });
+  const socketClient = new SocketModeClient({ appToken, logLevel: LogLevel.ERROR });
+  const api: SlackApi = {
+    async whoAmI() {
+      const answer = await web.auth.test();
+      return { userId: String(answer.user_id), ...(answer.bot_id ? { botId: String(answer.bot_id) } : {}) };
+    },
+    async conversations() {
+      const found: SlackConversation[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await web.users.conversations({ types: 'public_channel,private_channel,im', limit: 200, exclude_archived: true, cursor });
+        for (const channel of page.channels ?? []) found.push(conversation(channel as Record<string, unknown>));
+        cursor = page.response_metadata?.next_cursor || undefined;
+      } while (cursor);
+      return found;
+    },
+    async conversation(id) {
+      const answer = await web.conversations.info({ channel: id });
+      return conversation(answer.channel as Record<string, unknown>);
+    },
+    async history(channel, oldest) {
+      const found: SlackMessage[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await web.conversations.history({ channel, oldest, limit: 200, cursor });
+        for (const message of page.messages ?? []) found.push(toSlackMessage(message as Record<string, unknown>));
+        cursor = page.response_metadata?.next_cursor || undefined;
+      } while (cursor);
+      return found.filter(message => message.ts !== oldest).sort((a, b) => Number(a.ts) - Number(b.ts));
+    },
+    async replies(channel, threadTs) {
+      const found: SlackMessage[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await web.conversations.replies({ channel, ts: threadTs, limit: 200, cursor });
+        for (const message of page.messages ?? []) found.push(toSlackMessage(message as Record<string, unknown>));
+        cursor = page.response_metadata?.next_cursor || undefined;
+      } while (cursor);
+      return found.sort((a, b) => Number(a.ts) - Number(b.ts));
+    },
+    async userName(userId) {
+      const answer = await web.users.info({ user: userId });
+      const user = answer.user;
+      return user?.profile?.display_name || user?.real_name || user?.name || userId;
+    },
+    async addReaction(channel, ts, name) {
+      try { await web.reactions.add({ channel, timestamp: ts, name }); } catch (error) {
+        // Already there (a retry that raced the first try) is what was wanted.
+        if ((error as { data?: { error?: string } }).data?.error !== 'already_reacted') throw error;
+      }
+    },
+    async download(url, maxBytes) {
+      const response = await fetch(url, { headers: { authorization: `Bearer ${botToken}` } });
+      if (!response.ok || !response.body) throw new Error(`download failed (${response.status})`);
+      // Slack answers a missing scope with its sign-in page rather than an error.
+      if ((response.headers.get('content-type') ?? '').startsWith('text/html')) throw new Error('download answered with a page');
+      const chunks: Buffer[] = [];
+      let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > maxBytes) return undefined;
+        chunks.push(Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    },
+  };
+  const socket: SlackSocket = {
+    onEvent(handler) {
+      socketClient.on('slack_event', async ({ ack, type, body }: { ack: () => Promise<void>; type: string; body?: { event?: unknown } }) => {
+        await ack();
+        if (type === 'events_api' && body?.event && typeof body.event === 'object') handler(body.event as Record<string, unknown>);
+      });
+    },
+    onConnected(handler) { socketClient.on('connected', () => handler()); },
+    async start() { await socketClient.start(); },
+    async stop() { await socketClient.disconnect(); },
+  };
+  return { api, socket };
+};
+
+function conversation(raw: Record<string, unknown>): SlackConversation {
+  return {
+    id: String(raw.id), isIm: raw.is_im === true,
+    ...(typeof raw.name === 'string' ? { name: raw.name } : {}),
+    ...(typeof raw.user === 'string' ? { user: raw.user } : {}),
+  };
+}

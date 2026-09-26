@@ -7,6 +7,8 @@ import { basename, dirname, join, relative, isAbsolute } from 'node:path';
  */
 export const WORK_DIRECTORY = 'work';
 export const HOME_DIRECTORY = 'home';
+/** What natsumi reads besides memory, one directory per source; the workspace sees it read-only as `/sources` (ADR 0039). */
+export const SOURCES_DIRECTORY = 'sources';
 
 /** Real path of `path`, following symlinks of the longest existing prefix; the rest need not exist yet. */
 export async function realPathAllowingMissing(path: string): Promise<string> {

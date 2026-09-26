@@ -19,6 +19,11 @@ import { preparePiState } from './pi-state.ts';
 import { parseRegistration, PushNotifier, PushRegistrations } from './push.ts';
 import { readSecret, readTlsFiles } from './secrets.ts';
 import { SessionStore } from './sessions.ts';
+import { SLACK_SOURCE, SlackArchive } from './slack-archive.ts';
+import { connectSlack, type SlackConnector } from './slack-api.ts';
+import { SlackWorkspace } from './slack.ts';
+import { SOURCES_DIRECTORY } from './paths.ts';
+import type { UpdateSource } from './updates.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
 import { HEARTBEAT_MS, writeStatus, type ServerStatus } from './status.ts';
 import { Scheduler } from './scheduler.ts';
@@ -51,6 +56,8 @@ export interface StartOptions {
   apns?: { origins?: Record<ApnsEnvironment, string>; retryDelaysMs?: number[] };
   /** Replaces `a2a.pollIntervalSeconds`, whose floor is too long for a test. */
   a2a?: { pollIntervalMs?: number };
+  /** Replaces the Slack SDKs. Tests hand in a stand-in for the Web API and Socket Mode. */
+  slack?: { connector?: SlackConnector };
 }
 
 type Address = { host: string; port: number };
@@ -87,6 +94,12 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     throw new ConfigError('file' in config.apns.key ? 'apns.keyFile' : 'apns.keyEnv',
       'the referenced key is not an EC P-256 private key in PEM (the .p8 file)');
   }
+  // Every token is read now, so a missing one stops startup with its setting's name rather than failing later.
+  const slackTokens = config.slack ? await Promise.all(Object.entries(config.slack.workspaces).map(async ([name, workspace]) => ({
+    name,
+    botToken: await readSecret(workspace.botToken, `slack.workspaces.${name}.botToken`, options.env),
+    appToken: await readSecret(workspace.appToken, `slack.workspaces.${name}.appToken`, options.env),
+  }))) : [];
   const tls = config.listen.tls;
   const tlsFiles = tls && 'certFile' in tls ? await readTlsFiles(tls, 'listen.tls') : undefined;
   const now = options.clock ?? Date.now;
@@ -103,11 +116,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   let challenge: ChallengeListener | undefined;
   let certificates: CertificateManager | undefined;
   let scheduler: Scheduler | undefined;
+  const slackWorkspaces: SlackWorkspace[] = [];
   const timers: NodeJS.Timeout[] = [];
   // Everything opened above, closed in the reverse order.
   const closeAll = async () => {
     timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
     scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
+    await Promise.all(slackWorkspaces.map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
     apns?.close();
     await certificates?.close(); // Abandons an ACME order in flight: no certificate arrives at a listener being closed.
@@ -126,6 +141,13 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
 
     // One client for the loop and the list: the token file is read afresh on every call either makes (ADR 0033).
     const a2aClient = config.a2a ? new SdkA2AClient({ tokenFile: config.a2a.tokenFile }) : undefined;
+    // What she reads of Slack, written under sources/slack whether or not it is counted in the updates (ADR 0039).
+    const slackConfig = config.slack;
+    const archive = slackConfig ? new SlackArchive({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, SLACK_SOURCE),
+      timeZone: config.loop.timeZone, now, mentionContext: slackConfig.mentionContext }) : undefined;
+    await archive?.prepare();
+    const updates: UpdateSource[] = archive && slackConfig?.updates ? [archive] : [];
+
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
       db, dataDirectory, sessionDirectory: config.pi.sessionDirectory, agentDirectory: config.pi.agentDirectory,
@@ -133,7 +155,27 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       runtime: options.pi?.runtime ?? (async () => (await createModelRuntime(config.pi, options.env)).runtime),
       configureSession: options.pi?.configureSession, now, log, loop: config.loop,
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
+      updates, ...(archive ? { slack: archive } : {}),
     });
+
+    // Each workspace connects in the background: Slack being out of reach, or a token it refuses, must not hold the
+    // server's start. The socket reconnects on its own, and every connection fills in what was missed.
+    if (archive && slackConfig && !thinkingLoop.unavailable) {
+      const connector = options.slack?.connector ?? connectSlack;
+      for (const { name, botToken, appToken } of slackTokens) {
+        const { api, socket } = connector({ botToken, appToken });
+        const workspace = new SlackWorkspace({
+          name, api, socket, archive, reaction: slackConfig.reaction, backfillDays: slackConfig.backfillDays,
+          maxImageBytes: slackConfig.maxImageBytes, now, log,
+          raise: record => thinkingLoop.raise('slack-mention', record),
+        });
+        slackWorkspaces.push(workspace);
+        void workspace.start().then(
+          () => { log(`slack (${name}): connecting`); },
+          () => { log(`slack (${name}): could not start; check the tokens and the App's settings`); },
+        );
+      }
+    }
 
     // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the
     // background: an agent that is down must not hold the server's start.

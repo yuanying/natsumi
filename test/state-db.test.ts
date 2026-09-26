@@ -83,6 +83,9 @@ test('the schema keeps the conversation shown to the owner and only references t
       if (table === 'conversation_messages' && column === 'text') continue;
       // An agent's answer waits here until it is handed to Pi, and is emptied then: the record is the Pi session's.
       if (table === 'agent_replies' && column === 'text') continue;
+      // What was said in Slack, which the day files are written from again on every edit and deletion (ADR 0039).
+      // It is Slack's record, not natsumi's thinking, and the Pi session holds it only as far as an event carried it.
+      if (table === 'slack_messages' && column === 'text') continue;
       assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response|thinking|tool_calls?)$/i, `${table}.${column}`);
     }
   }
@@ -294,7 +297,7 @@ test('schema 12 adds the outside agents\' exchanges beside what was there, and h
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 11));
   db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
     VALUES ('event-1', 'ping', NULL, 'no-reply', 'x', 'x')`).run();
-  assert.deepEqual(migrate(db, MIGRATIONS).applied, [12]);
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 12)).applied, [12]);
   assert.deepEqual(plainRows(db.prepare('SELECT event_id, state FROM loop_events').all()), [{ event_id: 'event-1', state: 'no-reply' }]);
 
   const task = db.prepare(`INSERT INTO agent_tasks (agent, task_id, context_id, state, sent_at, created_at, updated_at)
@@ -315,4 +318,20 @@ test('schema 12 adds the outside agents\' exchanges beside what was there, and h
   const context = db.prepare(`INSERT INTO agent_contexts (agent, context_id, task_id, updated_at) VALUES ('wiki', ?, NULL, 'x')`);
   context.run('context-1');
   assert.throws(() => context.run('context-2'), /constraint/i);
+}));
+
+test('schema 13 adds Slack beside what was there, and one mention makes at most one event', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 12));
+  db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
+    VALUES ('event-1', 'slack-mention', NULL, 'queued', 'x', 'x'), ('event-2', 'slack-mention', NULL, 'queued', 'x', 'x')`).run();
+  assert.deepEqual(migrate(db, MIGRATIONS).applied, [13]);
+  db.prepare(`INSERT INTO slack_channels (workspace, channel_id, directory, label, is_im, created_at)
+    VALUES ('work', 'C1', 'dev', '#dev', 0, 'x')`).run();
+  assert.throws(() => db.prepare(`INSERT INTO slack_channels (workspace, channel_id, directory, label, is_im, created_at)
+    VALUES ('work', 'C2', 'dev', '#dev', 0, 'x')`).run(), /constraint/i, 'two channels never share a directory');
+  db.prepare(`INSERT INTO slack_mentions (event_id, workspace, channel_id, ts) VALUES ('event-1', 'work', 'C1', '1.1')`).run();
+  assert.throws(() => db.prepare(`INSERT INTO slack_mentions (event_id, workspace, channel_id, ts) VALUES ('event-2', 'work', 'C1', '1.1')`).run(),
+    /constraint/i);
+  assert.throws(() => db.prepare(`INSERT INTO slack_mentions (event_id, workspace, channel_id, ts) VALUES ('event-missing', 'work', 'C1', '2.2')`).run(),
+    /constraint/i);
 }));

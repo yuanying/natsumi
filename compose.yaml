@@ -112,6 +112,14 @@ services:
         volume:
           subpath: agents
           nocopy: true
+      # What she reads besides memory, such as the Slack channels, written by natsumi (ADR 0039). Read-only.
+      - type: volume
+        source: natsumi-data
+        target: /sources
+        read_only: true
+        volume:
+          subpath: sources
+          nocopy: true
       - type: volume
         source: natsumi-workspace-socket
         target: /run/natsumi-workspace

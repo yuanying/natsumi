@@ -46,7 +46,9 @@ export function compatibleProvider(endpoint: CompatibleEndpoint): Parameters<Mod
   return {
     name: 'OpenAI-compatible endpoint', baseUrl: endpoint.baseUrl, api: 'openai-completions',
     models: [{
-      id: endpoint.model, name: endpoint.model, reasoning: true, input: ['text'],
+      // Images too: a Slack mention's pictures ride beside its event, and `view` answers with one (ADR 0039). Pi sends
+      // a tool result's image as a user message after it, which Chat Completions takes.
+      id: endpoint.model, name: endpoint.model, reasoning: true, input: ['text', 'image'],
       // Pi caps a compaction summary at the smaller of this and its own summary budget (80% of a 16384-token reserve),
       // and thinking spends the same tokens. At 4096 a summary stopped at the cap and no compaction ever succeeded.
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 16_384,
