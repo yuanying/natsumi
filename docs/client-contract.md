@@ -339,6 +339,7 @@ natsumi が Slack に出したい投稿のうち、ポッポさんの判定で�
 | `target.placement` | `thread` か `channel`。判定の選択、判定なしならサーバーの決まりの値。チャンネルそのものへの投稿は `channel` |
 | `text` | natsumi の下書き（全文） |
 | `expression` | アイコンの表情。無ければ欄が無い |
+| `images` | 投稿に付く画像の一覧。natsumi が書いた順。各要素は `imageId`（画像の ID）・`mimeType`（`image/png`・`image/jpeg`・`image/webp`）・`bytes`（大きさ、バイト）。画像が無ければ欄が無い（下記「画像」） |
 | `reason.verdict` | `owner`・`no-verdict`・`rewrite-limit` |
 | `reason.issues` | 問題点ごとの `name`（英語の識別子）・`label`（日本語の表示名）・`score`（0〜1）。しきい値以上のものに `flagged: true`（それ以外は欄が無い）。判定なしなら空 |
 | `reason.placement` | 判定の置き場所の `probabilities`（`thread`・`channel`）。判定なし、または判定が確率を返さなかったときは欄が無い |
@@ -357,6 +358,25 @@ natsumi が Slack に出したい投稿のうち、ポッポさんの判定で�
 - 修正した本文は判定に掛け直さない。送る直前の機械的な検査は、承認した下書きにも修正した本文にも掛け、当たれば送らずに
   `delivery: failed`・`reason: mechanical-check` とする。返す相手の発言が消されていれば `target-gone`、Slack に断られれば `slack-error`。
 - 送るのは、承認なら見せた下書き、修正なら本人の本文だけである。`sentText` は実際に送った本文。
+- 画像の付いた承認では、承認でも修正でも、`images` の画像が本文と一緒に送られる。画像は選べない（全部送るか、却下するか）。
+
+### 画像
+
+画像の付いた投稿の理由は [ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md) にある。
+
+- 画像は、natsumi が依頼した時点でサーバーが写し取ったものである。承認に見せる画像と、送る画像は同じで、後から変わらない。
+- 本文の無い、画像だけの投稿は、承認を通らずに送られる。承認に画像が付くのは、本文があって本人に回されたときだけである。
+- 画像そのものは `GET /v1/images/<imageId>` で取る。`Authorization: Bearer <token>`（WSS と同じセッション）が要る。
+  - 成功すると 200 で、本文は画像のバイト列、`Content-Type` は一覧の `mimeType`、`Content-Length` は `bytes` と同じ。
+  - セッションが無い・失効・期限切れ・本人以外なら 401（`{"error": "unauthorized"}`）。画像があるかどうかは、セッションを確かめてから答える。
+  - 知らない imageId、写しが無くなった画像は 404（`{"error": "not-found"}`）。
+  - `Cache-Control: no-store` が付く。アプリは表示のために手元に持ってよいが、承認が閉じたら捨てる。
+  - 取るのはセッションの使用であり、WSS の接続と同じくセッションを延ばす（上記「セッションの延長」）。
+- 画像の ID は承認に限らない。後で会話など、ほかのところにも同じ ID と同じ道で画像が出ることがある。
+
+```json
+{"approvalId":"approval-example","revision":1,"kind":"slack-post","createdAt":"2026-09-25T06:00:00.000Z","expiresAt":"2026-10-02T06:00:00.000Z","target":{"channel":"work/#dev","placement":"thread","replyTo":{"speaker":"山田","at":"2026-09-25 14:32:05","text":"猫の絵を描いて"}},"text":"描いてみました。","images":[{"imageId":"image-example","mimeType":"image/png","bytes":946870}],"reason":{"verdict":"no-verdict","issues":[]},"history":[]}
+```
 
 ### 予定の変更の承認（未実装）
 

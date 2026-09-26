@@ -337,6 +337,7 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
    | `slack.approvalExpiryDays` | | 7 | 承認待ちの期限（1〜90 日） |
    | `slack.placementFollowing` | | 2 | 判定なしのとき、チャンネル直下の発言への返事は、その後の発言がこの件数以内ならチャンネル、超えたらスレッドに置く（0〜20） |
    | `slack.judgeContext.messages` / `.chars` | | 5 / 500 | 判定に見せる返信先の周りの発言の件数（1〜20）と、1 件あたりの文字数 |
+   | `slack.postImages.maxBytes` / `.maxCount` | | 10 MiB / 4 | ポッポさんに頼む投稿の画像 1 枚の上限（1 KiB〜50 MiB）と、1 回の枚数の上限（1〜10） |
 
 - 参加するチャンネルは、bot を招待して決めます。招待した後の最初の接続で、`backfillDays` 日前から埋めます。
 - 発言は data directory の `sources/slack/<ワークスペース>/<チャンネル>/<日付>.md`（DM は `@<名前>/`）に 1 日 1 ファイルで書きます。
@@ -386,7 +387,15 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
   （例: `slack (work): the custom emoji could not be read (emoji.list: missing_scope, needed emoji:read)`）。
   以前の設定 `slack.reactions`（候補の一覧）は廃止し、書いてあると起動しません。
   標準の絵文字の名前は emoji-datasource（MIT License）から `scripts/slack-emoji-names.ts` で生成した `src/server/slack-emoji-names.ts` です。
-- 送った本文、判定の点数、置き場所、本人の判断は `.natsumi/state.sqlite`（migration 14）に残ります。個人データとしてバックアップの対象です。
+- 投稿には `/work` の画像を付けられます（見出し `画像:`、[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）。
+  - サーバーは `/work` の下（リンクや `..` で外に出るものは断ります）の PNG・JPEG・WebP（中身で見分けます）だけを、`slack.postImages` の上限まで受け付けます。
+  - 受け付けた時点で画像を `.natsumi/images/` に写し、ID を付けます。承認に見せるのも Slack に送るのもこの写しで、後で `/work` のファイルが変わっても変わりません。
+  - 判定に掛けるのは本文だけです。本文の無い画像だけの投稿は、判定にも承認にも通さずに送り、置き場所は判定なしのときの決まりで決めます。
+  - 送るのは `files.uploadV2` の 3 段（`files.getUploadURLExternal`・アップロード・`files.completeUploadExternal`）で、本文は画像のコメントになります。
+    Slack App に `files:write` が要ります。Slack はアップロードにアイコンを指定させないので、画像付きの投稿は bot の既定のアイコンで出ます。
+  - 承認待ちには画像の一覧が載り、アプリは `GET /v1/images/<imageId>`（ログインが要ります）で画像を取ります（[サーバーと Mac の契約](docs/client-contract.md) の「画像」）。
+- 送った本文、判定の点数、置き場所、本人の判断、画像（写しのパス・大きさ・形式・SHA-256）は `.natsumi/state.sqlite`（migration 14・16）に残ります。
+  画像の写しは `.natsumi/images/` にあります。どちらも個人データとしてバックアップの対象です。
 - ログには判定の方式、ワークスペースの名前、Slack のメソッドとエラーのコード、判定の失敗の種類（例: `dove: judge: no verdict (no-answer-token)`）だけを出し、
   下書き、接続先、ID は出しません。
 
@@ -445,7 +454,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   - natsumi に Docker のソケットは渡しません。
   - ツールは、設定の `loop.workspaceSocket`（設定例では `/run/natsumi-workspace/runner.sock`）があるときだけ使えます。
 - 入っているもの: debian-slim に標準の道具（`coreutils`・`findutils`・`diffutils`・`grep`・`sed`・`gawk`・`tar`・`gzip`・`bash`）と、
-  `ripgrep`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、それに runner です。
+  `ripgrep`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、画像を作る `sdctl`、それに runner です。
   **使えるコマンドの一覧はもうありません。** 閉じ込めはコンテナの形だけで掛けます。
 - 書ける場所は 4 つです。ルートは読み取り専用のままです。
 
@@ -464,6 +473,15 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
 
   `/work` と `/home/natsumi` はサーバーが見ません。ターンの終わりの検査もコミットも掛からず、
   git の差分でも見られません。中を見るときはオーナーが自分でコンテナに入ります。
+  例外は、natsumi が `view` で見る画像と、ポッポさんへの依頼で名指しした画像だけです（サーバーが読みます）。
+- 画像を作る（[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）
+  - natsumi は shell で `sdctl`（[yuanying/sdctl](https://github.com/yuanying/sdctl) の v0.3.0。image の build でソースから入れます）を使い、
+    Stable Diffusion WebUI で画像を作ります。使い方は natsumi 向けの [manual/images.md](manual/images.md) にあります。
+  - 既定の設定は image の `/etc/sdctl/anima.yaml`（リポジトリの [docker/sdctl/anima.yaml](docker/sdctl/anima.yaml)）です。
+    Anima 系のモデル `anima_mignolia_v10` と VAE・text encoder を生成ごとの `override_settings` で指定し、Negative prompt、896×1152、30 steps、CFG 4.5、`ER SDE`・`simple` です。
+    変えるには image を作り直します。
+  - 接続先は環境変数 `SDCTL_URL` です。Kubernetes の構成では、同じ Pod の出口の proxy が loopback で受けて token を付ける中継を指します
+    （token は中継だけが持ちます。[権限と秘密の一覧](docs/permissions.md) の「作業環境」）。Docker の構成（`compose.yaml`）には中継が無く、作業環境はネットワークを持たないので、sdctl は使えません。
 - 閉じ込め
   - ネットワークはありません（`network_mode: none`）。
   - `natsumi-data` の上の 3 つと、読み取り専用の `agents/` だけをマウントします。SQLite、Pi の状態領域、secrets、設定は見えません。
@@ -733,6 +751,7 @@ GitHub もモデルも使わずに画面を確かめるための、偽のサー�
 Slack の投稿の承認待ちも架空のものを 2 件持ち、最初の同期から `--approval-delay` 秒（既定 8 秒、0 で送らない）後に 1 件を
 `approval.pending` で足します。承認・修正・却下には契約どおりに答え（承認と修正は少し後に `delivery: sent` で閉じ、却下はその場で閉じます）、
 閉じた承認への 2 回目の決定には最初の状態を、違う revision には `stale-revision` を返します。ログアウトすると承認待ちは最初の 2 件に戻ります。
+チャンネルへの投稿の承認待ちには画像が 2 枚付き、`GET /v1/images/<imageId>` に `Authorization: Bearer fake-token` を付けると画像を返します（無ければ 401）。
 
 ```sh
 npm ci

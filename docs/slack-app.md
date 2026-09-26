@@ -90,7 +90,7 @@ Socket Mode は natsumi から Slack へ外向きにつなぐので、公開す�
 | `chat:write` | ポッポさんが投稿する |
 | `chat:write.customize` | 投稿ごとに、なつみの表情のアイコン（`icon_url`）を使う |
 | `emoji:read` | ポッポさんに頼まれたリアクションが、ワークスペースのカスタム絵文字にあるか確かめる（`emoji.list`）。無ければ標準の絵文字だけを付けます |
-| `files:write` | 画像の投稿（後日の作業）で使う。今は使いませんが、入れ直しの手間を省くために先に足しておきます |
+| `files:write` | ポッポさんが画像を投稿する（`files.getUploadURLExternal`・`files.completeUploadExternal`）。無ければ画像付きの投稿は Slack に断られ、なつみには届けられなかったと伝わります |
 
 User Token Scopes には何も足しません。natsumi は本人の user token を使いません。
 
