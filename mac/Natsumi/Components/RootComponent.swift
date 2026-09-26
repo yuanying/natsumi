@@ -27,6 +27,7 @@ final class RootComponent: Component {
     private let notices = NoticeBundleComponent()
     private let conversation = ConversationComponent()
     private let settings = SettingsComponent()
+    private let viewer = ImageViewerComponent()
     private let windows = PanelDelegate()
 
     typealias Stage = StageView<CharacterStageView, BalloonView, NoticeBundleView>
@@ -95,7 +96,7 @@ final class RootComponent: Component {
         character = CharacterComponent(
             carried: { [weak self] phase in self?.carried(phase) },
             menu: { [weak self] in self?.contextMenu() })
-        for child in [character as Component, balloon, notices, conversation, settings] { adopt(child) }
+        for child in [character as Component, balloon, notices, conversation, settings, viewer] { adopt(child) }
 
         stageHosting = StageHostingView(rootView: Stage(
             props: StageProps(
@@ -114,10 +115,12 @@ final class RootComponent: Component {
         hotKey.onPress = { [weak self] in self?.deliver(.hotKeyPressed) }
         conversation.panel.delegate = windows
         settings.panel.delegate = windows
+        viewer.panel.delegate = windows
         windows.willClose = { [weak self] window in
             guard let self else { return }
             if window === self.conversation.panel { self.conversation.dispatch(.conversationCloseRequested) }
             if window === self.settings.panel { self.settings.dispatch(.settingsCloseRequested) }
+            if window === self.viewer.panel { self.viewer.dispatch(.imageViewerCloseRequested) }
         }
         windows.didChangeKey = { [weak self] window, isKey in
             guard let self else { return }
@@ -291,6 +294,7 @@ final class RootComponent: Component {
         appliedProps = props
         conversation.render(props.conversation)
         settings.render(props.settings)
+        viewer.render(props.viewer, visible: visibleFrame)
         menuBar.props = props.menu
     }
 
@@ -544,6 +548,8 @@ final class RootComponent: Component {
             settings.panel.orderOut(nil)
         case .openLink(let url):
             NSWorkspace.shared.open(url)
+        case .fetchImage(let id):
+            fetchImage(id)
         case .terminate:
             NSApp.terminate(nil)
         }
@@ -576,6 +582,20 @@ final class RootComponent: Component {
                 self.socketID = nil
                 self.deliver(.socketClosed(reason))
             }
+        }
+    }
+
+    /// Fetches a picture with the session and hands what came of it back. Without a session there is nothing to
+    /// fetch it with, for now.
+    private func fetchImage(_ id: String) {
+        guard let server = account.serverAddress, let token = account.session()?.token else {
+            deliver(.imageFetched(imageId: id, .unavailable))
+            return
+        }
+        let request = ImageAPI.request(server: server, token: token, imageId: id)
+        Task { [weak self] in
+            let fetch = await ImageFetcher.fetch(request, imageId: id)
+            self?.deliver(.imageFetched(imageId: id, fetch))
         }
     }
 

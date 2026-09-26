@@ -105,6 +105,11 @@ public struct UIState {
     var noticesHidden = false
     var seenNoticeIds: Set<String> = []
 
+    /// The pictures fetched for the balloon and the history, until the owner logs out (ADR 0045).
+    public internal(set) var images = ImageShelf()
+    /// The picture opened large, while its window is out.
+    public internal(set) var viewedImage: String?
+
     public var conversation: ConversationState { session.conversation }
 
     /// The owner is reading the history: the window is out, unfolded and the key one. What they see there is read,

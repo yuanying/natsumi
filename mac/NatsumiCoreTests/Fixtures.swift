@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 @testable import NatsumiCore
 
 /// Server envelopes as the server writes them, built from plain dictionaries so the tests exercise real decoding.
@@ -117,4 +119,48 @@ extension MessageTime {
         calendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!
         return MessageTime(now: parseTimestamp("2026-09-22T06:00:00Z")!, calendar: calendar)
     }()
+}
+
+extension Fixture {
+    /// A picture she attached, as the server lists it (client-contract「会話の画像」): made-up values, with its size
+    /// when the server could read it.
+    static func image(_ id: String, width: Int? = nil, height: Int? = nil, bytes: Int = 946_870) -> [String: Any] {
+        var image: [String: Any] = ["imageId": id, "mimeType": "image/png", "bytes": bytes]
+        if let width { image["width"] = width }
+        if let height { image["height"] = height }
+        return image
+    }
+
+    /// `message` with pictures attached.
+    static func message(_ id: String, text: String = "猫を描いてみました。", images: [[String: Any]]) -> [String: Any] {
+        var payload = message(id, text: text, expression: "happy")
+        payload["images"] = images
+        return payload
+    }
+
+    /// `approval` with pictures attached to the post.
+    static func approval(_ id: String, images: [[String: Any]]) -> [String: Any] {
+        var payload = approval(id)
+        payload["images"] = images
+        return payload
+    }
+
+    /// A PNG of one flat color, made here so that nothing real is decoded.
+    static func png(width: Int, height: Int) -> Data {
+        let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(red: 1, green: 0.8, blue: 0.2, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let data = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        CGImageDestinationFinalize(destination)
+        return data as Data
+    }
+
+    /// A picture as it comes back from `GET /v1/images/<imageId>`, decoded.
+    static func loaded(_ id: String, width: Int = 40, height: Int = 20) -> LoadedImage {
+        LoadedImage(imageId: id, data: png(width: width, height: height))!
+    }
 }

@@ -113,10 +113,12 @@ public struct Approval: Equatable, Sendable {
     public let reason: ApprovalReason
     /// Oldest first.
     public let history: [ApprovalPastDraft]
+    /// The pictures that go with the post, in the order natsumi wrote them; empty when there are none.
+    public let images: [ShownImage]
 
     public init(
         approvalId: String, revision: Int, createdAt: Date?, expiresAt: Date?, target: ApprovalTarget, text: String,
-        expression: Expression?, reason: ApprovalReason, history: [ApprovalPastDraft]
+        expression: Expression?, reason: ApprovalReason, history: [ApprovalPastDraft], images: [ShownImage] = []
     ) {
         self.approvalId = approvalId
         self.revision = revision
@@ -127,6 +129,7 @@ public struct Approval: Equatable, Sendable {
         self.expression = expression
         self.reason = reason
         self.history = history
+        self.images = images
     }
 }
 
@@ -180,6 +183,7 @@ extension Approval: Decodable {
         let expression: String?
         let reason: Reason?
         let history: [Draft]?
+        let images: Lossy<ShownImage>?
     }
 
     public init(from decoder: Decoder) throws {
@@ -201,7 +205,8 @@ extension Approval: Decodable {
                 verdict: wire.reason?.verdict.flatMap(ApprovalVerdict.init(rawValue:)),
                 issues: (wire.reason?.issues ?? []).map(\.issue),
                 placementOdds: odds.map { ApprovalPlacementOdds(thread: $0.thread, channel: $0.channel) }),
-            history: (wire.history ?? []).map { ApprovalPastDraft(text: $0.text, issues: ($0.issues ?? []).map(\.issue)) })
+            history: (wire.history ?? []).map { ApprovalPastDraft(text: $0.text, issues: ($0.issues ?? []).map(\.issue)) },
+            images: wire.images?.elements ?? [])
     }
 }
 

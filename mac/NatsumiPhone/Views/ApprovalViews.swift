@@ -129,6 +129,9 @@ struct ApprovalDetailView: View {
                     }
                     section("返信先") { target }
                     section("下書き") { draft }
+                    if !props.images.isEmpty || props.imagesNote != nil {
+                        section("一緒に送る画像") { images }
+                    }
                     section("本人に回った理由") { reason }
                     if !props.history.isEmpty {
                         section("前の突き返し") {
@@ -214,6 +217,21 @@ struct ApprovalDetailView: View {
                     .lineSpacing(6)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(16)
+    }
+
+    /// The pictures that go with the post while it waits, or how many there were once it has closed.
+    @ViewBuilder
+    private var images: some View {
+        Group {
+            if let note = props.imagesNote {
+                Text(note).font(Comic.font(13)).foregroundStyle(Comic.pageFaint)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    ImageStripView(tiles: props.images, spacing: 8) { sinks.approvalImages(.imageTapped(imageId: $0)) }
+                }
             }
         }
         .padding(16)

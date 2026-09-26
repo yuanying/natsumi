@@ -18,7 +18,9 @@ struct HistoryView: View {
                 // bottom. A row is in sight when half of it is on the screen, not when it is merely drawn.
                 VStack(spacing: 14) {
                     ForEach(history.rows) { row in
-                        HistoryRowView(props: row, avatar: history.avatar)
+                        HistoryRowView(props: row, avatar: history.avatar) {
+                            sinks.historyImages(.imageTapped(imageId: $0))
+                        }
                             .onScrollVisibilityChange(threshold: 0.5) { isVisible in
                                 sinks.historyRows(.historyRowVisibilityChanged(messageId: row.messageId, isVisible: isVisible))
                             }
@@ -67,6 +69,8 @@ struct HistoryView: View {
 struct HistoryRowView: View {
     let props: HistoryRowProps
     let avatar: AvatarArt
+    /// A small picture in the row was tapped.
+    let openImage: (String) -> Void
 
     var body: some View {
         if let face = props.face {
@@ -85,6 +89,11 @@ struct HistoryRowView: View {
                             .font(Comic.font(15))
                             .lineSpacing(6)
                             .textSelection(.enabled)
+                        // The pictures she attached, small, at sizes fixed before they come (ADR 0045).
+                        if !props.images.isEmpty {
+                            ImageStripView(tiles: props.images, spacing: 6, open: openImage)
+                                .padding(.top, 4)
+                        }
                     }
                     .foregroundStyle(Comic.ink)
                     .padding(.horizontal, 14)

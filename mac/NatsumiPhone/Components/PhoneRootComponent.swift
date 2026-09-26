@@ -21,6 +21,7 @@ final class PhoneRootComponent: PhoneComponent {
     private let settings = SettingsComponent()
     private let approvals = ApprovalsComponent()
     private let approval = ApprovalComponent()
+    private let viewer = ImageViewerComponent()
 
     private var pending: [PhoneEvent] = []
     private var draining = false
@@ -39,13 +40,15 @@ final class PhoneRootComponent: PhoneComponent {
         adopt(settings)
         adopt(approvals)
         adopt(approval)
+        adopt(viewer)
         model.sinks = ScreenSinks(
             login: login.sink, main: main.sink, status: main.status.sink, header: main.header.sink,
             notices: main.notices.sink, balloon: main.balloon.sink, input: main.input.sink,
             failures: main.failures.sink, historyRows: history.rows.sink, historyInput: history.input.sink,
             historyOutgoing: history.outgoing.sink, settings: settings.buttons.sink, approvalsEntry: main.approvals.sink,
             approvalRows: approvals.rows.sink, approval: approval.sink, approvalPlacement: approval.placement.sink,
-            approvalActions: approval.actions.sink, approvalEditor: approval.editor.sink)
+            approvalActions: approval.actions.sink, approvalEditor: approval.editor.sink,
+            historyImages: history.images.sink, approvalImages: approval.images.sink, viewer: viewer.sink)
     }
 
     /// Everything the tree is touched from outside with.
@@ -178,6 +181,8 @@ final class PhoneRootComponent: PhoneComponent {
             tidy(value)
         case .openLink(let url):
             UIApplication.shared.open(url)
+        case .fetchImage(let id):
+            fetchImage(id)
         case .loadAvatar:
             let bundled = Bundle.main.resourceURL?.appendingPathComponent("Avatars/natsumi", isDirectory: true)
             deliver(.avatarLoaded(AvatarLoader.resolve(candidates: bundled.map { [$0] } ?? [])))
@@ -224,6 +229,20 @@ final class PhoneRootComponent: PhoneComponent {
         }
     }
 
+    /// Fetches a picture with the session and hands what came of it back. Without a session there is nothing to
+    /// fetch it with, for now.
+    private func fetchImage(_ id: String) {
+        guard let server = account.serverAddress, let token = account.session()?.token else {
+            deliver(.imageFetched(imageId: id, .unavailable))
+            return
+        }
+        let request = ImageAPI.request(server: server, token: token, imageId: id)
+        Task { [weak self] in
+            let fetch = await ImageFetcher.fetch(request, imageId: id)
+            self?.deliver(.imageFetched(imageId: id, fetch))
+        }
+    }
+
     private func startLogin() {
         guard let server = account.serverAddress else { return }
         Task { [weak self] in
@@ -261,6 +280,9 @@ struct ScreenSinks {
     var approvalPlacement: PhoneEventSink = .ignored
     var approvalActions: PhoneEventSink = .ignored
     var approvalEditor: PhoneEventSink = .ignored
+    var historyImages: PhoneEventSink = .ignored
+    var approvalImages: PhoneEventSink = .ignored
+    var viewer: PhoneEventSink = .ignored
 }
 
 /// SwiftUI's window group cannot be handed a value the way a hosting view can, so it reads the props it was last

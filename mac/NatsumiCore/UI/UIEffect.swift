@@ -51,5 +51,7 @@ public enum UIEffect: Equatable, Sendable {
     case hideSettings
     /// Open a link in the default browser (ADR 0038).
     case openLink(URL)
+    /// Fetch a picture with the session (`GET /v1/images/<imageId>`) and answer with `.imageFetched`.
+    case fetchImage(imageId: String)
     case terminate
 }

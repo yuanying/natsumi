@@ -198,6 +198,10 @@ private struct MessageRow: View {
                 runs: props.runs, font: Comic.nsFont(13), color: props.isOwner ? .labelColor : .black, lineSpacing: 3,
                 isSelectable: true, sink: send)
                 .fixedSize(horizontal: false, vertical: true)
+            if !props.images.isEmpty {
+                ImageStripView(tiles: props.images, spacing: 6) { send(.imageClicked(imageId: $0)) }
+                    .padding(.top, 4)
+            }
         }
         .foregroundStyle(props.isOwner ? Color.primary : Comic.ink)
         .padding(.horizontal, 12)

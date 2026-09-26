@@ -8,20 +8,23 @@ final class BalloonComponent: Component {
     private let text = Component(name: "balloon.text")
     private let close = Component(name: "balloon.close")
     private let historyLink = Component(name: "balloon.historyLink")
+    /// The small pictures under the reply, each of which opens large.
+    private let images = Component(name: "balloon.images")
 
     init() {
         super.init(name: "balloon")
         adopt(text)
         adopt(close)
         adopt(historyLink)
+        adopt(images)
     }
 
     func view(_ props: BalloonProps) -> BalloonView {
-        BalloonView(props: props, text: text.sink, close: close.sink, historyLink: historyLink.sink)
+        BalloonView(props: props, text: text.sink, close: close.sink, historyLink: historyLink.sink, images: images.sink)
     }
 
     /// The same drawing, for measuring only: nothing it shows is meant to be acted on.
     func probe(_ props: BalloonProps) -> BalloonView {
-        BalloonView(props: props, text: .ignored, close: .ignored, historyLink: .ignored)
+        BalloonView(props: props, text: .ignored, close: .ignored, historyLink: .ignored, images: .ignored)
     }
 }

@@ -44,6 +44,8 @@ final class MainComponent: PhoneComponent {
 final class HistoryComponent: PhoneComponent {
     /// The rows, which report coming into sight and going out of it.
     let rows = PhoneComponent(name: "history.rows")
+    /// The small pictures in the rows, each of which opens large.
+    let images = PhoneComponent(name: "history.images")
     /// The text field and the send button under the history.
     let input = PhoneComponent(name: "history.input")
     /// The messages not recorded yet, each with its × when it failed.
@@ -52,6 +54,7 @@ final class HistoryComponent: PhoneComponent {
     init() {
         super.init(name: "history")
         adopt(rows)
+        adopt(images)
         adopt(input)
         adopt(outgoing)
     }
@@ -78,12 +81,23 @@ final class ApprovalComponent: PhoneComponent {
     let actions = PhoneComponent(name: "approval.actions")
     /// The draft as a text field while the owner edits it, with its buttons.
     let editor = PhoneComponent(name: "approval.editor")
+    /// The pictures that go with the post, each of which opens large.
+    let images = PhoneComponent(name: "approval.images")
 
     init() {
         super.init(name: "approval")
         adopt(placement)
         adopt(actions)
         adopt(editor)
+        adopt(images)
+    }
+}
+
+/// A picture opened large over everything, with 「閉じる」 (ADR 0045).
+@MainActor
+final class ImageViewerComponent: PhoneComponent {
+    init() {
+        super.init(name: "imageViewer")
     }
 }
 
