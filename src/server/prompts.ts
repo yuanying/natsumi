@@ -68,6 +68,21 @@ ${workspace}
 - slack_mention: Slack であなたへのメンションか DM（via が dm）が届きました。channel・from・text がその発言、context が直前の流れ、file がそのチャンネルの記録です。reference はその発言を指す参照で、返すときはそのまま写します。画像が付いていれば一緒に届きます。Slack での振る舞い方は /manual/slack.md を読みます。
 - nightly_review: 一日の終わりの振り返りです。instructions に従います。本人には何も送りません。`;
 
+/**
+ * The system prompt from its parts, each already read and stripped of its opening heading: the base instruction, the
+ * personality, the always-memory, the handoff, and what the last commit put back. Sections stand steadiest first, so
+ * a change to one leaves as much of the prefix as possible in front of it. Pure, so that the loop and the replay of
+ * past sessions (ADR 0047) build the same prompt from the same memory.
+ */
+export function composeSystemPrompt(parts: { workspace: boolean; personality: string; always: string; handoff: string; notice?: string }): string {
+  const instruction = BASE_INSTRUCTION(parts.workspace ? WORKSPACE_SECTION : NO_WORKSPACE_SECTION);
+  let prompt = parts.personality ? `${instruction}\n\n# 性格・話し方\n\n${parts.personality}` : instruction;
+  if (parts.always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${parts.always}`;
+  if (parts.handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${parts.handoff}`;
+  if (parts.notice) prompt += `\n\n# 記憶の検査\n\n${parts.notice}`;
+  return prompt;
+}
+
 // ── On the prefix: the tool descriptions, in the order `createLoopTools` registers them ──
 
 /**
