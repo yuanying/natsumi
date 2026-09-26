@@ -84,8 +84,8 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
 
 例外は画像の生成です（[ADR 0044](adr/0044-drawing-with-sdctl-and-posting-images.md)）。
 
-- 作業環境の sdctl は、環境変数 `SDCTL_URL` の指す loopback の中継（同じ Pod の出口の proxy）にだけ、平文の HTTP で話します。名前解決は要りません。
+- 作業環境の sdctl は、image の `/etc/sdctl/config.yaml` の指す loopback の中継（`127.0.0.1:17860`、同じ Pod の出口の proxy）にだけ、平文の HTTP で話します。名前解決は要りません。
 - 中継は行き先の画像生成サーバーを 1 つに固定し、TLS の証明書を確かめ、`Authorization: Bearer` の token を付けて送ります。
   通すのは生成（txt2img・img2img）、進み具合、一覧の GET と設定の読み取り（GET options）だけで、設定の書き換え（POST options）は断ります。
 - **token は中継（proxy のコンテナ）だけが持ちます。** 作業環境にも natsumi のサーバーにも渡しません。なつみは中継の通す API の外で、画像生成サーバーやその前の認証を使えません。
-- 中継・token・`SDCTL_URL` は環境の設定（公開しないリポジトリ）にあります。Docker（`compose.yaml`）の作業環境には中継が無いので、sdctl はつながらずに失敗します。
+- 中継・token と、コンテナのシェル向けの `SDCTL_URL` は環境の設定（公開しないリポジトリ）にあります。Docker（`compose.yaml`）の作業環境には中継が無いので、sdctl はつながらずに失敗します。
