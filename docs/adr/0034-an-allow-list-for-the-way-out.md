@@ -1,7 +1,7 @@
 # 0034. 出口を許可リストで絞る
 
 - Date: 2026-09-24
-- Status: Accepted（出口の proxy に、loopback で平文の HTTP を受け、行き先を固定して token を付ける画像生成の中継を足す点は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加）
+- Status: Accepted（出口の proxy に、loopback で平文の HTTP を受け、行き先を固定して token を付ける画像生成の中継を足す点は [ADR 0044](0044-drawing-with-sdctl-and-posting-images.md) で追加。作業環境と sshd でログインするユーザーの UID に、GitHub の ssh への出口と名前解決を足すことは [ADR 0073](0073-skills-from-the-owner-and-her-own.md) で一部覆す）
 
 ## Context
 
