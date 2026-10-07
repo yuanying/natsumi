@@ -77,6 +77,22 @@ export class SlackWorkspace {
     await this.idle();
   }
 
+  /**
+   * Records natsumi's own post as the dove sends it (ADR 0074), in turn with what Slack sends, so a result can name its
+   * line at once. Slack telling of it afterwards finds it recorded and adds no line. Before the connection knows who
+   * she is, nothing is recorded, and Slack's own telling records it.
+   */
+  recordOwn(channelId: string, post: { ts: string; threadTs?: string; text: string }): Promise<void> {
+    const recorded = this.chain.then(async () => {
+      const self = this.self;
+      if (this.stopped || !self) return;
+      await this.receive(await this.channel(channelId), { ts: post.ts, ...(post.threadTs ? { threadTs: post.threadTs } : {}),
+        user: self.userId, ...(self.botId ? { botId: self.botId } : {}), text: post.text, files: [] }, { live: true, mayRaise: false });
+    });
+    this.chain = recorded.catch(() => undefined);
+    return recorded;
+  }
+
   /** Resolves once everything received so far has been handled. */
   async idle(): Promise<void> {
     let current: Promise<void>;

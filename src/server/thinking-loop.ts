@@ -14,7 +14,7 @@ import { STATE_DIRECTORY } from './data-directory.ts';
 import { DOVE_NAME } from './dove.ts';
 import type { A2AConfig, CuratorConfig, LoopConfig } from './config.ts';
 import { ConversationStore, type EventKind, type EventState, type MessageRow,
-  type RotationRow, type Transaction } from './conversation-store.ts';
+  type RotationRow } from './conversation-store.ts';
 import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownImage, type ImageLimits, type ShownImage,
   type TakenImage } from './images.ts';
 import { readRouteChoice, writeRouteChoice, writeRouteStatus, type RouteStatus, type RouteView } from './model-routes.ts';
@@ -235,8 +235,9 @@ export interface LoopOptions {
    */
   sources?: SourceEvents;
   /**
-   * The dove (ADR 0040): `ask_agent` with the agent `poppo` goes here rather than to an outside agent, and its answers
-   * come back as `dove-reply` events. Present only when Slack is configured.
+   * The dove (ADR 0040): `ask_agent` with the agent `poppo` goes here rather than to an outside agent. What comes of a
+   * request is told by the sources (ADR 0074); a `dove-reply` event queued before that is still read from here, once.
+   * Present only when Slack is configured.
    */
   dove?: DoveEvents;
   notifyLimits?: { perTurn: number; perHour: number };
@@ -283,14 +284,11 @@ export interface LoopUploads {
   images(messageId: string): Promise<ImageContent[]>;
 }
 
-/** The side of the dove the loop talks to: a request, and the line of each answer. */
+/** The side of the dove the loop talks to: a request, and the line of an answer queued as an event before ADR 0074. */
 export interface DoveEvents {
   ask(message: string): ToolOutcome | Promise<ToolOutcome>;
   takeEventLine(eventId: string, receivedAt: string): Record<string, unknown>;
 }
-
-/** The kinds of event something outside the loop may raise. */
-export type RaisedKind = 'dove-reply';
 
 type FinishTurn = NonNullable<AgentSession['agent']['finishTurn']>;
 type StopContext = Parameters<FinishTurn>[0];
@@ -716,21 +714,6 @@ export class ThinkingLoop {
   pollAgents(): Promise<void> {
     if (this.unavailable) return Promise.resolve();
     return this.agents.poll();
-  }
-
-  /**
-   * An event raised from outside the loop, such as the dove's answer (ADR 0040). The caller's own rows are written in
-   * the event's transaction, so neither is ever recorded without the other. It waits behind
-   * whatever is running: it is queued, not steered in.
-   */
-  raise(kind: RaisedKind, record: (eventId: string, transaction: Transaction) => void): void {
-    const eventId = this.store.transaction(transaction => {
-      const id = this.store.insertEvent(kind);
-      record(id, transaction);
-      return id;
-    });
-    this.queue.push(eventId);
-    this.pump();
   }
 
   /**
@@ -1474,6 +1457,7 @@ export class ThinkingLoop {
     const timeZone = this.options.loop.timeZone;
     const raisedAt = Date.parse(row.created_at);
     if (row.kind === 'agent-reply') return this.agents.takeEventLine(eventId, row.created_at);
+    // Neither is made any more (ADR 0069, ADR 0074): one queued before the upgrade is handed over once, as it was.
     if (row.kind === 'dove-reply') return this.options.dove?.takeEventLine(eventId, row.created_at) ?? { type: 'agent_reply', received_at: row.created_at, agent: DOVE_NAME };
     if (row.kind === 'sources-updated') return this.options.sources?.eventLine(eventId, row.created_at) ?? { type: 'sources_updated', received_at: row.created_at };
     // Only an event recorded before ADR 0050 and closed by its migration has this kind; it is never made into a line.

@@ -912,4 +912,30 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX uploads_unsent ON uploads (created_at) WHERE message_id IS NULL;
     `,
   },
+  {
+    version: 29,
+    name: 'the dove\'s requests and results in sources',
+    sql: `
+      -- Where each request to the dove was put under /sources/agents/poppo as it was taken (ADR 0074), as the workspace
+      -- names it: request.json is there, and its results go beside it. NULL for one taken before they were kept, which
+      -- gets its directory when its next result comes.
+      ALTER TABLE dove_posts ADD COLUMN place TEXT;
+
+      -- What became of each request, in the order it came: one line each of the directory's results.jsonl, written
+      -- again from here, and told to natsumi by an attention. told is 1 once the line is written and the attention
+      -- recorded, in the same transaction as the attention, so a result is told once however often it is written.
+      -- posted_ts is natsumi's own post when one was sent with a ts (an upload has none), to name its line in the record.
+      CREATE TABLE dove_results (
+        result_id INTEGER PRIMARY KEY,
+        post_id TEXT NOT NULL REFERENCES dove_posts (post_id),
+        result TEXT NOT NULL CHECK (result IN ('sent', 'reacted', 'to_owner', 'returned', 'rejected', 'expired', 'not_sent')),
+        text TEXT NOT NULL,
+        posted_ts TEXT,
+        told INTEGER NOT NULL DEFAULT 0 CHECK (told IN (0, 1)),
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX dove_results_by_post ON dove_results (post_id, result_id);
+      CREATE INDEX dove_results_untold ON dove_results (told) WHERE told = 0;
+    `,
+  },
 ];
