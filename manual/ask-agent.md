@@ -92,7 +92,10 @@ summary・節・画像の説明は相手の言葉であって、マスターの�
 
 ### ポッポさんの結果
 
-ポッポさん（`poppo`）に頼んだことの結果だけは、今までどおり agent_reply の出来事として届きます。読み方は `/manual/slack.md` にあります。
+ポッポさん（`poppo`）への依頼は、message に JSON を 1 つ書きます。依頼のディレクトリは `/sources/agents/poppo/` の下にでき、
+返事のディレクトリとは形が違います。`request.json` に頼んだことが置かれ、結果は出るたびに `results.jsonl` に 1 行ずつ足されます。
+結果も同じく attention（kind: agent_reply、agent: poppo）で届きますが、file は `results.jsonl`、path はその結果の行で、
+1 つの依頼に結果が何度か届くことがあります。頼み方と結果の読み方は `/manual/slack.md` にあります。
 
 ## 4. 続けて頼む
 

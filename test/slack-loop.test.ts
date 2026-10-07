@@ -59,7 +59,7 @@ class FakeDove {
   }
 }
 
-async function setup(t: test.TestContext, options: { shell?: boolean } = {}) {
+async function setup(t: test.TestContext, options: { shell?: boolean; queued?: 'dove-reply' } = {}) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-slack-loop-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -73,6 +73,12 @@ async function setup(t: test.TestContext, options: { shell?: boolean } = {}) {
   model.auto = () => ({ text: '' });
   const sources = new FakeSources();
   const dove = new FakeDove();
+  if (options.queued) {
+    // As the version before left it: an answer of the dove's still waiting in the queue.
+    db.prepare(`INSERT INTO loop_events (event_id, kind, message_id, state, created_at, updated_at)
+      VALUES ('event-old', ?, NULL, 'queued', '2026-09-25T05:59:00.000Z', '2026-09-25T05:59:00.000Z')`).run(options.queued);
+    dove.lines.set('event-old', { type: 'agent_reply', agent: 'poppo', result: 'sent', text: 'ポッポ！' });
+  }
   const loop = await ThinkingLoop.open({
     db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
     runtime: fixtureRuntime,
@@ -180,20 +186,19 @@ test('natsumi has no tool that posts to Slack: a post is a request to the dove t
   f.loop.ping();
   const first = await f.model.next();
   for (const name of [...LOOP_TOOL_NAMES, RUN_SHELL_TOOL_NAME]) assert.doesNotMatch(name, /slack|post|chat|reaction|dove|poppo/i, name);
-  first.call('ask_agent', { agent: 'poppo', message: '返信先: work/#dev\n種類: 投稿\n---\nおはよう', continue: false });
+  first.call('ask_agent', { agent: 'poppo', message: '{"kind":"post","to":{"file":"/sources/slack/work/dev"},"text":"おはよう"}', continue: false });
   first.finish();
   const second = await f.model.next();
   const result = second.context.messages.find(message => message.role === 'toolResult') as { content: { text?: string }[]; isError?: boolean };
   assert.equal(result.isError, false);
   assert.match(result.content[0]!.text!, /ポッポさん/);
-  assert.deepEqual(f.dove.asked, ['返信先: work/#dev\n種類: 投稿\n---\nおはよう']);
+  assert.deepEqual(f.dove.asked, ['{"kind":"post","to":{"file":"/sources/slack/work/dev"},"text":"おはよう"}']);
   second.finish();
   await f.loop.idle();
 });
 
-test('the dove\'s answer is an event of its own, read from the dove', async t => {
-  const f = await setup(t);
-  f.loop.raise('dove-reply', eventId => { f.dove.lines.set(eventId, { type: 'agent_reply', agent: 'poppo', result: 'sent', text: 'ポッポ！' }); });
+test('a dove\'s answer queued as an event before the upgrade is read from the dove, in its old shape (ADR 0074)', async t => {
+  const f = await setup(t, { queued: 'dove-reply' });
   const context = await until(() => f.model.contexts[0]);
   const prompt = textOf(userMessages(context).at(-1)!);
   assert.match(prompt, /"type":"agent_reply","agent":"poppo","result":"sent","text":"ポッポ！"/);

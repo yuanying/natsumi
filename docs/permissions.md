@@ -129,8 +129,8 @@ sshd でログインする本人が skill の clone を `git pull` するとき�
 
 読み取り専用で見せるものもあります。
 
-- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
-  [ADR 0069](adr/0069-agent-replies-as-files-in-sources.md)）。外のエージェントが返した画像も `/sources/agents/` の下にあり、
+- `/sources`: サーバーが書く読みもの（Slack のチャンネルや、外のエージェントの返事、ポッポさんへの依頼とその結果）。data directory の `sources/` です（[ADR 0039](adr/0039-slack-as-files-and-a-scored-dove.md)、
+  [ADR 0069](adr/0069-agent-replies-as-files-in-sources.md)、[ADR 0074](adr/0074-asking-poppo-in-json-and-hearing-back-in-sources.md)）。外のエージェントが返した画像も `/sources/agents/` の下にあり、
   なつみは `reply_to_mac` でそこから見せられます（サーバーが写しを取って見せます）。
 - `/sources/uploads`: 本人がチャットでメッセージに添えたファイル（[ADR 0071](adr/0071-attaching-files-to-a-chat-message.md)）。ディレクトリは 0750、ファイルは 0640 で、
   作業環境のグループは読めるだけです。渡されたときのまま残り、なつみからは書き換えも削除もできません。サーバーも送ったものは消しません。

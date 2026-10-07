@@ -91,6 +91,9 @@ test('the schema keeps the conversation shown to the owner and only references t
       if (table === 'dove_posts' && column === 'text') continue;
       // The dove's answer waits here until it is handed to Pi, and is emptied then, like an agent's.
       if (table === 'dove_replies' && column === 'text') continue;
+      // The dove's words on what became of a request, which its results.jsonl under /sources is written again from on
+      // every result (ADR 0074). They are the server's, as Slack's record is Slack's; natsumi reads them from the file.
+      if (table === 'dove_results' && column === 'text') continue;
       assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response|thinking|tool_calls?)$/i, `${table}.${column}`);
     }
   }

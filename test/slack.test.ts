@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { SLACK_DEFAULTS } from '../src/server/config.ts';
-import { parseReference } from '../src/server/dove-request.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { SlackArchive } from '../src/server/slack-archive.ts';
 import { SlackWorkspace } from '../src/server/slack.ts';
@@ -314,17 +313,32 @@ test('a reply to a thread whose parent was never recorded fetches the parent int
   assert.equal(f.told[0]!.path, '.[1]');
 });
 
-test('a reference written from a line\'s time and speaker finds that message, as the dove matches it', async t => {
+test('a line named by its file and path, as an attention gives them, is the message the dove answers (ADR 0074)', async t => {
   const f = await setup(t);
-  f.slack.emit(message({ text: '返したい発言', ts: tsAt(AT) }));
+  f.slack.emit(message({ text: '<@UBOT> 返したい発言', ts: tsAt(AT) }));
   await f.workspace.idle();
-  const [line] = await f.lines('work/dev/2026-09-25.jsonl');
-  const reference = parseReference(`work/#dev ${line!.at} ${line!.from}`);
-  assert.ok(typeof reference !== 'string', String(reference));
-  const found = f.archive.resolve(reference);
+  const [told] = f.told;
+  const found = f.archive.resolve({ file: told!.file, path: told!.path! });
   assert.ok(found.ok, JSON.stringify(found));
   assert.equal(found.target.message?.ts, tsAt(AT));
-  assert.equal(found.target.message?.text, '返したい発言');
+  assert.equal(found.target.message?.at, '2026-09-25 14:32:05');
+  assert.equal(found.target.message?.text, '@natsumi 返したい発言');
+  assert.deepEqual(f.archive.lineOf('work', 'C1', tsAt(AT)), { file: told!.file, path: told!.path });
+});
+
+test('her own post is recorded as it is sent, under her own name, and Slack telling of it after adds no line', async t => {
+  const f = await setup(t);
+  const parent = tsAt(AT);
+  f.slack.emit(message({ text: '相談です', ts: parent }));
+  await f.workspace.idle();
+  const ts = tsAt('2026-09-25T05:40:00Z');
+  await f.workspace.recordOwn('C1', { ts, threadTs: parent, text: 'お答えします' });
+  assert.deepEqual((await f.lines('work/dev/2026-09-25.jsonl'))[1], { at: '2026-09-25 14:40:00', from: 'natsumi', mine: true, reply_to: 0, text: 'お答えします' });
+  assert.deepEqual(f.archive.lineOf('work', 'C1', ts), { file: '/sources/slack/work/dev/2026-09-25.jsonl', path: '.[1]' });
+  f.slack.emit(message({ user: 'UBOT', bot_id: 'BBOT', text: 'お答えします', ts, thread_ts: parent }));
+  await f.workspace.idle();
+  assert.equal((await f.lines('work/dev/2026-09-25.jsonl')).length, 2);
+  assert.equal(f.told.length, 0, 'her own post is never news to her');
 });
 
 test('day files written in Markdown before are written again as JSON Lines from every row, and removed', async t => {

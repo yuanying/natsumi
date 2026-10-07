@@ -344,9 +344,10 @@ async function clearReply(directory: string): Promise<void> {
 
 /**
  * Makes a directory `<agent>/<time>-<mark>` with what `fill` writes into it. It is filled beside its place under a
- * name git leaves out and moved into place whole, so it is never seen half-written.
+ * name git leaves out and moved into place whole, so it is never seen half-written. The dove's requests are made here
+ * too (ADR 0074).
  */
-async function makeReplyDirectory(directory: string, agent: string, at: number, fill: (temporary: string) => Promise<void>):
+export async function makeReplyDirectory(directory: string, agent: string, at: number, fill: (temporary: string) => Promise<void>):
   Promise<RequestPlace> {
   const parent = join(directory, agent);
   await mkdir(parent, { recursive: true, mode: 0o750 });

@@ -676,7 +676,7 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   1 枚 10 MiB・1 回 8 枚までを、返事の `images/` に置き、`.natsumi/images/` にも写しを残します（migration 19）。
   `README.md` に置いた画像と説明、取らなかった画像とその理由を書きます。取れなくても文章の返事はそのまま届けます。
   natsumi は `reply_to_mac` の `images` に、`/sources/agents/` の下の画像をそのまま並べられます。
-- Slack の送信役（ポッポさん）の結果は、今までどおり `agent_reply` の出来事で届けます。
+- Slack の送信役（ポッポさん）の依頼と結果も `sources/agents/poppo/` に置き、同じ attention で知らせます（下の「Slack に投稿する（ポッポさん）」）。
 - 移行: これより前の版で作られ、まだ natsumi に渡していない `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。
   待っている依頼は、新しい版で取りに行き、`sources/agents/` に返事のためのディレクトリを作って置きます（頼んだことの記録はありません）。
 - 相手とのやり取りは Mac の会話には出ません。本人に伝えることは natsumi が返事や知らせで伝えます。
@@ -785,8 +785,21 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
 natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信役のポッポさん（`poppo`）に頼みます
 （[ADR 0040](docs/adr/0040-the-dove-sends-what-the-judge-passes.md)）。ポッポさんはサーバーの中にいて、Slack の設定があるときだけ頼める相手の一覧に載ります。
 
-- 依頼は見出し付きのテキスト（`返信先`・`種類`・`表情`、`---` の後が本文）です。書き方は natsumi 向けのマニュアル [manual/slack.md](manual/slack.md) にあります。
-  返信先はファイルの発言の参照で、サーバーが記録と突き合わせます。形の崩れ、記録に無い参照、機械的な検査に当たる本文は、その場で断ります。
+- 依頼は `ask_agent` の `message` に書く JSON のオブジェクト 1 つです（`kind`・`to`・`face`・`text`・`emoji`・`images`、
+  [ADR 0074](docs/adr/0074-asking-poppo-in-json-and-hearing-back-in-sources.md)）。書き方は natsumi 向けのマニュアル [manual/slack.md](manual/slack.md) にあります。
+  返す先の `to` は、natsumi が Slack の記録を読むときと同じ `{file, path}` で、チャンネルのディレクトリならチャンネルそのものに、
+  日付のファイルと行の `jq -s` のパスならその発言に返します。サーバーが記録と突き合わせます。
+  JSON として読めないもの（前の見出し付きの形を含む）、欄の過不足、記録に無い行、機械的な検査に当たる本文は、どの欄をどう直すかを添えてその場で断ります。
+- 受け付けた依頼は、data directory の `sources/agents/poppo/<受け付けた UTC の日時>-<短い印>/` に置きます。
+  `request.json` は natsumi が書いた欄と、頼んだ時刻、返す先の手がかり（チャンネル、発言の時刻・発言者・本文の書き出し）です。
+  結果（`sent`・`reacted`・`to_owner`・`returned`・`rejected`・`expired`・`not_sent`）は出るたびに `results.jsonl` に 1 行ずつ足し、
+  `sources_updated` の attention（kind `agent_reply`、agent `poppo`、`state`・`summary`（ポッポさんの言葉）・頼んだことの先頭の行・頼んだ時刻）で知らせます。
+  attention の `file`・`path` は `results.jsonl` のその行です。`sent` で投稿の ts が分かるときは、送った時点で Slack の記録にその投稿を書き、
+  `slack_file`・`slack_path` でその行を指します（画像付きの投稿は Slack が ts を返さないので付きません）。
+  結果は `.natsumi/state.sqlite` の `dove_results`（migration 29）に記録してからファイルに書き、attention を出します。
+  途中でサーバーが止まっても、次の起動で書いて知らせます。`sources.git` の履歴には `request.json` と `results.jsonl` が入ります。
+- 移行: 版を上げた時点で本人の承認を待っている依頼は、結果が出たときに記録から `request.json` を組み立ててディレクトリを作ります（`note` にそう書きます）。
+  まだ natsumi に渡していないポッポさんの `agent_reply` の出来事は、前の形のまま 1 度だけ渡します。新しくは作りません。
 - 下書きは判定にかけます（[ADR 0059](docs/adr/0059-two-judges-side-by-side-and-fewer-issues.md)）。問いは英語で、問題点ごとの点数（本人に代わる約束・期限、隠しごとの匂わせ、事実と違う説明、同意の捏造、私的な事情）と、
   置き場所を聞きます。判定に見せるのは下書き・今の時刻・返信先と、チャンネル直下と返信先のスレッドのそれぞれ最新の発言（今の時点まで）だけです。
   - 判定は logprobs と Jev の 2 つあり、有効なものを同時に掛けて、両方の結果を残します。決めるのは採用する方で、答えが無ければもう一方、両方だめなら判定なしです。
@@ -807,7 +820,7 @@ natsumi は Slack に投稿するツールを持たず、`ask_agent` で送信�
   （例: `slack (work): the custom emoji could not be read (emoji.list: missing_scope, needed emoji:read)`）。
   以前の設定 `slack.reactions`（候補の一覧）は廃止し、書いてあると起動しません。
   標準の絵文字の名前は emoji-datasource（MIT License）から `scripts/slack-emoji-names.ts` で生成した `src/server/slack-emoji-names.ts` です。
-- 投稿には `/work` の画像を付けられます（見出し `画像:`、[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）。
+- 投稿には `/work` の画像を付けられます（欄 `images`、[ADR 0044](docs/adr/0044-drawing-with-sdctl-and-posting-images.md)）。
   - サーバーは `/work` の下（リンクや `..` で外に出るものは断ります）の PNG・JPEG・WebP（中身で見分けます）だけを、`slack.postImages` の上限まで受け付けます。
   - 受け付けた時点で画像を `.natsumi/images/` に写し、ID を付けます。承認に見せるのも Slack に送るのもこの写しで、後で `/work` のファイルが変わっても変わりません。
   - 判定に掛けるのは本文だけです。本文の無い画像だけの投稿は、判定にも承認にも通さずに送り、置き場所は判定なしのときの決まりで決めます。
