@@ -29,12 +29,11 @@ export type RunnerCapture = (command: string) => Promise<Capture>;
 
 export function workspaceReadTool(capture: RunnerCapture) {
   const base = createReadToolDefinition(WORK, { operations: operations(capture) });
-  // Pi's own definition, less its terminal renderers, with natsumi's description. Its prompt snippet and guideline
-  // stay: with a system prompt of natsumi's own, Pi puts neither into it, which the prefix test holds (ADR 0047).
+  // Pi's own definition, less its terminal renderers, prompt snippet and guideline, with natsumi's description. Pi's
+  // guideline says to read any file with it, which this read does not; since Pi 1.0.4 Codemode puts each tool's
+  // guidelines into its declarations, which the prefix test holds (ADR 0047, ADR 0066).
   return defineTool({
     name: base.name, label: base.label, description: READ_DESCRIPTION, parameters: base.parameters,
-    ...(base.promptSnippet ? { promptSnippet: base.promptSnippet } : {}),
-    ...(base.promptGuidelines ? { promptGuidelines: base.promptGuidelines } : {}),
     execute: (id, params, signal, onUpdate, ctx) => {
       // Taken from the workspace's working directory rather than the server's, which Pi would otherwise use.
       const path = posix.resolve(WORK, params.path);
