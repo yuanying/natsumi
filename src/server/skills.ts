@@ -19,6 +19,12 @@ export const OWNER_SKILLS_PLACE = '/skills';
 /** Where the workspace sees her own skills: inside memory, which she writes. */
 export const OWN_SKILLS_PLACE = `/memory/${SKILLS_DIRECTORY}`;
 
+/**
+ * The most characters one skill of hers may hold, all its files together: SKILL.md, its references and its scripts.
+ * Each file keeps memory's own limit as well (ADR 0073).
+ */
+export const SKILL_MAX_CHARS = 100_000;
+
 /** One place skills are loaded from: the server's directory, and the workspace's path for it. */
 export interface SkillPlace { directory: string; shownAs: string; whose: 'owner' | 'own' }
 

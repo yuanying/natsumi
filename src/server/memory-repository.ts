@@ -1,9 +1,10 @@
-import { copyFile, lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { copyFile, lstat, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, join, posix } from 'node:path';
 import { runGit, type GitIdentity } from './git.ts';
 import { DEFAULT_SELF } from './prompts.ts';
 import { findControlStrings, findForeignScript, hasControlCharacters } from './output-checks.ts';
 import { makeSharedDirectory, SHARED_FILE_MODE } from './permissions.ts';
+import { SKILL_MAX_CHARS, SKILLS_DIRECTORY, skillFileProblem } from './skills.ts';
 
 /**
  * Memory as a git repository (ADR 0018): everything natsumi is made of — her memories, the always-memory, her
@@ -509,6 +510,7 @@ export class MemoryRepository {
    * assumes, with nobody told. A rename reaches here as the removal half, and is put back the same way.
    */
   private inspectRemoval(path: string, writer: Writer): string | undefined {
+    if (writer === 'curator' && inSkills(path)) return skillsRefusal(path);
     if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer === 'curator' && inDiary(path)) return `${path} は日記なので、整理係は消すことも動かすこともできません`;
     if (!FIXED_FILES.includes(path as typeof FIXED_FILES[number])) return undefined;
@@ -517,6 +519,7 @@ export class MemoryRepository {
 
   /** Why the changed file may not be committed, or undefined when it may. A removal goes through inspectRemoval. */
   private async inspect(path: string, writer: Writer): Promise<string | undefined> {
+    if (writer === 'curator' && inSkills(path)) return skillsRefusal(path);
     if (writer !== 'curator' && inArchive(path)) return archiveRefusal(path);
     if (writer !== 'curator' && path === INDEX_FILE) {
       return `${path} は記憶の整理係だけが書くファイルなので、あなたは書き換えられません（夜に整理係が書き直します）`;
@@ -535,9 +538,23 @@ export class MemoryRepository {
     try { info = await lstat(join(this.directory, path)); } catch { return undefined; }
     if (info.isSymbolicLink()) return 'symlink は記憶に置けません';
     if (!info.isFile()) return '通常のファイルではありません';
-    if (!path.endsWith('.md')) return '.md 以外のファイルは記憶に置けません';
+    // A skill of hers may carry scripts and data as well, inside its own directory and as text (ADR 0073).
+    const skill = skillDirectoryOf(path);
+    const markdown = path.endsWith('.md');
+    if (!markdown && !inSkills(path)) return '.md 以外のファイルは記憶に置けません';
+    if (!markdown && !(skill && await this.isFile(posixJoin(skill, 'SKILL.md')))) {
+      return `.md 以外のファイルは、skill のディレクトリ（SKILL.md のある ${SKILLS_DIRECTORY}/<名前>/）の中にだけ置けます`;
+    }
     let text: string;
-    try { text = await readFile(join(this.directory, path), 'utf8'); } catch { return '読めないファイルです'; }
+    if (markdown) {
+      try { text = await readFile(join(this.directory, path), 'utf8'); } catch { return '読めないファイルです'; }
+    } else {
+      let bytes: Buffer;
+      try { bytes = await readFile(join(this.directory, path)); } catch { return '読めないファイルです'; }
+      const decoded = textOf(bytes);
+      if (decoded === undefined) return 'テキストのファイル（UTF-8）ではありません。バイナリは置けません';
+      text = decoded;
+    }
     if (text.trim() === '') return '中身が空です';
     if (path === ALWAYS_FILE && [...text].length > this.alwaysMaxChars) {
       return `毎回のプロンプトに入る常時記憶の上限（${this.alwaysMaxChars} 文字）を超えています`;
@@ -548,7 +565,35 @@ export class MemoryRepository {
     if (hasControlCharacters(text)) return '制御文字が含まれています';
     const foreign = findForeignScript(text);
     if (foreign.length > 0) return `日本語以外の文字（${foreign.join(' ')}）が含まれています`;
+    // A skill Pi would not load is one she would never see listed, and never hear why (ADR 0073).
+    if (inSkills(path) && basename(path) === 'SKILL.md') {
+      const problem = skillFileProblem(join(this.directory, path));
+      if (problem) return problem;
+    }
+    // SKILL.md itself is spared, so that the skill's own page never goes back for the files beside it.
+    if (skill && basename(path) !== 'SKILL.md' && await this.charsUnder(skill) > SKILL_MAX_CHARS) {
+      return `skill 全体（${skill}/ の下のファイルの合計）の上限（${SKILL_MAX_CHARS} 文字）を超えています`;
+    }
     return undefined;
+  }
+
+  private async isFile(path: string): Promise<boolean> {
+    try { return (await lstat(join(this.directory, path))).isFile(); } catch { return false; }
+  }
+
+  /** The characters of every regular file under a directory of the working tree, as text. */
+  private async charsUnder(directory: string): Promise<number> {
+    let total = 0;
+    let entries;
+    try { entries = await readdir(join(this.directory, directory), { withFileTypes: true }); } catch { return 0; }
+    for (const entry of entries) {
+      const path = posixJoin(directory, entry.name);
+      if (entry.isDirectory()) total += await this.charsUnder(path);
+      else if (entry.isFile()) {
+        try { total += [...(await readFile(join(this.directory, path), 'utf8'))].length; } catch { /* unreadable counts as nothing */ }
+      }
+    }
+    return total;
   }
 
   /** Back to the last commit, or removed when the last commit did not have it. */
@@ -586,6 +631,28 @@ function inArchive(path: string): boolean {
 /** Why natsumi's change to the archive goes back. */
 const archiveRefusal = (path: string) =>
   `${path} は古い記憶（${ARCHIVE_DIRECTORY}/）なので、記憶の整理係だけが書きます。あなたは書き換えられません`;
+
+/** Whether a path is in her skills, or is their directory itself (ADR 0073). */
+export function inSkills(path: string): boolean {
+  return path === SKILLS_DIRECTORY || path.startsWith(`${SKILLS_DIRECTORY}/`);
+}
+
+/** The skill directory a path is inside, `skills/<name>`, or undefined for one directly in `skills/` or outside it. */
+function skillDirectoryOf(path: string): string | undefined {
+  const parts = path.split('/');
+  return parts[0] === SKILLS_DIRECTORY && parts.length >= 3 ? `${parts[0]}/${parts[1]}` : undefined;
+}
+
+/** A file's bytes as UTF-8 text, or undefined for what is not: a NUL byte, or bytes UTF-8 cannot read. */
+function textOf(bytes: Buffer): string | undefined {
+  if (bytes.includes(0)) return undefined;
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return undefined; }
+}
+
+/** Why the curator's change to a skill is refused. */
+const posixJoin = posix.join;
+
+const skillsRefusal = (path: string) => `${path} は ${SKILLS_DIRECTORY}/ の中の skill なので、整理係は変えることも動かすこともできません`;
 
 /** Whether a path is in the diary, or is the diary itself. */
 function inDiary(path: string): boolean {
