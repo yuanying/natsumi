@@ -62,6 +62,7 @@ test('a valid config becomes a typed server config', () => {
     loop: { timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000, ...SCHEDULE_DEFAULTS },
     sources: { activity: { k: 3, minMinutes: 3, maxMinutes: 60, windowMinutes: 15, quietMeanMinutes: 10 }, historyDays: 7 },
     uploads: { maxFileBytes: 25 * 1024 * 1024, maxFiles: 10 },
+    skills: { enabled: false },
     curator: { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', rotateFiles: 2, rewriteAllMaxChars: 100000,
       conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } },
   });
@@ -582,6 +583,15 @@ test('the uploads section holds the files of the chat to a size and a count, 25M
   rejects({ ...base(), uploads: { maxFiles: 51 } }, 'uploads.maxFiles');
   rejects({ ...base(), uploads: { maxFiles: 2.5 } }, 'uploads.maxFiles');
   rejects({ ...base(), uploads: { keepDays: 3 } }, 'uploads.keepDays');
+});
+
+test('skills are off unless the skills section switches them on (ADR 0073)', () => {
+  assert.deepEqual(parseConfig(base()).skills, { enabled: false });
+  assert.deepEqual(parseConfig({ ...base(), skills: {} }).skills, { enabled: false });
+  assert.deepEqual(parseConfig({ ...base(), skills: { enabled: true } }).skills, { enabled: true });
+  rejects({ ...base(), skills: { enabled: 'yes' } }, 'skills.enabled');
+  rejects({ ...base(), skills: { enabled: true, directory: '/srv/skills' } }, 'skills.directory');
+  rejects({ ...base(), skills: true }, 'skills');
 });
 
 test('the Slack tokens are referenced by environment variable or file, never written in the config', () => {

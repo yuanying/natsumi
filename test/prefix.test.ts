@@ -81,10 +81,19 @@ const MEMORY: Record<string, string> = {
 const MANUAL_INDEX = '固定の目次。';
 
 /**
+ * A skill in each of the two places (ADR 0073). They are there in every case: with skills off, nothing of them may reach
+ * the prompt, which the fixtures without skills hold.
+ */
+const SKILLS: Record<string, string> = {
+  'skills/owner-steps': '---\nname: owner-steps\ndescription: 固定のマスターの手順。\n---\n\n# 手順\n',
+  'memory/skills/own-steps': '---\nname: own-steps\ndescription: 固定の自分の手順。\n---\n\n# 手順\n',
+};
+
+/**
  * Opens a loop, with or without the workspace runner, and reads the prompt off the session it just made. With Codemode
  * on, the tools are read off the session too: Pi rewrites their descriptions when codemode is among them (ADR 0066).
  */
-async function capture(workspace: boolean, codemode: CodemodeConfig = DEFAULT_CODEMODE): Promise<Prefix & { activeToolNames: string[] }> {
+async function capture(workspace: boolean, codemode: CodemodeConfig = DEFAULT_CODEMODE, skills = false): Promise<Prefix & { activeToolNames: string[] }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-prefix-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -93,12 +102,17 @@ async function capture(workspace: boolean, codemode: CodemodeConfig = DEFAULT_CO
   await mkdir(sessionDirectory, { recursive: true });
   await mkdir(agentDirectory, { recursive: true });
   for (const [name, text] of Object.entries(MEMORY)) await writeFile(join(data, 'memory', name), text);
+  // One of the owner's and one of her own, so that the frame Pi lists them in is pinned too (ADR 0073).
+  for (const [dir, text] of Object.entries(SKILLS)) {
+    await mkdir(join(data, dir), { recursive: true });
+    await writeFile(join(data, dir, 'SKILL.md'), text);
+  }
   const db = openStateDatabase(join(root, 'state.sqlite'));
   migrate(db, MIGRATIONS);
   let session: AgentSession | undefined;
   const loop = await ThinkingLoop.open({
     db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-    runtime: fixtureRuntime, manualIndex: MANUAL_INDEX,
+    runtime: fixtureRuntime, manualIndex: MANUAL_INDEX, ...(skills ? { skills: true } : {}),
     configureSession: captured => { session = captured; },
     loop: { ...LOOP_DEFAULTS, codemode, ...(workspace ? { workspaceSocket: join(root, 'runner.sock') } : {}) },
   });
@@ -131,8 +145,8 @@ function declaredShapes(session: AgentSession): Prefix['tools'] {
   }));
 }
 
-async function check(name: string, workspace: boolean, codemode?: CodemodeConfig) {
-  const captured = await capture(workspace, codemode);
+async function check(name: string, workspace: boolean, codemode?: CodemodeConfig, skills?: boolean) {
+  const captured = await capture(workspace, codemode, skills);
   const prefix: Prefix = { systemPrompt: captured.systemPrompt, trailer: captured.trailer, tools: captured.tools };
   // The session really registers the tools the fixture pins, in the same order.
   assert.deepEqual(captured.activeToolNames, prefix.tools.map(tool => tool.name));
@@ -162,4 +176,9 @@ test('with Codemode on and the workspace tools direct, codemode is declared last
 
 test('with Codemode on and the workspace tools for scripts only, they are left off the declarations and the prefix is pinned', async () => {
   await check('with-workspace-codemode-scripts-only', true, { ...DEFAULT_CODEMODE, enabled: true, workspaceTools: 'codemode' });
+});
+
+// ADR 0073: on, a fixed section on skills and Pi's list of them join the prompt; off, the fixtures above stay as they were.
+test('with skills on, the section on skills and the list Pi adds are pinned', async () => {
+  await check('with-workspace-skills', true, undefined, true);
 });

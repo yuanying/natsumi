@@ -45,6 +45,10 @@ natsumi のサーバーが外に対して持つ権限・秘密・外への出口
 なつみが読んだ記憶のパスと探した言葉。`curator.conversationMaxChars` まで）も送られます。
 本人のエンドポイントの外の経路（ChatGPT Plus など、`compatible` を持たない経路）を選ぶと、記憶と会話の本文がそこへ出ます。`/settings` の画面は、そうした経路に印を付け、次の夜がそこで動くときはそう示します。
 
+skills を on にすると（`skills.enabled`、[ADR 0073](adr/0073-skills-from-the-owner-and-her-own.md)）、本人の skill（本人の private リポジトリの clone）と
+なつみの skill の名前・説明が system prompt に入り、なつみが `read` で読んだ本文と一緒に、思考ループのモデルの接続先へ送られます。
+サーバーは本人の skill のリポジトリを取りに行きません。clone を更新するのは本人で、そのための GitHub への道は、サーバーではなく出口の proxy の中継にあります（下の「作業環境」）。
+
 サーバーは記憶の git を push しません（push するのは本人です）。Google などほかの外部サービスには、今はつなぎません。
 
 ### Slack の scope
@@ -103,9 +107,12 @@ Slack は Socket Mode で natsumi から外へつなぐので、Slack から届�
 作業環境（natsumi-workspace）は、秘密を持たず、外へ出られません。サーバーとは Unix ソケットの runner だけでつながり、つなぐのはサーバーの側です
 （[ADR 0019](adr/0019-a-workspace-not-a-memory-tool.md)、[ADR 0034](adr/0034-an-allow-list-for-the-way-out.md)）。
 Docker では `network_mode: none`、Kubernetes では作業環境の UID の外向きを全部拒否します。
+sshd でログインする本人が skill の clone を `git pull` するときは、同じ Pod の出口の proxy にある loopback の中継を通ります
+（[ADR 0073](adr/0073-skills-from-the-owner-and-her-own.md)）。中継の行き先は GitHub の ssh に固定です。loopback なので作業環境からも届きますが、
+作業環境には GitHub の鍵も agent のソケットも置かないので、届いても読み書きはできません。中継の設定は環境の設定にあります。
 
 なつみのツールのうち作業環境に届くのは `run_shell`・`read`・`search_memory` の 3 つで、どれもこの runner を通ります（[ADR 0047](adr/0047-folding-ended-turns-with-a-memo.md)、[ADR 0055](adr/0055-a-memory-curator-at-night.md)）。
-`read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。
+`read` は Pi の組み込みの read ですが、読む手段を runner に差し替え、`/manual` と `/memory` の下だけを読みます。skills が on のときは `/skills` の下も読みます。
 `search_memory` は `rg` を決まったオプションで `/memory` の下にだけ掛けます。検索語とパスはオプションとして解釈されない形で渡し、パスは `/memory` の外を指せません。
 夜の記憶の整理係も、同じ 3 つのツール（と、係の変更の説明を書くツール、まとめて消したファイルの行き先を伝えるツール）で、同じ runner を通って作業します。係が `/memory` に残せるのは検査を通った変更だけで、当たれば理由を伝えて 1 度だけ直させ、それでも当たればその工程の変更をすべて捨てます（前の工程のコミットは残ります。[ADR 0068](adr/0068-a-curator-that-remembers-like-a-person.md)）。
 `/memory/archive/` を書けるのは係の古い記憶の工程だけで、今月のファイルへの追記と、サーバーがその夜に決めたまとめ直しのほかは検査で拒みます。なつみのターンで変わっていれば戻します。
@@ -130,3 +137,10 @@ Docker では `network_mode: none`、Kubernetes では作業環境の UID の外
   `/sources` の履歴（下の `/sources.git`）からは外していて、`sources-diff` にも `sources_updated` にも出ません。なつみは、それを付けたメッセージで置き場所を知ります。
 - `/sources.git`: `/sources` の履歴。data directory の `sources.git/` で、作業環境の `sources-diff` が読みます。commit と ref を動かすのはサーバーだけで、
   作業環境からは書けません。中身は `/sources` と同じ読みものの、数日分の差分です（[ADR 0050](adr/0050-telling-of-source-updates-with-one-event.md)）。
+- `/skills`: 本人の skill の clone。data directory の `skills/` です（[ADR 0073](adr/0073-skills-from-the-owner-and-her-own.md)）。作業環境からは読み取り専用で、
+  書くのは sshd でログインした本人だけです（sshd のコンテナには読み書きできるようにマウントします）。サーバーは data directory を作るときに空のディレクトリ（2770）を作り、
+  skills が on のときだけ、session を作るたびに中の `SKILL.md` を読みます。中身はサーバーが取りに行かず、本人が `git pull` で更新します。
+  なつみの skill は記憶の下の `/memory/skills` にあり、記憶と同じ検査とコミットに乗ります。記憶の整理係はそこを変えられません。
+  skill のディレクトリの中には、スクリプトなど `.md` 以外のテキストのファイルも置けます（バイナリは不可、1 つの skill で合計 100,000 文字まで）。
+  動かすのはなつみで、作業環境の中で `run_shell` から動かします。サーバーは動かしません。外へ届く口は作業環境のもの（上の段落の 2 つの中継）から広がりません。
+  サーバーは skill を探すとき symlink をたどった先の skill を一覧に入れません。作業環境から同じパスで読めず、サーバーだけが読める場所を指しうるためです。

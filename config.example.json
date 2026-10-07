@@ -59,5 +59,6 @@
     "conversationMaxChars": 30000,
     "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 120 }
   },
+  "skills": { "enabled": false },
   "avatar": { "id": "natsumi" }
 }

@@ -358,6 +358,34 @@ Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScrip
 - スクリプトの中で呼んだツールは、session の記録に toolCall としては残らず、codemode の結果に名前・引数・状態の一覧だけが残ります。
   `stats` の読み直しの数には、その一覧の `run_shell`・`read` と、前と同じ本文のスクリプトも数えます。
 
+### skill を渡す
+
+決まった仕事のやり方を、Pi の skill の形（`SKILL.md` を持つディレクトリ）でなつみに渡せます
+（[ADR 0073](docs/adr/0073-skills-from-the-owner-and-her-own.md)）。書き手は二人で、置き場所も二つです。
+
+```json
+"skills": { "enabled": true }
+```
+
+- `enabled`（既定 `false`）: off のときは、Pi の skill を一つも読み込まず、ツールも system prompt も入れる前と一字一句同じです。
+- 本人の skill: data directory の `skills/` に、本人の private リポジトリを clone しておきます。作業環境からは `/skills` に読み取り専用で見えます。
+  サーバーは取りに行かないので、更新は本人が clone で `git pull` します（Kubernetes では sshd から。手順は環境の設定のリポジトリにあります）。
+  `skills/` は data directory を作るときに空で作られるので、その中で `git clone <リポジトリ> .` とします。
+- なつみの skill: 記憶の `skills/`（作業環境の `/memory/skills/<名前>/SKILL.md`）に、なつみが自分で書きます。
+  記憶と同じくターンの終わりに検査してコミットするので、本人は記憶の git の差分で見られます。承認は挟みません。
+  - 記憶のファイルと同じ検査（大きさ・文字・symlink）が掛かります。skill のディレクトリ（`SKILL.md` のある `skills/<名前>/`）の中に限り、
+    スクリプトや参照のデータなど `.md` 以外のテキストのファイルも置けます。バイナリは置けず、1 つの skill の合計は 100,000 文字までです。
+    スクリプトはなつみが作業環境で `bash` や `python3` を付けて動かします。サーバーは動かしません。
+  - `SKILL.md` は、Pi が読み込める形（frontmatter に `description` があり、`name` と `description` に Pi の警告が出ない）でなければ、前のコミットに戻し、理由をなつみに伝えます。
+  - 記憶の整理係は `skills/` を変えません。`search_memory` は記憶の全体を探すので、`skills/` のスクリプトも対象です。
+- system prompt には、作業環境の節に skill の置き場所と書き方の節が入り、その後ろに Pi が skill の一覧（名前・説明・`SKILL.md` のパス）を足します。
+  パスは作業環境から見たもので、本人の分が先に並びます。本文は入らず、なつみが `read` で読みます。`read` は `/skills` の下も読めるようになります。
+- 一覧は session を作るときに組み、session の間は変えません。足したり直したりした skill は、次の session（夜の切り替えかサーバーの再起動の後）から効きます。
+  一覧が変わった最初の session では prefix cache が外れます。
+- 同じ名前の skill が両方にあれば本人の分を使い、なつみの分は読み込まずにログに警告を出します。
+  clone が無いとき、`SKILL.md` が壊れているとき、symlink を通って見つかった skill（作業環境からは同じパスで読めないので外します）も、ログに出して残りで続けます。起動は止めません。
+- 作業環境（`loop.workspaceSocket`）が無いときは、Pi は一覧を入れないので、skill は効きません。
+
 ### ブラウザで話す・設定を変える
 
 ブラウザで `<publicOrigin>/`（例: `https://natsumi.example.net/`）を開くと、Mac・iPhone と同じ会話でなつみと話せ、承認もできます。
@@ -876,6 +904,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   `/manual/avatar` は natsumi が起動のたびにアバターから書き出す、画像を作るページ `images.md` と画像生成の設定 `sdctl-params.yaml`
   （`natsumi-data` の `avatar/`、読み取り専用。[ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md)）です。
   system prompt には「やり方が分からないときは `/manual/INDEX.md` を読む」の 1 文だけがあり、使い方の説明はマニュアルの側に足します。
+  `/skills` は本人の skill の clone（`natsumi-data` の `skills/`、読み取り専用。[skill を渡す](#skill-を渡す)）です。
 
   `/work` と `/home/natsumi` にはターンの終わりの検査もコミットも掛からず、git の差分でも見られません。
   サーバーが読むのは、natsumi が `view` で見る画像と、ポッポさんへの依頼や `reply_to_mac` の `images` で名指しした画像、
@@ -938,7 +967,7 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
     グループの書き込みと、ディレクトリの setgid を付けてください。umask か setgid が外れると、サーバーが記憶をコミットできなくなります。
   - runner は `-socket` のディレクトリが無ければ作ります。持ち主の違う volume（Pod の `emptyDir` など）では、
     その下のサブディレクトリをソケットの置き場に指定します（例: `/run/natsumi-workspace/runner/runner.sock`）。
-- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/`・`agents/` を作るので、`natsumi-workspace` は
+- 起動の順番: natsumi が初回の起動で `memory/`・`work/`・`home/`・`agents/`・`skills/` などを作るので、`natsumi-workspace` は
   natsumi が healthy になってから起動します。
 - 閉じ込めの確認: [scripts/check-workspace-sandbox.sh](scripts/check-workspace-sandbox.sh) が、使い捨ての project で
   2 つのコンテナを起動し、コンテナの形（ネットワーク、マウント、権限、資源の上限、見えない秘密、環境変数）と、

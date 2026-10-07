@@ -36,6 +36,7 @@ import { ReadState, type ReadPosition } from './read-state.ts';
 import { isoAt, localDate, localDateTime } from './nightly.ts';
 import { HOME_DIRECTORY, SOURCES_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { SelfChecks } from './scheduler.ts';
+import { piSkills, skillPlaces } from './skills.ts';
 import { parseView, viewImage } from './view.ts';
 import type { ShownAttachment } from '../shared/protocol/conversation.ts';
 
@@ -197,6 +198,11 @@ export interface LoopOptions {
   self?: Self;
   /** The avatar's `personality.md`, where the memory's personality starts when it has none (ADR 0060). */
   personality?: string;
+  /**
+   * Whether her sessions load skills (ADR 0073): the owner's from the data directory's `skills/`, and hers from memory's.
+   * The list is made with each session, so a skill added or changed reaches the next one. Off when left out.
+   */
+  skills?: boolean;
   /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
@@ -846,6 +852,7 @@ export class ThinkingLoop {
       tools,
       keepRecentTokens: this.options.loop.compactionKeepRecent,
       extensions: [turnFoldExtension({ folding: () => this.fold === 'on', reflecting: () => this.reflecting }), ...extensions],
+      ...(this.options.skills ? { skills: piSkills(skillPlaces(dataDirectory, this.memoryRepository.directory), line => this.log(line)) } : {}),
     };
   }
 
@@ -904,6 +911,7 @@ export class ThinkingLoop {
     };
     // A review turn has no next turn, so what its commit put back rides in the new session's instructions instead.
     const prompt = composeSystemPrompt({ workspace: this.shell !== undefined, manualIndex: this.options.manualIndex, self: this.self,
+      skills: this.options.skills === true,
       personality: await read(PERSONALITY_FILE),
       always: await read(ALWAYS_FILE), handoff: await read(HANDOFF_FILE), notice: this.takeMemoryNotice() });
     return this.options.reviseSystemPrompt?.(prompt) ?? prompt;
@@ -1503,7 +1511,7 @@ export class ThinkingLoop {
       askAgent: (agent, message, goOn) => agent === DOVE_NAME && this.options.dove
         ? this.askDove(message) : this.agents.ask(agent, message, goOn),
       ...(this.shell ? { runShell: (command: string) => this.runShell(command),
-        capture: (command: string) => this.shell!.capture(command) } : {}),
+        capture: (command: string) => this.shell!.capture(command), skills: this.options.skills === true } : {}),
     };
   }
 
