@@ -84,13 +84,27 @@ export const WORKSPACE_COMMANDS = `### 作業環境だけのコマンド
 - \`view <パス>\`: /work か /sources の下の画像を見ます。run_shell のコマンドを \`view /work/images/cat.png\` のような 1 行だけにします。\`cd\` や \`&&\`・\`;\` とつなぐと、ただのコマンドとして動いて見られません。詳しくは /manual/slack.md にあります。`;
 
 /**
- * The section for a session with a workspace: the fixed lines, the commands, and the manual's index as the server
- * read it at start. Without the index, the sentence that points at it stands in its place.
+ * The section for a session with a workspace: the fixed lines, the commands, the section on skills when they are on,
+ * and the manual's index as the server read it at start. Without the index, the sentence that points at it stands in
+ * its place.
  */
-export function workspaceSection(manualIndex?: string): string {
-  if (!manualIndex) return `${WORKSPACE_BULLETS}\n${MANUAL_FALLBACK}\n\n${WORKSPACE_COMMANDS}`;
-  return `${WORKSPACE_BULLETS}\n${MANUAL_POINTER}\n\n${WORKSPACE_COMMANDS}\n\n### マニュアルの目次（/manual/INDEX.md）\n\n${manualIndex}`;
+export function workspaceSection(manualIndex?: string, skills = false): string {
+  const commands = skills ? `${WORKSPACE_COMMANDS}\n\n${SKILLS_SECTION}` : WORKSPACE_COMMANDS;
+  if (!manualIndex) return `${WORKSPACE_BULLETS}\n${MANUAL_FALLBACK}\n\n${commands}`;
+  return `${WORKSPACE_BULLETS}\n${MANUAL_POINTER}\n\n${commands}\n\n### マニュアルの目次（/manual/INDEX.md）\n\n${manualIndex}`;
 }
+
+/**
+ * Skills, for a session that loads them (ADR 0073): where they are, which she may write, and how. Fixed, and in only
+ * when skills are switched on, which is chosen once for a deployment: the list itself is Pi's, after the prompt.
+ */
+export const SKILLS_SECTION = `### skill
+- 決まった仕事のやり方（手順）は skill になっています。指示の終わりに、skill の名前・説明・SKILL.md の場所の一覧があります。仕事が説明に合ったら、その SKILL.md を read で読んで従います。SKILL.md に書かれた相対パスは、SKILL.md のあるディレクトリから読みます。
+- /skills の下はマスターの skill です。読み取り専用で、あなたには書き換えられません。
+- 仕事の中で覚えたやり方は、自分の skill として /memory/skills/<名前>/SKILL.md に書けます。頭の frontmatter に name（ディレクトリと同じ名前で、小文字の英数字とハイフン）と description（どんな仕事のときに読むか）を書きます。記憶と同じように、ターンの終わりに検査してコミットされます。
+- skill のディレクトリの中には、スクリプト（scripts/ など）や参照のデータも、テキストのファイルなら置けます。スクリプトは \`bash /memory/skills/<名前>/scripts/x.sh\` や \`python3 /memory/skills/<名前>/scripts/x.py\` のように、コマンドを付けて動かします。1 つの skill のファイルの合計には上限があります。
+- 書いた skill が一覧に載るのは、次の思考の記録（夜の切り替えの後）からです。マスターの skill と同じ名前の skill は使われません。
+- skill は記憶の整理係の対象外です。直すのも消すのも、あなたが行います。`;
 
 export const NO_WORKSPACE_SECTION = `## 記憶と作業場
 - いまは作業環境につながっていないので、記憶を読むことも書くこともできません。
@@ -140,8 +154,10 @@ export function composeSystemPrompt(parts: {
   workspace: boolean; manualIndex?: string; personality: string; always: string; handoff: string; notice?: string;
   /** natsumi when left out. */
   self?: Self;
+  /** Whether the session loads skills (ADR 0073). Off when left out. */
+  skills?: boolean;
 }): string {
-  const instruction = BASE_INSTRUCTION(parts.workspace ? workspaceSection(parts.manualIndex) : NO_WORKSPACE_SECTION, parts.self);
+  const instruction = BASE_INSTRUCTION(parts.workspace ? workspaceSection(parts.manualIndex, parts.skills) : NO_WORKSPACE_SECTION, parts.self);
   let prompt = parts.personality ? `${instruction}\n\n# 性格・話し方\n\n${parts.personality}` : instruction;
   if (parts.always) prompt += `\n\n# 常時記憶\n\nいつも思い出しておきたいことを書いたメモです。\n\n${parts.always}`;
   if (parts.handoff) prompt += `\n\n# 前の思考の記録からの引き継ぎ\n\n前の自分が、次の自分に残したメモです。\n\n${parts.handoff}`;

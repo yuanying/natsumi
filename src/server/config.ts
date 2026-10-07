@@ -405,6 +405,9 @@ export const CURATOR_DEFAULTS: CuratorConfig = { enabled: true, modelCalls: 100,
 /** More files than this in turn a night would read like the whole of memory again, which is what the turn cannot hold. */
 const MAX_ROTATE_FILES = 10;
 
+/** Skills (ADR 0073): the owner's clone and her own, listed in her instructions. Off by default, read once at start. */
+export interface SkillsConfig { enabled: boolean }
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -418,6 +421,7 @@ export interface ServerConfig {
   sources: SourcesConfig;
   uploads: UploadsConfig;
   curator: CuratorConfig;
+  skills: SkillsConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
   avatar?: AvatarConfig;
 }
@@ -451,6 +455,7 @@ const SECTIONS = {
   sources: parseSources,
   uploads: parseUploads,
   curator: parseCurator,
+  skills: parseSkills,
   avatar: parseAvatar,
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
 
@@ -492,6 +497,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     sources: SECTIONS.sources(root.sources ?? {}, 'sources'),
     uploads: SECTIONS.uploads(root.uploads ?? {}, 'uploads'),
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
+    skills: SECTIONS.skills(root.skills ?? {}, 'skills'),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
   if (config.curator.route !== undefined && !config.pi.routes.some(route => route.name === config.curator.route)) {
@@ -986,6 +992,14 @@ function parseSources(value: unknown, path: string): SourcesConfig {
   }
   return { activity: { k, minMinutes: least as number, maxMinutes: most as number, windowMinutes: window as number,
     quietMeanMinutes: quiet as number }, historyDays: days as number };
+}
+
+function parseSkills(value: unknown, path: string): SkillsConfig {
+  const skills = object(value, path);
+  onlyKeys(skills, path, ['enabled']);
+  const enabled = skills.enabled ?? false;
+  if (typeof enabled !== 'boolean') throw new ConfigError(`${path}.enabled`, 'must be true or false');
+  return { enabled };
 }
 
 function parseUploads(value: unknown, path: string): UploadsConfig {

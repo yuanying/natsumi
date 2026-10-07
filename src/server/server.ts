@@ -283,7 +283,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
       ...(avatar.personality !== undefined ? { personality: avatar.personality } : {}),
       settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours(), curator: () => settings.curator() },
-      ...(manualIndex ? { manualIndex } : {}),
+      ...(manualIndex ? { manualIndex } : {}), skills: config.skills.enabled,
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(config.a2a && sources ? { agentReplies: replyPlaceOf(sources, join(dataDirectory, SOURCES_DIRECTORY)) } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
