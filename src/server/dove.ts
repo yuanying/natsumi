@@ -51,8 +51,6 @@ export const DOVE_NAME = 'poppo';
 export const MAX_RETURNS = 2;
 /** How much of the message replied to an approval shows. */
 const REPLY_TO_HEAD_CHARS = 100;
-/** How much of the draft an event line shows, so she knows which request it is about. */
-const DRAFT_HEAD_CHARS = 60;
 
 export interface DoveConfig {
   /** How long an approval waits for the owner. */
@@ -319,27 +317,6 @@ export class SlackDove {
       this.emit('approval.resolved', { approvalId: row.approval_id, revision: row.revision, state: 'expired', resolvedAt: now });
       this.tell(row.post_id, 'expired', 'ポッポ。マスターが決めないまま期限が過ぎたから、届けなかったよ。');
     }
-  }
-
-  /**
-   * The line of a `dove-reply` event made before the results moved to /sources (ADR 0074), taken once: none is made any
-   * more, and one still queued at the upgrade is handed over as it was. The text is emptied from its row as it goes
-   * (ADR 0008). Named like an outside agent's answer, from `poppo`, with no ID in it.
-   */
-  takeEventLine(eventId: string, receivedAt: string): Record<string, unknown> {
-    const row = this.db.prepare(`SELECT r.result, r.text, p.reference, p.text AS draft, p.kind FROM dove_replies r
-      JOIN dove_posts p ON p.post_id = r.post_id WHERE r.event_id = ?`).get(eventId) as
-      { result: Result; text: string; reference: string; draft: string; kind: string } | undefined;
-    if (!row) return { type: 'agent_reply', received_at: receivedAt, agent: DOVE_NAME };
-    this.db.prepare(`UPDATE dove_replies SET text = '' WHERE event_id = ?`).run(eventId);
-    const postId = (this.db.prepare('SELECT post_id FROM dove_replies WHERE event_id = ?').get(eventId) as { post_id: string }).post_id;
-    const images = this.images(postId).map(image => image.source);
-    return {
-      type: 'agent_reply', received_at: receivedAt, agent: DOVE_NAME, result: row.result, reply_to: row.reference,
-      ...(row.kind === 'reaction' ? { reaction: row.draft } : row.draft === '' ? {} : { draft: cut(row.draft, DRAFT_HEAD_CHARS) }),
-      ...(images.length > 0 ? { images } : {}),
-      ...(row.text ? { text: row.text } : {}),
-    };
   }
 
   private enqueue(work: () => Promise<void>): void {

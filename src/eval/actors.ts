@@ -139,8 +139,6 @@ export class Stage {
       return { ok: true, text: kind === 'reaction' ? `ポッポさんがリアクションの依頼を受け付けました。${asked}付けたかどうか${later}`
         : `ポッポさんが投稿の依頼を受け付けました。${asked}届けたか、本人に回したか、突き返したか${later}` };
     },
-    // No event of the dove's is made any more (ADR 0074); a snapshot's queued one is handed over empty.
-    takeEventLine: (_eventId: string, receivedAt: string) => ({ type: 'agent_reply', received_at: receivedAt, agent: DOVE_NAME }),
   };
 
   hasPending(): boolean { return this.pending.length > 0; }
