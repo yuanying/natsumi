@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { SUBSCRIPTION_TARGET } from '../src/probe/session.ts';
-import { DEFAULT_CODEMODE, LOOP_DEFAULTS, type CodemodeConfig } from '../src/server/config.ts';
+import { DEFAULT_CODEMODE, LOOP_DEFAULTS, type CodemodeConfig, type DeclaredToolConfig } from '../src/server/config.ts';
+import { createDeclaredTools } from '../src/server/declared-tools.ts';
 import { createLoopTools, type LoopToolHost, type ToolOutcome } from '../src/server/loop-tools.ts';
 import { MIGRATIONS } from '../src/server/migrations.ts';
 import { migrate, openStateDatabase } from '../src/server/state-db.ts';
@@ -53,8 +54,8 @@ function toolHost(workspace: boolean): LoopToolHost {
   };
 }
 
-function toolShapes(workspace: boolean): Prefix['tools'] {
-  return createLoopTools(toolHost(workspace)).map(tool => ({
+function toolShapes(workspace: boolean, declared: DeclaredToolConfig[] = []): Prefix['tools'] {
+  return [...createLoopTools(toolHost(workspace)), ...createDeclaredTools(declared, async () => outcome('ran'))].map(tool => ({
     name: tool.name,
     description: tool.description,
     // The JSON schema as the model is shown it; TypeBox's own symbols do not survive, which is the point.
@@ -93,7 +94,8 @@ const SKILLS: Record<string, string> = {
  * Opens a loop, with or without the workspace runner, and reads the prompt off the session it just made. With Codemode
  * on, the tools are read off the session too: Pi rewrites their descriptions when codemode is among them (ADR 0066).
  */
-async function capture(workspace: boolean, codemode: CodemodeConfig = DEFAULT_CODEMODE, skills = false): Promise<Prefix & { activeToolNames: string[] }> {
+async function capture(workspace: boolean, codemode: CodemodeConfig = DEFAULT_CODEMODE, skills = false,
+  tools?: DeclaredToolConfig[]): Promise<Prefix & { activeToolNames: string[] }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'natsumi-prefix-')));
   const data = join(root, 'data');
   const sessionDirectory = join(root, 'pi', 'sessions');
@@ -112,7 +114,7 @@ async function capture(workspace: boolean, codemode: CodemodeConfig = DEFAULT_CO
   let session: AgentSession | undefined;
   const loop = await ThinkingLoop.open({
     db, dataDirectory: data, sessionDirectory, agentDirectory, target: SUBSCRIPTION_TARGET, thinking: 'on',
-    runtime: fixtureRuntime, manualIndex: MANUAL_INDEX, ...(skills ? { skills: true } : {}),
+    runtime: fixtureRuntime, manualIndex: MANUAL_INDEX, ...(skills ? { skills: true } : {}), ...(tools ? { tools } : {}),
     configureSession: captured => { session = captured; },
     loop: { ...LOOP_DEFAULTS, codemode, ...(workspace ? { workspaceSocket: join(root, 'runner.sock') } : {}) },
   });
@@ -129,7 +131,7 @@ async function capture(workspace: boolean, codemode: CodemodeConfig = DEFAULT_CO
       systemPrompt: session.systemPrompt.slice(0, split),
       trailer: session.systemPrompt.slice(split).replaceAll(data, DATA_DIRECTORY),
       activeToolNames: session.getActiveToolNames(),
-      tools: codemode.enabled ? declaredShapes(session) : toolShapes(workspace),
+      tools: codemode.enabled ? declaredShapes(session) : toolShapes(workspace, tools),
     };
   } finally {
     await loop.close();
@@ -145,8 +147,8 @@ function declaredShapes(session: AgentSession): Prefix['tools'] {
   }));
 }
 
-async function check(name: string, workspace: boolean, codemode?: CodemodeConfig, skills?: boolean) {
-  const captured = await capture(workspace, codemode, skills);
+async function check(name: string, workspace: boolean, codemode?: CodemodeConfig, skills?: boolean, tools?: DeclaredToolConfig[]) {
+  const captured = await capture(workspace, codemode, skills, tools);
   const prefix: Prefix = { systemPrompt: captured.systemPrompt, trailer: captured.trailer, tools: captured.tools };
   // The session really registers the tools the fixture pins, in the same order.
   assert.deepEqual(captured.activeToolNames, prefix.tools.map(tool => tool.name));
@@ -181,4 +183,27 @@ test('with Codemode on and the workspace tools for scripts only, they are left o
 // ADR 0073: on, a fixed section on skills and Pi's list of them join the prompt; off, the fixtures above stay as they were.
 test('with skills on, the section on skills and the list Pi adds are pinned', async () => {
   await check('with-workspace-skills', true, undefined, true);
+});
+
+/**
+ * Two declared tools (ADR 0075), one of them for scripts alone. Their description and parameters go on the prefix as
+ * they were written, after every built-in tool, and the system prompt does not change: the fixtures above stay as they were.
+ */
+const DECLARED: DeclaredToolConfig[] = [
+  { name: 'weather', description: '固定の天気の説明。', exposure: 'direct', command: ['/tools/weather'], timeoutSeconds: 30, maxOutputChars: 8000,
+    parameters: { type: 'object', properties: { city: { type: 'string', description: '都市' }, days: { type: 'number', enum: [1, 3] },
+      hourly: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string' } } }, required: ['city'], additionalProperties: false } },
+  { name: 'count_words', description: '固定の数える説明。', exposure: 'codemode', command: ['/tools/count'], timeoutSeconds: 30,
+    maxOutputChars: 8000, parameters: { type: 'object', properties: {} } },
+];
+
+test('with tools declared, they follow the built-in ones as written, and the system prompt is the same', async () => {
+  await check('with-workspace-tools', true, undefined, undefined, DECLARED);
+  const without = await capture(true);
+  const declared = await capture(true, undefined, undefined, DECLARED);
+  assert.equal(declared.systemPrompt, without.systemPrompt);
+});
+
+test('with tools declared and Codemode on, each is declared to the model as its exposure says, and the prefix is pinned', async () => {
+  await check('with-workspace-tools-codemode', true, { ...DEFAULT_CODEMODE, enabled: true }, undefined, DECLARED);
 });
