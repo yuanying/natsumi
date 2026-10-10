@@ -790,3 +790,106 @@ test('the conversation handed to the curator has a limit of its own, and 0 hands
   assert.equal(parseConfig({ ...base(), curator: { conversationMaxChars: 0 } }).curator.conversationMaxChars, 0);
   for (const chars of [-1, 1.5, '30000']) rejects({ ...base(), curator: { conversationMaxChars: chars } }, 'curator.conversationMaxChars');
 });
+
+// ADR 0075: the tools an instance has of its own, declared at the top of the config and checked at start.
+const workspaceLoop = () => ({ workspaceSocket: '/run/natsumi-workspace/runner.sock' });
+const weather = () => ({
+  name: 'weather',
+  description: '天気を調べる。',
+  parameters: { type: 'object', properties: { city: { type: 'string', description: '都市の名前' } }, required: ['city'] },
+  command: ['/tools/weather.py', '--units', 'metric'],
+});
+const withTools = (...tools: unknown[]) => ({ ...base(), loop: workspaceLoop(), tools });
+
+test('no tools section declares no tools, and leaves the config as it was', () => {
+  assert.equal(parseConfig(base()).tools, undefined);
+  assert.equal(parseConfig({ ...base(), tools: [] }).tools, undefined);
+});
+
+test('a declared tool takes its defaults: model-only, 30 seconds and 8000 characters', () => {
+  assert.deepEqual(parseConfig(withTools(weather())).tools, [{
+    name: 'weather', description: '天気を調べる。',
+    parameters: { type: 'object', properties: { city: { type: 'string', description: '都市の名前' } }, required: ['city'] },
+    exposure: 'model-only', command: ['/tools/weather.py', '--units', 'metric'], timeoutSeconds: 30, maxOutputChars: 8000,
+  }]);
+});
+
+test('a declared tool may set its exposure, timeout and output limit within their bounds', () => {
+  const [tool] = parseConfig(withTools({ ...weather(), exposure: 'codemode', timeoutSeconds: 60, maxOutputChars: 20000 })).tools!;
+  assert.equal(tool!.exposure, 'codemode');
+  assert.equal(tool!.timeoutSeconds, 60);
+  assert.equal(tool!.maxOutputChars, 20000);
+  assert.equal(parseConfig(withTools({ ...weather(), exposure: 'direct' })).tools![0]!.exposure, 'direct');
+  rejects(withTools({ ...weather(), exposure: 'only' }), 'tools[0].exposure');
+  rejects(withTools({ ...weather(), timeoutSeconds: 0 }), 'tools[0].timeoutSeconds');
+  rejects(withTools({ ...weather(), timeoutSeconds: 61 }), 'tools[0].timeoutSeconds');
+  rejects(withTools({ ...weather(), timeoutSeconds: 1.5 }), 'tools[0].timeoutSeconds');
+  rejects(withTools({ ...weather(), maxOutputChars: 0 }), 'tools[0].maxOutputChars');
+  rejects(withTools({ ...weather(), maxOutputChars: 20001 }), 'tools[0].maxOutputChars');
+});
+
+test('parameters left out take no arguments', () => {
+  const { parameters: _, ...rest } = weather();
+  assert.deepEqual(parseConfig(withTools(rest)).tools![0]!.parameters, { type: 'object', properties: {} });
+});
+
+test('a declared tool needs the workspace runner, a list and known keys', () => {
+  rejects({ ...base(), tools: [weather()] }, 'tools', /workspaceSocket/);
+  rejects({ ...base(), loop: workspaceLoop(), tools: weather() }, 'tools');
+  rejects(withTools('weather'), 'tools[0]');
+  rejects(withTools({ ...weather(), url: 'https://example.test' }), 'tools[0].url', /unknown/);
+  rejects(withTools({ ...weather(), description: '' }), 'tools[0].description');
+  const { command: _, ...noCommand } = weather();
+  rejects(withTools(noCommand), 'tools[0].command');
+});
+
+test('a declared tool may not take a name already given, nor one a model would not accept', () => {
+  for (const name of ['run_shell', 'read', 'search_memory', 'reply_to_mac', 'notify_owner', 'ask_agent', 'codemode', 'bash', 'write', 'edit']) {
+    rejects(withTools({ ...weather(), name }), 'tools[0].name', /already/);
+  }
+  rejects(withTools(weather(), weather()), 'tools[1].name', /already/);
+  for (const name of ['', '1st', 'has space', 'ドット', 'a'.repeat(65)]) rejects(withTools({ ...weather(), name }), 'tools[0].name');
+  assert.equal(parseConfig(withTools({ ...weather(), name: 'Look-up_2' })).tools![0]!.name, 'Look-up_2');
+});
+
+test('the program of a declared tool lies under /tools, where she cannot write', () => {
+  for (const command of [[], ['weather.py'], ['/memory/weather.py'], ['/tools'], ['/tools/'], ['/tools/../memory/x'], ['/tools/./x'],
+    ['/toolsx/x'], ['/tools/x', ''], ['/tools/x', 3], ['/tools/x', 'a\u0000b'], '/tools/x']) {
+    rejects(withTools({ ...weather(), command }), 'tools[0].command', undefined);
+  }
+  assert.deepEqual(parseConfig(withTools({ ...weather(), command: ['/tools/sub/run', '--x'] })).tools![0]!.command, ['/tools/sub/run', '--x']);
+});
+
+test('the parameters are a JSON Schema of objects, strings, numbers, booleans, enums and arrays only', () => {
+  const schema = (parameters: unknown) => withTools({ ...weather(), parameters });
+  const accepted = {
+    type: 'object', description: '引数',
+    properties: {
+      city: { type: 'string', enum: ['Tokyo', 'Osaka'] },
+      days: { type: 'number', enum: [1, 3, 7] },
+      hourly: { type: 'boolean' },
+      tags: { type: 'array', items: { type: 'string' } },
+      where: { type: 'object', properties: { lat: { type: 'number' } }, required: ['lat'], additionalProperties: false },
+    },
+    required: ['city'], additionalProperties: false,
+  };
+  assert.deepEqual(parseConfig(schema(accepted)).tools![0]!.parameters, accepted);
+  rejects(schema({ type: 'string' }), 'tools[0].parameters.type', /object/);
+  rejects(schema({ type: 'object', properties: { n: { type: 'integer' } } }), 'tools[0].parameters.properties.n.type');
+  rejects(schema({ type: 'object', properties: { n: { type: 'null' } } }), 'tools[0].parameters.properties.n.type');
+  rejects(schema({ type: 'object', properties: { n: { anyOf: [{ type: 'string' }] } } }), 'tools[0].parameters.properties.n.anyOf');
+  rejects(schema({ type: 'object', properties: { n: { type: 'string', pattern: '^a' } } }), 'tools[0].parameters.properties.n.pattern');
+  rejects(schema({ type: 'object', properties: { n: { type: 'array' } } }), 'tools[0].parameters.properties.n.items');
+  rejects(schema({ type: 'object', properties: { n: { type: 'string', enum: [] } } }), 'tools[0].parameters.properties.n.enum');
+  rejects(schema({ type: 'object', properties: { n: { type: 'string', enum: ['a', 1] } } }), 'tools[0].parameters.properties.n.enum');
+  rejects(schema({ type: 'object', properties: { n: { type: 'boolean', enum: [true] } } }), 'tools[0].parameters.properties.n.enum');
+  rejects(schema({ type: 'object', properties: {}, required: ['missing'] }), 'tools[0].parameters.required');
+  rejects(schema({ type: 'object', additionalProperties: {} }), 'tools[0].parameters.additionalProperties');
+  rejects(schema({ type: 'object', properties: { $ref: { type: 'string' } } }), 'tools[0].parameters.properties.$ref');
+});
+
+test('a parameter named like a file or a secret is a name, not a secret reference', () => {
+  const parameters = { type: 'object', properties: { outputFile: { type: 'string' }, tokenEnv: { type: 'string' }, password: { type: 'string' } } };
+  assert.deepEqual(parseConfig(withTools({ ...weather(), parameters })).tools![0]!.parameters, parameters);
+  rejects(withTools({ ...weather(), command: ['/tools/x', 'sk-abcdef'] }), 'tools[0].command[1]', /secrets/);
+});

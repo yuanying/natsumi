@@ -386,6 +386,61 @@ Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScrip
   clone が無いとき、`SKILL.md` が壊れているとき、symlink を通って見つかった skill（作業環境からは同じパスで読めないので外します）も、ログに出して残りで続けます。起動は止めません。
 - 作業環境（`loop.workspaceSocket`）が無いときは、Pi は一覧を入れないので、skill は効きません。
 
+### インスタンスに特有のツールを宣言する
+
+インスタンスごとに違う道具を、コードを足さずに、config の最上位の `tools` でツールとして宣言できます
+（[ADR 0075](docs/adr/0075-tools-declared-in-the-config.md)）。
+道具の本体は作業環境の `/tools` に置くプログラムで、runner が bash を通さずに起動します。
+
+```json
+"tools": [
+  {
+    "name": "weather",
+    "description": "都市の今日の天気を調べる。city に都市の名前を書く。",
+    "parameters": {
+      "type": "object",
+      "properties": { "city": { "type": "string", "description": "都市の名前" } },
+      "required": ["city"]
+    },
+    "command": ["/tools/weather.py", "--units", "metric"],
+    "exposure": "model-only",
+    "timeoutSeconds": 30,
+    "maxOutputChars": 8000
+  }
+]
+```
+
+- `name`（必須）: ツールの名前です。英字で始まり、英数字・`_`・`-` で 64 文字までです。
+  組み込みのツール（`run_shell`・`reply_to_mac` など）、`codemode`、Pi の組み込みのツール（`bash`・`edit`・`write` など）と同じ名前や、
+  宣言の中で重なる名前は、起動時に拒みます。
+- `description`（必須）: モデルに見せる説明です。書いたとおりに prefix に載ります。system prompt は変えないので、使い方はここに書きます。
+- `parameters`（既定は引数なし）: 引数の JSON Schema です。最上位は `object` で、使える型は `object`・`string`・`number`・`boolean`・`array` と、
+  `string` か `number` の `enum` だけです。キーワードは `type`・`description`・`enum`・`properties`・`required`・`items`・`additionalProperties`（真偽値）に限ります。
+  ほかのもの（`integer`・`anyOf`・`pattern`・`$ref` など）は起動時に拒みます。
+- `command`（必須）: プログラムと固定の引数の配列です。プログラムは `/tools` の下の絶対パスに限ります（`..` や `.` を含まない形）。
+  なつみが書ける `/memory` などに置くと、自分の道具を書き換えられてしまうからです。
+- `exposure`（既定 `"model-only"`）: Codemode が on のときの見え方です。`"model-only"` はモデルが直接だけ、`"direct"` はモデルからもスクリプトからも、
+  `"codemode"` はスクリプトからだけ呼べます。Codemode が off のときは、どれもモデルが直接呼ぶツールです。
+  外へ作用する道具を `direct` や `codemode` にすると、スクリプトの条件分岐で作用が出たり出なかったりします。どれをスクリプトに渡すかは、config を書く人が決めます。
+- `timeoutSeconds`（既定 30、1〜60 の整数）: この時間を過ぎると、runner がプロセスのグループごと止め、失敗として返します。
+  上限は runner の応答の上限（60 秒）と同じで、道具が runner を `run_shell` のコマンドより長く占めることはありません。長い仕事は `run_shell` で回します。
+- `maxOutputChars`（既定 8000、1〜20000）: モデルに返す標準出力の上限です。超えた分は切り、切ったことを一行添えます。
+- 呼び出し: モデルが書いた引数（JSON）を、そのまま 1 行で標準入力に渡します。コマンドの文字列には埋め込みません。
+  作業ディレクトリは `/work`、環境変数は `run_shell` と同じ 5 つ（`PATH`・`PWD`・`HOME`・`LANG`・`TZ`）です。
+- 結果: 終了コード 0 なら、標準出力がそのまま結果です（空なら「出力は空でした」）。標準エラー出力は返しません。
+  0 以外の終了コード、時間切れ、シグナルは失敗として返し、終了コードと標準出力・標準エラー出力（2000 文字まで）の先頭を添えます。
+  結果は文字だけです。画像が要るときは、道具が `/work` に書き、なつみが `view` で見ます。
+  プログラムが終わった後も、そのプロセスのグループに残ったものは runner が止めます。
+- 道具は作業環境の中で、作業環境の権限で動きます。出口も作業環境のままで、道具を足しても広がりません。秘密は作業環境に置かないので、秘密の要る API はまだ道具にできません。
+- なつみの session にだけ渡します。記憶の整理係には渡しません。作業環境（`loop.workspaceSocket`）が無い config で宣言すると、起動時に拒みます。
+- ターンの上限、振り返り中にツールを断ること、`stats` の読み直しの数（同じ引数でもう一度呼んだもの）、ターンの記録、畳み込みは、組み込みのツールと同じです。
+  畳み込みでは `run_shell` と同じく「残さないツール」として畳まれます。ダッシュボードのターンの詳細では、呼び出しに「config で宣言したツール」の印が付きます。
+- 読み込むのは起動時だけです。宣言を変えたら再起動します。session は切り替えないので、ツールの定義が変わった後の最初の呼び出しでは prefix cache が外れ、
+  古い履歴には消えたツールの呼び出しが残ります。宣言しない config では、ツールも説明も system prompt も、宣言を入れる前と一字一句同じです。
+- **`tools` を書いた config は、これに対応した版より前のサーバーには入れられません**（知らない設定として起動を止めます）。
+  **サーバーと作業環境の image は同じ版にそろえてください。** 古い作業環境の runner は新しい要求の形を知らず、宣言したツールの呼び出しはすべて失敗します
+  （その旨を結果で返します）。`run_shell` の要求の形は変わっていないので、古いサーバーと新しい作業環境の組み合わせでは `run_shell` は動きます。
+
 ### ブラウザで話す・設定を変える
 
 ブラウザで `<publicOrigin>/`（例: `https://natsumi.example.net/`）を開くと、Mac・iPhone と同じ会話でなつみと話せ、承認もできます。
@@ -918,6 +973,8 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   （`natsumi-data` の `avatar/`、読み取り専用。[ADR 0057](docs/adr/0057-an-avatar-directory-named-in-the-server-config.md)）です。
   system prompt には「やり方が分からないときは `/manual/INDEX.md` を読む」の 1 文だけがあり、使い方の説明はマニュアルの側に足します。
   `/skills` は本人の skill の clone（`natsumi-data` の `skills/`、読み取り専用。[skill を渡す](#skill-を渡す)）です。
+  `/tools` は config で宣言したツールの本体の置き場所（読み取り専用。[インスタンスに特有のツールを宣言する](#インスタンスに特有のツールを宣言する)）です。
+  Kubernetes の構成では、インスタンスごとの ConfigMap を mount します。Docker の構成（`compose.yaml`）には `/tools` の mount は無いので、使うときは override で足します。
 
   `/work` と `/home/natsumi` にはターンの終わりの検査もコミットも掛からず、git の差分でも見られません。
   サーバーが読むのは、natsumi が `view` で見る画像と、ポッポさんへの依頼や `reply_to_mac` の `images` で名指しした画像、
@@ -959,6 +1016,8 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
     残ったプロセスを止めるのは natsumi です（`ps` と `kill`）。サーバーは止めません。
   - 出力は標準出力・標準エラー出力それぞれ 64 KiB まで（モデルに返すのは標準出力 8000 文字・標準エラー出力 2000 文字まで）
   - 1 つのコマンドの長さは 8000 文字まで。超えるとサーバーが送る前に拒否します。
+  - config で宣言したツールは別の形の要求で動き、こちらは時間切れで止めます（`timeoutSeconds`、60 秒まで）。要求の 1 行は 64 KiB までで、
+    引数がそれを超えるとサーバーが送る前に拒否します。
   - 応答の上限と出力の上限は `compose.yaml` の `command` で、サーバー側の待ち時間は `loop.shellWaitSeconds` で変えられます。
 - 環境変数: コマンドには `PATH`・`PWD`・`HOME`・`LANG`・`TZ` の 5 つだけを渡します。コンテナ自体の環境変数は空のままです。
   `TZ` はサーバーがコマンドごとに `loop.timeZone` を送ります（`NATSUMI_TIME_ZONE` は runner 側の既定値です）。

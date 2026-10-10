@@ -276,6 +276,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     const manualIndex = await readManualIndex(await codeManualDirectory());
     if (!manualIndex) log('manual: INDEX.md could not be read; the instructions point at /manual/INDEX.md instead');
 
+    // The tools this instance declares (ADR 0075), named once so the log shows which ones the sessions were given.
+    if (config.tools) log(`tools: ${config.tools.map(tool => tool.name).join(', ')} declared in the config`);
     // A missing login or a lost session leaves the loop unavailable; the server still starts so clients can see why.
     const thinkingLoop = loop = await ThinkingLoop.open({
       db, dataDirectory, sessionDirectory: config.pi.sessionDirectory, agentDirectory: config.pi.agentDirectory,
@@ -287,7 +289,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       configureSession: options.pi?.configureSession, now, log, loop: config.loop, curator: config.curator, self,
       ...(avatar.personality !== undefined ? { personality: avatar.personality } : {}),
       settings: { turnLimits: () => settings.turnLimits(), awakeHours: () => settings.awakeHours(), curator: () => settings.curator() },
-      ...(manualIndex ? { manualIndex } : {}), skills: config.skills.enabled,
+      ...(manualIndex ? { manualIndex } : {}), skills: config.skills.enabled, ...(config.tools ? { tools: config.tools } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}),
       ...(config.a2a && agentPlace ? { agentReplies: agentPlace } : {}),
       ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
