@@ -6,7 +6,8 @@ import { AGENT_LIST_DIRECTORY, AGENT_LIST_FILE } from '../src/server/agent-list.
 import { loadAvatar } from '../src/server/avatar.ts';
 import { readImagesTemplate, renderImagesPage } from '../src/server/avatar-manual.ts';
 import { parseDoveRequest } from '../src/server/dove-request.ts';
-import { ASK_AGENT_DESCRIPTION, workspaceSection } from '../src/server/prompts.ts';
+import { codeManualDirectory, readManualIndex } from '../src/server/manual.ts';
+import { ASK_AGENT_DESCRIPTION, composeSystemPrompt, workspaceSection } from '../src/server/prompts.ts';
 
 const root = new URL('..', import.meta.url).pathname;
 const read = (path: string) => readFile(`${root}${path}`, 'utf8');
@@ -14,6 +15,8 @@ const read = (path: string) => readFile(`${root}${path}`, 'utf8');
 const LIST = `/manual/agents/${AGENT_LIST_FILE}`;
 /** The page on drawing, which the server writes from the avatar on every start (ADR 0057), as it writes it for natsumi. */
 const IMAGES = '/manual/avatar/images.md';
+/** The params the server writes beside it, which the page on drawing names. */
+const PARAMS = '/manual/avatar/sdctl-params.yaml';
 const imagesPage = async () => renderImagesPage(await readImagesTemplate(), await loadAvatar(undefined));
 
 const mentioned = (text: string) => [...text.matchAll(/\/manual\/[\w./-]*[\w]/g)].map(match => match[0]);
@@ -28,7 +31,7 @@ test('every page of the manual that the prompt, the tool and the manual itself n
   assert.ok(named.has(LIST));
   assert.ok(named.has(IMAGES));
   for (const path of named) {
-    if (path === LIST || path === IMAGES) continue;
+    if (path === LIST || path === IMAGES || path === PARAMS) continue;
     assert.ok(pages.includes(path.replace('/manual/', '')), `${path} is named but not in manual/`);
   }
   assert.equal(AGENT_LIST_PATH, LIST);
@@ -150,6 +153,28 @@ test('the Slack page says how to name images for the dove', async () => {
 test('the page on images says how to show the owner a picture with reply_to_mac', async () => {
   const page = await imagesPage();
   for (const word of ['reply_to_mac', 'images', '/work/', 'notify_owner']) assert.ok(page.includes(word), word);
+});
+
+// ADR 0073: the owner's sd-generate skill is written for another machine. Where the two differ, this page wins, and it
+// says so only for a deployment whose list has the skill.
+test('the page on images says what to take from an sd-generate skill and where this page wins over it', async () => {
+  const page = await imagesPage();
+  const start = page.indexOf('## skill の sd-generate');
+  assert.ok(start >= 0, 'no section on the sd-generate skill');
+  const end = page.indexOf('\n## ', start + 1);
+  const section = page.slice(start, end < 0 ? undefined : end);
+  assert.match(section, /一覧に `sd-generate` があれば/);
+  for (const word of ['go install', '/etc/sdctl/config.yaml', '--config', 'SDCTL_URL', 'localhost:7860', 'sdctl models set', '403',
+    'override_settings', '--model', 'sdctl models list', '/manual/avatar/sdctl-params.yaml', '.jpg', '/work/images',
+    'reply_to_mac', '/manual/slack.md']) {
+    assert.ok(section.includes(word), word);
+  }
+  // The section is not where her own look is: that one stays last, as the server fills it in.
+  assert.ok(start < page.indexOf('## あなた自身の姿'));
+  // It lives in the workspace, not in her instructions: the prefix does not move.
+  const index = await readManualIndex(await codeManualDirectory());
+  assert.doesNotMatch(composeSystemPrompt({ workspace: true, skills: true, ...(index ? { manualIndex: index } : {}),
+    personality: '', always: '', handoff: '' }), /sd-generate/);
 });
 
 // ADR 0048: an image an agent hands back is in /work/agents; she looks at it with view and shows it with reply_to_mac.
