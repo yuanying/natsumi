@@ -12,7 +12,8 @@ import type { ReplyPlace } from './agent-replies.ts';
 import { AgentRequests } from './agent-requests.ts';
 import { STATE_DIRECTORY } from './data-directory.ts';
 import { DOVE_NAME } from './dove.ts';
-import type { A2AConfig, CuratorConfig, LoopConfig } from './config.ts';
+import type { A2AConfig, CuratorConfig, DeclaredToolConfig, LoopConfig } from './config.ts';
+import { createDeclaredTools } from './declared-tools.ts';
 import { ConversationStore, type EventKind, type EventState, type MessageRow,
   type RotationRow } from './conversation-store.ts';
 import { discardImages, IMAGE_DIRECTORY, ImageStore, REPLY_IMAGE_LIMITS, shownImage, type ImageLimits, type ShownImage,
@@ -204,6 +205,11 @@ export interface LoopOptions {
    */
   skills?: boolean;
   /**
+   * The tools the config declares (ADR 0075), given to her sessions after every built-in tool and never to the
+   * curator's. They need the workspace runner; without one they are left out. None when left out.
+   */
+  tools?: DeclaredToolConfig[];
+  /**
    * The `loop` section of the config, as `parseLoop` made it. It arrives complete: every default is already
    * applied there, so nothing here falls back again. `nightlyRotationAt`, `pingIntervalMinutes` and
    * `expressionResetMinutes` are the server's and the scheduler's, and the loop leaves them alone, but for the night
@@ -334,6 +340,8 @@ export class ThinkingLoop {
   private readonly workspaceSize: WorkspaceSize;
   private readonly readState: ReadState;
   private readonly shell: WorkspaceShell | undefined;
+  /** The names of the tools the config declares and her sessions are given (ADR 0075). */
+  private readonly declaredNames: ReadonlySet<string>;
   private readonly listeners = new Set<(event: LoopClientEvent) => void>();
   private readonly queue: string[] = [];
   private readonly handling = new Map<string, Handling>();
@@ -423,6 +431,7 @@ export class ThinkingLoop {
         memoryChanges: () => this.memoryRepository.changeSummary(),
       })
       : undefined;
+    this.declaredNames = new Set(this.shell ? (options.tools ?? []).map(tool => tool.name) : []);
     // The three places that survive a restart, under the names natsumi sees inside the container (ADR 0019).
     this.workspaceSize = new WorkspaceSize({
       places: [{ label: '/memory', path: memoryDirectory },
@@ -827,7 +836,9 @@ export class ThinkingLoop {
 
   private async sessionOptions(): Promise<Omit<PiSessionOptions, 'file' | 'expectedSessionId'>> {
     const { dataDirectory, sessionDirectory, agentDirectory } = this.options;
-    const { tools, extensions } = withCodemode(createLoopTools(this.host()), this.options.loop.codemode, () => this.turn);
+    const declared = this.declaredTools();
+    const { tools, extensions } = withCodemode([...createLoopTools(this.host()), ...declared.definitions], this.options.loop.codemode,
+      () => this.turn, declared.exposures);
     return {
       cwd: dataDirectory, agentDir: agentDirectory, sessionDir: sessionDirectory, modelRuntime: this.modelRuntime!, target: this.route!.target,
       systemPrompt: await this.systemPrompt(),
@@ -836,6 +847,20 @@ export class ThinkingLoop {
       keepRecentTokens: this.options.loop.compactionKeepRecent,
       extensions: [turnFoldExtension({ folding: () => this.fold === 'on', reflecting: () => this.reflecting }), ...extensions],
       ...(this.options.skills ? { skills: piSkills(skillPlaces(dataDirectory, this.memoryRepository.directory), line => this.log(line)) } : {}),
+    };
+  }
+
+  /**
+   * The declared tools' definitions and how Codemode reaches each (ADR 0075). Each call is a request to the runner,
+   * in the same line as her commands.
+   */
+  private declaredTools() {
+    const declared = (this.options.tools ?? []).filter(tool => this.declaredNames.has(tool.name));
+    const shell = this.shell;
+    return {
+      definitions: createDeclaredTools(declared, (tool, input) => shell!.runTool({ argv: tool.command, input,
+        timeoutSeconds: tool.timeoutSeconds, maxOutputChars: tool.maxOutputChars })),
+      exposures: new Map(declared.map(tool => [tool.name, tool.exposure])),
     };
   }
 
@@ -1059,7 +1084,7 @@ export class ThinkingLoop {
     // Thinking ends with the handling, whoever set it (ADR 0014); other expressions return to neutral with time.
     if (this.avatar.expression === 'thinking' && this.queue.length === 0) this.setAvatar('neutral', 'server');
     const first = replies[0]?.usage;
-    const confusion = { repeatedCalls: repeatedCalls(session.messages, before), unansweredMessages: unanswered,
+    const confusion = { repeatedCalls: repeatedCalls(session.messages, before, this.declaredNames), unansweredMessages: unanswered,
       toolErrors: session.messages.slice(before).filter(message => message.role === 'toolResult' && message.isError).length,
       doveRefusals: turn.doveRefusals };
     return { ...turn, ...(failure ? { failure } : {}), eventIds, endedAt, usage: sumUsage(replies),
@@ -1767,11 +1792,12 @@ type EndedTurn = Turn & { failure?: string; eventIds: string[]; endedAt: number;
 
 /**
  * The run_shell commands and read paths of the turn (from `start`) that were already used before, in the session's
- * context or earlier in the turn (ADR 0047). A command is compared with its spaces normalized; nothing is parsed.
+ * context or earlier in the turn (ADR 0047), and the declared tools' calls with the same arguments (ADR 0075). A
+ * command is compared with its spaces normalized; nothing is parsed.
  * Codemode's are counted too (ADR 0066): a script the same as one before, and the commands and reads a script made,
  * as Pi records them beside the script's result.
  */
-function repeatedCalls(messages: AgentSession['messages'], start: number): number {
+function repeatedCalls(messages: AgentSession['messages'], start: number, declared: ReadonlySet<string>): number {
   const seen = new Set<string>();
   let repeated = 0;
   const count = (key: string | undefined, index: number) => {
@@ -1781,18 +1807,20 @@ function repeatedCalls(messages: AgentSession['messages'], start: number): numbe
   };
   messages.forEach((message, index) => {
     if (message.role === 'toolResult' && message.toolName === CODEMODE_TOOL_NAME) {
-      for (const nested of message.nestedCalls?.calls ?? []) count(callKey(nested.name, nested.arguments ?? {}), index);
+      for (const nested of message.nestedCalls?.calls ?? []) count(callKey(nested.name, nested.arguments ?? {}, declared), index);
     }
     if (message.role !== 'assistant') return;
     for (const block of message.content) {
-      if (block.type === 'toolCall') count(callKey(block.name, block.arguments as Record<string, unknown>), index);
+      if (block.type === 'toolCall') count(callKey(block.name, block.arguments as Record<string, unknown>, declared), index);
     }
   });
   return repeated;
 }
 
-function callKey(name: string, args: Record<string, unknown>): string | undefined {
+function callKey(name: string, args: Record<string, unknown>, declared: ReadonlySet<string>): string | undefined {
   const words = (value: string) => value.trim().replace(/\s+/g, ' ');
+  // A declared tool's call is its arguments as JSON (ADR 0075): the same arguments in another order are another call.
+  if (declared.has(name)) return `${name} ${JSON.stringify(args)}`;
   return name === 'run_shell' && typeof args.command === 'string' ? `run_shell ${words(args.command)}`
     : name === 'read' && typeof args.path === 'string' ? `read ${args.path.trim()}`
     : name === CODEMODE_TOOL_NAME && typeof args.code === 'string' ? `codemode ${words(args.code)}` : undefined;

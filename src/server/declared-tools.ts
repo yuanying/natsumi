@@ -16,11 +16,6 @@ import type { ToolOutcome } from './loop-tools.ts';
  */
 export const DECLARED_TOOL_DETAILS = { declared: true } as const;
 
-/** Whether a tool result's details are a declared tool's. */
-export function isDeclaredResult(details: unknown): boolean {
-  return typeof details === 'object' && details !== null && (details as { declared?: unknown }).declared === true;
-}
-
 /** Runs one declared tool with its arguments, already as the JSON its program reads on stdin. */
 export type DeclaredToolRun = (tool: DeclaredToolConfig, input: string) => Promise<ToolOutcome>;
 
