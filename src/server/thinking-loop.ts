@@ -242,7 +242,7 @@ export interface LoopOptions {
   sources?: SourceEvents;
   /**
    * The dove (ADR 0040): `ask_agent` with the agent `poppo` goes here rather than to an outside agent. What comes of a
-   * request is told by the sources (ADR 0074); a `dove-reply` event queued before that is still read from here, once.
+   * request is told by the sources (ADR 0074).
    * Present only when Slack is configured.
    */
   dove?: DoveEvents;
@@ -290,10 +290,9 @@ export interface LoopUploads {
   images(messageId: string): Promise<ImageContent[]>;
 }
 
-/** The side of the dove the loop talks to: a request, and the line of an answer queued as an event before ADR 0074. */
+/** The side of the dove the loop talks to: a request. */
 export interface DoveEvents {
   ask(message: string): ToolOutcome | Promise<ToolOutcome>;
-  takeEventLine(eventId: string, receivedAt: string): Record<string, unknown>;
 }
 
 type FinishTurn = NonNullable<AgentSession['agent']['finishTurn']>;
@@ -1481,9 +1480,8 @@ export class ThinkingLoop {
     }
     const timeZone = this.options.loop.timeZone;
     const raisedAt = Date.parse(row.created_at);
+    // Not made any more (ADR 0069): one queued before the upgrade is handed over once, as it was.
     if (row.kind === 'agent-reply') return this.agents.takeEventLine(eventId, row.created_at);
-    // Neither is made any more (ADR 0069, ADR 0074): one queued before the upgrade is handed over once, as it was.
-    if (row.kind === 'dove-reply') return this.options.dove?.takeEventLine(eventId, row.created_at) ?? { type: 'agent_reply', received_at: row.created_at, agent: DOVE_NAME };
     if (row.kind === 'sources-updated') return this.options.sources?.eventLine(eventId, row.created_at) ?? { type: 'sources_updated', received_at: row.created_at };
     // Only an event recorded before ADR 0050 and closed by its migration has this kind; it is never made into a line.
     if (row.kind === 'slack-mention') return { type: 'slack_mention', received_at: row.created_at };

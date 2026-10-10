@@ -89,8 +89,6 @@ test('the schema keeps the conversation shown to the owner and only references t
       // What natsumi asked the dove to post, kept with Jev's scores and the owner's decision to look back on (ADR 0040).
       // It is what went, or was to go, to Slack; her thinking about it stays in the Pi session.
       if (table === 'dove_posts' && column === 'text') continue;
-      // The dove's answer waits here until it is handed to Pi, and is emptied then, like an agent's.
-      if (table === 'dove_replies' && column === 'text') continue;
       // The dove's words on what became of a request, which its results.jsonl under /sources is written again from on
       // every result (ADR 0074). They are the server's, as Slack's record is Slack's; natsumi reads them from the file.
       if (table === 'dove_results' && column === 'text') continue;
@@ -608,4 +606,32 @@ test('schema 26 gives the agents\' tasks and exchanges the place of their reques
   migrate(db, MIGRATIONS.filter(migration => migration.version <= 26));
   assert.deepEqual(plainRows(db.prepare('SELECT place, request FROM agent_tasks').all()), [{ place: null, request: null }]);
   assert.deepEqual(plainRows(db.prepare('SELECT place FROM agent_contexts').all()), [{ place: null }]);
+}));
+
+/**
+ * Schema 30 drops the dove's answers kept as events before ADR 0074: none is made any more, and the queue has none left
+ * by the time this version is taken. One still waiting is closed rather than left with no line to be made into; the
+ * posts they answered, and the events that carried them, stay.
+ */
+test('schema 30 drops the dove\'s answers of before, closes any still waiting, and keeps the posts', () => withDb(db => {
+  migrate(db, MIGRATIONS.filter(migration => migration.version <= 29));
+  db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
+    expression, state, created_at, updated_at) VALUES ('post-old', 'post', 'work', 'C1', NULL, NULL, 'work/#dev', '下書き', NULL,
+    'returned', 'x', 'x')`).run();
+  const event = db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'x', 'x')`);
+  event.run('event-told', 'dove-reply', 'replied');
+  event.run('event-waiting', 'dove-reply', 'queued');
+  event.run('event-other', 'ping', 'queued');
+  const reply = db.prepare(`INSERT INTO dove_replies (event_id, post_id, result, text, created_at) VALUES (?, 'post-old', 'returned', ?, 'x')`);
+  reply.run('event-told', '');
+  reply.run('event-waiting', 'ポッポ、これは届けられないよ。');
+  assert.deepEqual(migrate(db, MIGRATIONS.filter(migration => migration.version <= 30)).applied, [30]);
+  assert.equal(tables(db).includes('dove_replies'), false);
+  assert.deepEqual(plainRows(db.prepare('SELECT event_id, kind, state, reason FROM loop_events ORDER BY event_id').all()), [
+    { event_id: 'event-other', kind: 'ping', state: 'queued', reason: null },
+    { event_id: 'event-told', kind: 'dove-reply', state: 'replied', reason: null },
+    { event_id: 'event-waiting', kind: 'dove-reply', state: 'no-reply', reason: 'superseded' },
+  ]);
+  assert.deepEqual(plainRows(db.prepare('SELECT post_id, state FROM dove_posts').all()), [{ post_id: 'post-old', state: 'returned' }]);
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
 }));

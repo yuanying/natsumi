@@ -599,23 +599,6 @@ test('after a restart, a draft still being judged is judged, and one caught mid-
   assert.deepEqual(f.lines().map(line => line.state).sort(), ['not_sent', 'sent']);
 });
 
-test('an agent_reply event made before the upgrade is handed over once, in its old shape (ADR 0074)', async t => {
-  const f = await setup(t);
-  f.db.prepare(`INSERT INTO dove_posts (post_id, kind, workspace, channel_id, target_ts, target_thread_ts, reference, text,
-    expression, state, created_at, updated_at) VALUES ('post-old', 'post', 'work', 'C1', ?, NULL, 'work/#dev 2026-09-25 14:32:05 山田',
-    '前の版の下書き', NULL, 'returned', '2026-09-25T05:59:00.000Z', '2026-09-25T05:59:00.000Z')`).run(PARENT);
-  f.db.prepare(`INSERT INTO loop_events (event_id, kind, state, created_at, updated_at) VALUES ('event-old', 'dove-reply', 'queued',
-    '2026-09-25T05:59:30.000Z', '2026-09-25T05:59:30.000Z')`).run();
-  f.db.prepare(`INSERT INTO dove_replies (event_id, post_id, result, text, created_at) VALUES ('event-old', 'post-old', 'returned',
-    'ポッポ、これは届けられないよ。', '2026-09-25T05:59:30.000Z')`).run();
-  const line = f.dove.takeEventLine('event-old', '2026-09-25T05:59:30.000Z');
-  assert.deepEqual(line, { type: 'agent_reply', received_at: '2026-09-25T05:59:30.000Z', agent: 'poppo', result: 'returned',
-    reply_to: 'work/#dev 2026-09-25 14:32:05 山田', draft: '前の版の下書き', text: 'ポッポ、これは届けられないよ。' });
-  const row = f.db.prepare('SELECT text FROM dove_replies').get() as { text: string };
-  assert.equal(row.text, '', 'emptied as it goes');
-  assert.equal(f.attentions.length, 0, 'nothing new is made of it');
-});
-
 // ADR 0044: images named under `画像:`, taken and copied at once, sent with files.uploadV2's three calls.
 const withImages = (body: string, images: string[], to: { file: string; path?: string } = PARENT_LINE) =>
   JSON.stringify({ kind: 'post', to, ...(body ? { text: body } : {}), images });

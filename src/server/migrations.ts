@@ -938,4 +938,16 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX dove_results_untold ON dove_results (told) WHERE told = 0;
     `,
   },
+  {
+    version: 30,
+    name: 'no dove answers as events',
+    sql: `
+      -- The dove's answers as events (schema 14) are gone: what comes of a request is told by the sources (ADR 0074),
+      -- and none was left in the queue when this was taken. One still waiting would have no line to be made into. The
+      -- events that carried them stay, as they ended.
+      UPDATE loop_events SET state = 'no-reply', reason = 'superseded', updated_at = created_at
+        WHERE kind = 'dove-reply' AND state IN ('queued', 'processing');
+      DROP TABLE dove_replies;
+    `,
+  },
 ];
