@@ -60,5 +60,6 @@
     "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 120 }
   },
   "skills": { "enabled": false },
+  "tools": [],
   "avatar": { "id": "natsumi" }
 }
