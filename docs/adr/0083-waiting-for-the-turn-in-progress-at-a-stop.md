@@ -60,6 +60,13 @@ SIGTERM / SIGINT を受けたら、走っているターンが自然に終わる
   余裕は、待ちのあとの後始末と残りの close の分で、60 秒を目安にする。既定の 600 秒なら 660 秒以上である。
 - 猶予が短いと、待ちの途中で SIGKILL され、走っていたイベントは今までと同じく `failed` になる。
 - リポジトリの `compose.yaml` の `stop_grace_period` は、この約束に合わせて 30 秒から 660 秒にする。
+- 待ちの間のターンが使うもの、つまり作業環境の runner（[ADR 0019](0019-a-workspace-not-a-memory-tool.md)）と外への出口は、server より後まで動かしておく。
+  runner は SIGTERM を受けるとすぐ受け口を閉じるので、server と同時に止めると、待ちの間のシェルの呼び出しはすべて失敗する。
+  Kubernetes は Pod のふつうのコンテナに同時に SIGTERM を送る。このため、それらは sidecar にするか、
+  作業環境のコンテナに server が止まるのを待つ preStop を付ける（preStop の時間も猶予に含まれる）。
+- `compose.yaml` では、作業環境（`natsumi-workspace`）が server（`natsumi`）に `depends_on` している。逆ではない。
+  Compose は依存する側を先に止めるので、`docker compose stop` や `down` で全体を止めると、作業環境が server より先に止まり、この約束は満たされない。
+  Compose で更新するときは、先に `docker compose stop natsumi` で server だけを止め、終わってから残りを止める。
 
 ## Consequences
 
