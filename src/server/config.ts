@@ -144,6 +144,11 @@ export interface LoopConfig {
   /** Minutes an ordinary turn may take. */
   eventTimeoutMinutes: number;
   /**
+   * Seconds a stop waits for the event turn in progress to end on its own before cutting it (ADR 0083). 0 waits for
+   * nothing. The deployment's grace period for the process has to be longer.
+   */
+  shutdownDrainSeconds: number;
+  /**
    * Whether ended turns are folded before each model call, until the command line chooses otherwise (ADR 0047). The
    * memo is asked for after every turn either way, so that on and off differ only in the folding.
    */
@@ -182,6 +187,8 @@ export const DEFAULT_REVIEW_TIMEOUT_MINUTES = 30;
 /** An ordinary turn's limits (the evaluation stopped at 8 calls). */
 export const DEFAULT_EVENT_MODEL_CALLS = 8;
 export const DEFAULT_EVENT_TIMEOUT_MINUTES = 10;
+/** As long as an ordinary turn may take by default, so that a stop lets one end (ADR 0083). */
+export const DEFAULT_SHUTDOWN_DRAIN_SECONDS = DEFAULT_EVENT_TIMEOUT_MINUTES * 60;
 
 export const LOOP_DEFAULTS: LoopConfig = {
   timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
@@ -192,6 +199,7 @@ export const LOOP_DEFAULTS: LoopConfig = {
   expressionResetMinutes: DEFAULT_EXPRESSION_RESET_MINUTES,
   reviewModelCalls: DEFAULT_REVIEW_MODEL_CALLS, reviewTimeoutMinutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
   eventModelCalls: DEFAULT_EVENT_MODEL_CALLS, eventTimeoutMinutes: DEFAULT_EVENT_TIMEOUT_MINUTES,
+  shutdownDrainSeconds: DEFAULT_SHUTDOWN_DRAIN_SECONDS,
   turnFold: 'off',
   codemode: DEFAULT_CODEMODE,
 };
@@ -1347,7 +1355,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
     'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'awakeHours',
     'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes',
-    'eventModelCalls', 'eventTimeoutMinutes', 'turnFold', 'codemode']);
+    'eventModelCalls', 'eventTimeoutMinutes', 'shutdownDrainSeconds', 'turnFold', 'codemode']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
   if (typeof timeZone !== 'string' || !isValidTimeZone(timeZone)) throw new ConfigError(`${path}.timeZone`, 'must be an IANA time zone such as Asia/Tokyo');
   const at = loop.nightlyRotationAt ?? LOOP_DEFAULTS.nightlyRotationAt;
@@ -1392,6 +1400,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!isTurnLimit(eventCalls)) throw new ConfigError(`${path}.eventModelCalls`, 'must be a positive integer');
   const eventMinutes = loop.eventTimeoutMinutes ?? LOOP_DEFAULTS.eventTimeoutMinutes;
   if (!isTurnLimit(eventMinutes)) throw new ConfigError(`${path}.eventTimeoutMinutes`, 'must be a positive integer');
+  const drain = loop.shutdownDrainSeconds ?? LOOP_DEFAULTS.shutdownDrainSeconds;
+  if (!positiveInteger(drain, 0)) throw new ConfigError(`${path}.shutdownDrainSeconds`, 'must be an integer of at least 0');
   const turnFold = loop.turnFold ?? LOOP_DEFAULTS.turnFold;
   if (!isFold(turnFold)) throw new ConfigError(`${path}.turnFold`, 'must be "on" or "off"');
   return {
@@ -1403,7 +1413,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     pingIntervalMinutes: ping,
     expressionResetMinutes: reset as number,
     reviewModelCalls: reviewCalls, reviewTimeoutMinutes: reviewMinutes,
-    eventModelCalls: eventCalls, eventTimeoutMinutes: eventMinutes, turnFold,
+    eventModelCalls: eventCalls, eventTimeoutMinutes: eventMinutes, shutdownDrainSeconds: drain as number, turnFold,
     codemode: parseCodemode(loop.codemode ?? {}, `${path}.codemode`, LOOP_DEFAULTS.codemode),
     ...('selfCheck' in loop ? { ignored: [`${path}.selfCheck`] } : {}),
   };

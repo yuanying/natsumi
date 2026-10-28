@@ -67,6 +67,8 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      （時間。既定 30 分）。昼のふつうのターンの上限 `eventModelCalls`（既定 8 回）と `eventTimeoutMinutes`（既定 10 分）。
      回数を上げるときは、1 回の呼び出しにかかる時間を掛けても時間の上限に収まるかを確かめてください。
      上限で打ち切られたターンはログに残ります。
+     止めるときに、話している最中のターンが終わるのを待つ秒数 `shutdownDrainSeconds`（既定 600 秒、`0` で待たない）。
+     下の停止の説明を見てください。
      記憶のリポジトリの場所 `memoryRepository`（絶対パス。既定は data directory の `memory/`）と、
      記憶 1 ファイルの上限 `memoryFileMaxChars`（既定 32000 文字）、常時記憶の上限 `alwaysMemoryMaxChars`
      （既定 2000 文字。毎回のプロンプトに入るので、1 ファイルの上限より小さくします）。
@@ -109,6 +111,16 @@ node dist/src/server/main.js serve --config config.local.json --data-dir <data d
 `.natsumi/`（状態 DB・ロック・状態ファイル）を作ります。既存のファイルは上書きしません。
 同じ data directory で 2 つ目のサーバーを起動すると拒否します。異常終了後のロックは OS が解放するため、そのまま再起動できます。
 SIGTERM / SIGINT で停止します。
+止めるときは、話している最中のターンが自然に終わるのを `loop.shutdownDrainSeconds`（既定 600 秒）まで待ちます
+（[ADR 0083](docs/adr/0083-waiting-for-the-turn-in-progress-at-a-stop.md)）。返事とメモ、記憶の commit まで済んでから止まります。
+待っている間は新しいターンを始めません。本人のメッセージは受け付けて待ち行列に残し、次の起動で処理します。
+クライアントへの接続と通知は待ちの後まで開いたままなので、ターンの返事はその場で届きます。
+上限を過ぎたターンは打ち切られ、そのイベントは failed になります。夜の切り替え・睡眠薬・夜の整理係は待たずに打ち切り、次の起動で続きから進みます。
+待ちの間にもう一度 SIGTERM / SIGINT を受けると、すぐに終了します。
+
+プロセスを止める側の猶予は、`shutdownDrainSeconds` に後始末の分（目安 60 秒）を足した値以上にしてください。
+Kubernetes なら `terminationGracePeriodSeconds` で、既定の 600 秒なら 660 秒以上です。
+猶予が短いと待ちの途中で強制終了され、走っていたイベントは failed になります。
 
 会話は、一本の Pi session が思考ループとして本人のメッセージを 1 件ずつ処理し、ツールで返事や表情を出す形です
 （[ADR 0008](docs/adr/0008-single-thinking-loop-and-mac-conversation.md)）。本人のメッセージと natsumi の返事・知らせは

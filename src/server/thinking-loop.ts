@@ -56,6 +56,12 @@ export const THINKING_MIN_INTERVAL_MS = 250;
 export const REFLECTION_TIMEOUT_MS = 120_000;
 
 export type UnavailableCode = 'pi-unavailable' | 'conversation-restore-failed' | 'stopping';
+
+/**
+ * How the wait at a stop ended (ADR 0083): nothing was running, the work ended on its own, the limit came first, or it
+ * was the night's work, which is not waited for.
+ */
+export interface DrainOutcome { result: 'idle' | 'ended' | 'limit' | 'night'; waitedMs: number }
 export type { EventKind, EventState };
 
 /**
@@ -379,6 +385,10 @@ export class ThinkingLoop {
   private turn: Turn | undefined;
   private running: Promise<void> | undefined;
   private closing: Promise<void> | undefined;
+  /** A stop is waiting for the work in progress (ADR 0083): nothing new starts, and messages wait in the queue. */
+  private draining = false;
+  /** The work in progress is the night's: the nightly switch or a sleeping pill, which a stop does not wait for. */
+  private nightWork = false;
   /** After a failed compaction, the context size it waits to exceed before trying again. */
   private compactionRetryAbove: number | undefined;
   private avatar: { expression: Expression; by: 'server' | 'model'; changedAt: number };
@@ -556,7 +566,8 @@ export class ThinkingLoop {
     // Steering carries text only as it is made here, so a message with images to show waits for the next turn instead,
     // where they go beside its line.
     const showsImages = uploadIds.length > 0 && uploads!.hasImages(row.message_id);
-    if (this.turn?.kind === 'events' && session.isStreaming && !showsImages) {
+    // While a stop waits, the turn is not made longer: the message waits for the next start (ADR 0083).
+    if (this.turn?.kind === 'events' && session.isStreaming && !showsImages && !this.draining) {
       // Steered in at the next model-call boundary; the thought in progress is not interrupted (Q1).
       this.beginHandling(eventId, row.message_id, false);
       this.workingPlace?.eventIds.push(eventId);
@@ -859,6 +870,28 @@ export class ThinkingLoop {
     return new Promise(resolve => this.idleWaiters.push(resolve));
   }
 
+  /**
+   * The first half of a stop (ADR 0083): starts nothing more and waits, up to `limitMs`, for the work in progress to end
+   * on its own, with its memo, its commit and its events' states. Owner messages are still taken meanwhile and wait in
+   * the queue for the next start. The night's work is not waited for: it is long, and the next start carries it on.
+   * Whatever is still running afterwards is cut by `close`. `waiting` is called when there is something to wait for.
+   */
+  async drain(limitMs: number, waiting?: () => void): Promise<DrainOutcome> {
+    this.draining = true;
+    const running = this.running;
+    if (!running || this.closing) return { result: 'idle', waitedMs: 0 };
+    if (this.nightWork) return { result: 'night', waitedMs: 0 };
+    if (limitMs <= 0) return { result: 'limit', waitedMs: 0 };
+    waiting?.();
+    const started = Date.now();
+    let timer: NodeJS.Timeout | undefined;
+    const ended = await Promise.race([
+      running.then(() => true),
+      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), limitMs); }),
+    ]).finally(() => clearTimeout(timer));
+    return { result: ended ? 'ended' : 'limit', waitedMs: Date.now() - started };
+  }
+
   /** Refuses new messages, stops the turn in progress, records its events and releases the Pi session. */
   close(): Promise<void> {
     this.closing ??= (async () => {
@@ -1071,15 +1104,19 @@ export class ThinkingLoop {
   }
 
   private pump() {
-    if (this.running || this.closing || this.unavailableCode || !this.session) { this.settle(); return; }
+    if (this.running || this.closing || this.draining || this.unavailableCode || !this.session) { this.settle(); return; }
     const eventId = this.queue.shift();
     if (!eventId && !this.routeWanted) { this.settle(); return; }
     this.routeWanted = false;
+    const kind = eventId ? this.store.eventKind(eventId) : undefined;
+    this.nightWork = kind === 'nightly-review' || kind === 'sleeping-pill';
     // Every unit of work starts on the chosen route, so a switch always falls between turns (ADR 0046).
     const work = (async () => {
       await this.followRoute();
       await this.followFold();
       if (!eventId) return;
+      // A stop began while the route was followed: the event waits for the next start rather than begin a turn.
+      if (this.draining) { this.queue.unshift(eventId); return; }
       // Nothing changed after all (another event showed it first): the event ends without a turn.
       if (this.store.eventKind(eventId) === 'sources-updated' && !await this.takeSources(eventId)) {
         this.store.setEventState(eventId, 'no-reply', 'nothing-to-show');
@@ -1101,6 +1138,7 @@ export class ThinkingLoop {
     })();
     this.running = work.finally(() => {
       this.running = undefined;
+      this.nightWork = false;
       this.working = undefined;
       this.workingPlace = undefined;
       this.activityAt = this.now();
@@ -1656,7 +1694,8 @@ export class ThinkingLoop {
    */
   private async maintain(): Promise<boolean> {
     const session = this.session;
-    if (this.closing || !session) return false;
+    // A stop does not wait for a compaction: the next start compacts after its first turn instead (ADR 0083).
+    if (this.closing || this.draining || !session) return false;
     const tokens = session.getContextUsage()?.tokens;
     // Kept for the dashboard, which reads it rather than measuring on every look (ADR 0049).
     if (typeof tokens === 'number') this.measured = { tokens, at: this.now() };
