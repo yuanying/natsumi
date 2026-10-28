@@ -33,6 +33,7 @@ const SCHEDULE_DEFAULTS = {
   reviewTimeoutMinutes: 30,
   eventModelCalls: 8,
   eventTimeoutMinutes: 10,
+  shutdownDrainSeconds: 600,
   turnFold: 'off',
   codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 40 },
 };
@@ -187,6 +188,14 @@ test('the loop section sets an ordinary turn\'s limits, each with a default', ()
   assert.deepEqual([set.eventModelCalls, set.eventTimeoutMinutes], [20, 15]);
   for (const calls of [0, -1, 1.5, '8', true]) rejects({ ...base(), loop: { eventModelCalls: calls } }, 'loop.eventModelCalls');
   for (const minutes of [0, -1, 2.5, '10', false]) rejects({ ...base(), loop: { eventTimeoutMinutes: minutes } }, 'loop.eventTimeoutMinutes');
+});
+
+test('the loop section sets how long a stop waits for the turn in progress, ten minutes unless set, none at 0 (ADR 0083)', () => {
+  // As long as an ordinary turn may take by default, so that a stop lets one end on its own.
+  assert.equal(parseConfig(base()).loop.shutdownDrainSeconds, 600);
+  assert.equal(parseConfig({ ...base(), loop: { shutdownDrainSeconds: 120 } }).loop.shutdownDrainSeconds, 120);
+  assert.equal(parseConfig({ ...base(), loop: { shutdownDrainSeconds: 0 } }).loop.shutdownDrainSeconds, 0);
+  for (const seconds of [-1, 1.5, '600', false]) rejects({ ...base(), loop: { shutdownDrainSeconds: seconds } }, 'loop.shutdownDrainSeconds');
 });
 
 test('the workspace shell is off unless the loop names the runner socket by absolute path', () => {

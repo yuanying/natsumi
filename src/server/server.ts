@@ -169,9 +169,12 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   const timers: NodeJS.Timeout[] = [];
   // Everything opened above, closed in the reverse order.
   const closeAll = async () => {
-    timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
     scheduler?.stop(); // Before the listener, so no self-check, ping or nightly switch starts a turn on the way out.
     await Promise.all([...slackWorkspaces.values()].map(workspace => workspace.stop())); // Before the loop: no new mention is raised into it.
+    // The turn in progress may end on its own (ADR 0083). Everything it reaches stays open meanwhile: the clients, so
+    // its reply arrives; the dove and the pushes; and the heartbeat, so the server still counts as running.
+    if (loop) await drainLoop(loop, config.loop.shutdownDrainSeconds, log);
+    timers.forEach(clearInterval); // The status heartbeat and the session sweep: nothing else waits on them.
     dove?.close(); // Nothing more is judged or sent; what was on its way is carried on by the next start.
     notifier?.close(); // Drops the pushes waiting to be tried again: they are kept in memory only (ADR 0029).
     webNotifier?.close();
@@ -502,6 +505,16 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     try { await closeAll(); } finally { shutdown(db, lock); }
     throw error;
   }
+}
+
+async function drainLoop(loop: ThinkingLoop, seconds: number, log: (line: string) => void) {
+  // Said as the wait begins, so a stop that seems to hang tells why.
+  const { result, waitedMs } = await loop.drain(seconds * 1000,
+    () => { log(`stopping: waiting up to ${seconds} seconds for the turn in progress to end`); });
+  const waited = Math.round(waitedMs / 1000);
+  if (result === 'ended') log(`stopping: the turn in progress ended after ${waited} seconds`);
+  else if (result === 'limit') log(`stopping: the turn in progress is cut after ${waited} seconds, at the limit`);
+  else if (result === 'night') log('stopping: the night\'s work is cut; the next start carries it on');
 }
 
 function shutdown(db: DatabaseSync | undefined, lock: ProcessLock) {
