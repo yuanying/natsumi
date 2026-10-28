@@ -160,7 +160,7 @@ test('the state section shows the server, the route, the fold, the context, the 
   assert.match(res.text, /id="status"/);
   assert.match(res.text, /動いている/, 'the heartbeat in status.json is fresh');
   assert.match(res.text, /default/, 'the route in use');
-  assert.match(res.text, /gpt-5\.5/);
+  assert.match(res.text, /gpt-5\.6-sol/);
   assert.match(res.text, /畳み込み[\s\S]*off/);
   assert.match(res.text, /60,?000/, 'the compaction threshold');
   assert.match(res.text, /実行中のターン[\s\S]*なし/);

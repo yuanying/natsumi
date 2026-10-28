@@ -9,7 +9,7 @@ const pi = () => ({
   agentDirectory: '/srv/natsumi-pi/agent',
   sessionDirectory: '/srv/natsumi-pi/sessions',
   authPath: '/srv/natsumi-pi/agent/auth.json',
-  model: { provider: 'openai-codex', id: 'gpt-5.5' },
+  model: { provider: 'openai-codex', id: 'gpt-5.6-sol' },
   voiceEnabled: false,
 });
 
@@ -773,7 +773,7 @@ test('the list of reactions is gone: a config that still has one is refused, and
 test('the memory curator runs every night by default, on natsumi\'s route, with limits of its own (ADR 0055)', () => {
   assert.deepEqual(parseConfig(base()).curator, { enabled: true, modelCalls: 100, timeoutMinutes: 60, stopStartingAt: '05:30', pillStopStartingAfterMinutes: 90, rotateFiles: 2,
     rewriteAllMaxChars: 100000, conversationMaxChars: 30000, codemode: { enabled: false, workspaceTools: 'direct', nestedCalls: 120 } });
-  const routes = { local: { model: { provider: 'openai-codex', id: 'gpt-5.5' } }, plus: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } };
+  const routes = { local: { model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } }, plus: { model: { provider: 'openai-codex', id: 'gpt-5.4' } } };
   const { model: _, ...withoutModel } = pi();
   const withRoutes = { ...base(), pi: { ...withoutModel, routes, defaultRoute: 'local' } };
   assert.deepEqual(parseConfig({ ...withRoutes, curator: { route: 'plus', modelCalls: 80, timeoutMinutes: 45, rotateFiles: 1 } }).curator,

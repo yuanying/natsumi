@@ -191,7 +191,7 @@ export function serverConfig(root: string, { allowedUserId = OWNER.id, listen, a
   return {
     pi: {
       agentDirectory: join(root, 'pi', 'agent'), sessionDirectory: join(root, 'pi', 'sessions'),
-      authPath: join(root, 'pi', 'agent', 'auth.json'), model: { provider: 'openai-codex', id: 'gpt-5.5' }, voiceEnabled: false,
+      authPath: join(root, 'pi', 'agent', 'auth.json'), model: { provider: 'openai-codex', id: 'gpt-5.6-sol' }, voiceEnabled: false,
     },
     publicOrigin: PUBLIC_ORIGIN,
     listen: listen ?? { host: '127.0.0.1', port: 0, tls: false },
