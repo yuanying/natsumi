@@ -1,7 +1,8 @@
 # Builds the server and workspace images for a version tag and pushes them to ghcr (ADR 0033).
 # The image tag is the version tag itself (v0.x.y); the environment pins the version it runs.
 # Only tag pushes, and the weekly release (weekly-release.yml), which calls this before it pushes its tag: a tag pushed
-# with GITHUB_TOKEN starts no workflow. A pull request, a fork's included, never reaches the package write permission.
+# with GITHUB_TOKEN starts no workflow. The weekly release also runs when the vulnerability responder's pull request is
+# merged (ADR 0082); no other pull request, and none from a fork, reaches the package write permission.
 # A push to main also pushes both images under the moving tag main, which nothing runs: it is there to be scanned for
 # vulnerabilities fixed on main but not yet released, and the versions it leaves untagged are deleted (ADR 0081).
 name: Images
