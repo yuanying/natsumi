@@ -277,7 +277,7 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
       "compatible": { "baseUrl": "https://llm.example.net/v1", "apiKeyEnv": "NATSUMI_PI_API_KEY", "contextWindow": 131072 }
     },
     "plus": {
-      "model": { "provider": "openai-codex", "id": "gpt-5.5" },
+      "model": { "provider": "openai-codex", "id": "gpt-5.6-sol" },
       "compactionThreshold": 150000
     }
   },
@@ -290,7 +290,7 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
   互換の経路を 2 つ以上並べるときは、provider を `natsumi-compatible-<何か>` のように経路ごとに変えます。
   1 つ目は `natsumi-compatible` のままにしておくと、これまでの session の記録と同じモデルとして続きます。
 - `compactionThreshold` は省けます。書かなければ `loop.compactionThreshold` を使います。上限と窓の組み合わせは経路ごとに検査します。
-  互換の経路は `compatible.contextWindow` で、サブスクリプションの経路は Pi のモデル定義の窓（`gpt-5.5` は 272000）で検査します。
+  互換の経路は `compatible.contextWindow` で、サブスクリプションの経路は Pi のモデル定義の窓（`gpt-5.6-sol` は 272000）で検査します。
 - `pi.model`（と `pi.compatible`）だけの設定は、`default` という名前の経路 1 つとして読みます。
 - ポッポさんの判定が使い回すのは、既定の経路の互換のモデルだけです。切り替えても判定は変わりません。
 

@@ -14,7 +14,7 @@ const endpoint = (extra: Record<string, unknown> = {}) =>
   ({ baseUrl: 'https://llm.example.test/v1', apiKeyEnv: 'NATSUMI_PI_API_KEY', ...extra });
 const local = (extra: Record<string, unknown> = {}) =>
   ({ model: { provider: 'natsumi-compatible', id: 'fixture-local' }, compatible: endpoint(), ...extra });
-const plus = (extra: Record<string, unknown> = {}) => ({ model: { provider: 'openai-codex', id: 'gpt-5.5' }, ...extra });
+const plus = (extra: Record<string, unknown> = {}) => ({ model: { provider: 'openai-codex', id: 'gpt-5.6-sol' }, ...extra });
 const base = (pi: Record<string, unknown>, rest: Record<string, unknown> = {}) => ({
   pi: { ...directories(), ...pi },
   publicOrigin: 'https://natsumi.example.test',
@@ -37,8 +37,8 @@ function rejects(raw: unknown, path: string, reason?: RegExp) {
 }
 
 test('a config with only pi.model is one route named default, under the loop\'s threshold', () => {
-  const config = parseConfig(base({ model: { provider: 'openai-codex', id: 'gpt-5.5' } }));
-  assert.deepEqual(config.pi.routes, [{ name: 'default', model: { provider: 'openai-codex', id: 'gpt-5.5' }, compactionThreshold: 60000 }]);
+  const config = parseConfig(base({ model: { provider: 'openai-codex', id: 'gpt-5.6-sol' } }));
+  assert.deepEqual(config.pi.routes, [{ name: 'default', model: { provider: 'openai-codex', id: 'gpt-5.6-sol' }, compactionThreshold: 60000 }]);
   assert.equal(config.pi.defaultRoute, 'default');
   const compatible = parseConfig(base(local(), { loop: { compactionThreshold: 50000 } }));
   assert.deepEqual(compatible.pi.routes, [{ name: 'default', model: { provider: 'natsumi-compatible', id: 'fixture-local' },
@@ -50,7 +50,7 @@ test('named routes keep their order, name the default, and each may set its own 
   const config = parseConfig(base({ routes: { local: local(), plus: plus({ compactionThreshold: 150000 }) }, defaultRoute: 'local' }));
   assert.equal(config.pi.defaultRoute, 'local');
   assert.deepEqual(config.pi.routes.map(route => [route.name, route.model.provider, route.model.id, route.compactionThreshold]),
-    [['local', 'natsumi-compatible', 'fixture-local', 60000], ['plus', 'openai-codex', 'gpt-5.5', 150000]]);
+    [['local', 'natsumi-compatible', 'fixture-local', 60000], ['plus', 'openai-codex', 'gpt-5.6-sol', 150000]]);
   assert.equal(config.pi.routes[0]!.compatible?.baseUrl, 'https://llm.example.test/v1');
   assert.equal('compatible' in config.pi.routes[1]!, false);
 });
