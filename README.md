@@ -717,7 +717,12 @@ natsumi は、Wiki の管理人のような外の特化エージェントに `as
 [ADR 0036](docs/adr/0036-a-manual-to-read-and-a-limit-on-waiting.md)）。相手とは A2A 1.0（JSON-RPC）で話し、公式の SDK
 `@a2a-js/sdk` を使います。設定に `a2a` がなければ、`ask_agent` は頼まずに断ります（ツール自体は常にあります）。
 
-1. 呼び出しの token を用意します。相手が確かめる ServiceAccount の token（audience `a2a`）です。
+1. 呼び出しの token を用意します。natsumi の ServiceAccount の token で、audience は相手をどう呼ぶかで決まります
+   （[ADR 0084](docs/adr/0084-calling-agents-behind-gated-with-its-audience.md)）。
+   - gated 経由で呼ぶ（`https://<係>.fraction.jp` など）: gated の audience `https://auth.fraction.jp`。gated が確かめて token を落とし、相手には署名付きの assertion が届きます。
+   - 相手の Service を直接呼ぶ: audience `a2a`。相手が自分で確かめます。
+
+   token のファイルは 1 つなので、`a2a.agents` の相手はどちらか一方の呼び方にそろえます。
    Kubernetes では Pod に差し込まれる projected token のパスを、Docker では手で置いたファイルを使います。
    Docker では `secrets/a2a-token` などに置き、コンテナのユーザーだけが読めるようにします。`secrets/` は Git の追跡対象外です。
 2. 設定に `a2a` を足します。値は架空の例です。
