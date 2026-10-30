@@ -18,6 +18,14 @@
       "managerFilePatterns": ["/^Dockerfile$/"],
       "matchStrings": ["go install [^\\n]*?(?<depName>github\\.com/yuanying/sdctl)@(?<currentValue>v[^\\s]+)"],
       "datasourceTemplate": "go"
+    },
+    {
+      "description": "kubectl in the workspace image (ADR 0085) is fetched from dl.k8s.io at the version on its ARG line, which no manager reads. It is read here as a Kubernetes release. A patch is merged like any other; a new minor is a pull request to take with the clusters', since kubectl keeps within one minor of the server",
+      "customType": "regex",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG KUBECTL_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "kubernetes/kubernetes",
+      "datasourceTemplate": "github-releases"
     }
   ],
   "packageRules": [
