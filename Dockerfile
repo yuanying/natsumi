@@ -31,15 +31,32 @@ RUN go test ./... \
 FROM golang:1.27 AS sdctl
 RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags='-s -w' github.com/yuanying/sdctl@v0.4.0
 
+# kubectl for the workspace (ADR 0085), a fixed release of the clusters' minor, checked against the checksum published
+# beside it. Renovate reads the version from the ARG line as a Kubernetes release.
+FROM debian:bookworm-slim AS kubectl
+ARG KUBECTL_VERSION=v1.37.2
+ARG TARGETARCH
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+RUN mkdir /out && cd /out \
+  && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+  && curl -fsSLO "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" \
+  && echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check \
+  && chmod 755 kubectl && rm kubectl.sha256
+
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
 # poppler-utils (pdftotext, pdftoppm) is for reading PDFs: those taken in from Slack (ADR 0072) and those attached to a
 # chat message (ADR 0071). poppler-data holds the CJK character maps, without which a Japanese PDF gives no text and its
 # pages render blank.
+# kubectl, ssh's client and curl are for the relays of ADR 0085, which an instance chooses in its deployment; in one that
+# does not, they reach nothing. libnss-wrapper is for the ssh wrapper below.
 FROM debian:bookworm-slim AS workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep jq python3 git procps tzdata poppler-utils poppler-data \
+       openssh-client libnss-wrapper curl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 # A name for the default UID, and the mount points of the four writable places.
 RUN groupadd --gid 1000 natsumi \
@@ -56,6 +73,11 @@ COPY --from=workspace-runner /out/natsumi-workspace-runner /usr/libexec/natsumi-
 COPY --from=sdctl /out/sdctl /usr/libexec/sdctl
 COPY --chmod=755 docker/sdctl/sdctl /usr/local/bin/sdctl
 COPY docker/sdctl/config.yaml /etc/sdctl/config.yaml
+# The CLIs that use the relays (ADR 0085). Their settings are files named on the command line (kubectl --kubeconfig,
+# ssh -F), as the runner passes no KUBECONFIG. The ssh in PATH is a wrapper that lends ssh a line of /etc/passwd when
+# the UID it runs as has none; see the file.
+COPY --from=kubectl /out/kubectl /usr/local/bin/kubectl
+COPY --chmod=755 docker/ssh/ssh /usr/local/bin/ssh
 # git reads the memory's history in /memory, which the server owns (ADR 0018, 0033); see the file for why it is trusted.
 COPY docker/workspace/gitconfig /etc/gitconfig
 # sources-diff (ADR 0050): what changed under /sources, read from the history the server keeps in /sources.git, which

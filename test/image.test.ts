@@ -149,6 +149,57 @@ test('the workspace image installs jq', async () => {
   assert.ok(install[0].split(/\s+/).includes('jq'), install[0]);
 });
 
+// ADR 0085: the CLIs that use the relays are in everyone's workspace. An instance whose way out is closed has them too,
+// and they reach nothing. gh is left out: the GitHub API is plain HTTP to the relay on the loopback, which curl does.
+test('the workspace image installs ssh\'s client, curl and the passwd wrapper ssh runs under, and not gh', async () => {
+  const install = /apt-get install (?:[^\n\\]|\\\n)*/.exec(await workspaceStage());
+  assert.ok(install, 'the workspace stage installs no packages');
+  const packages = install[0].split(/\s+/);
+  for (const name of ['openssh-client', 'curl', 'ca-certificates', 'libnss-wrapper']) assert.ok(packages.includes(name), `${name}: ${install[0]}`);
+  assert.ok(!packages.includes('gh'), install[0]);
+});
+
+const kubectlStage = async () => {
+  const text = await dockerfile();
+  const start = text.indexOf(' AS kubectl\n');
+  assert.notEqual(start, -1, 'no stage fetches kubectl');
+  return text.slice(start, text.indexOf('\nFROM ', start));
+};
+
+test('the workspace image has kubectl of a fixed 1.37 release, checked against its published checksum', async () => {
+  const stage = await kubectlStage();
+  assert.match(stage, /^ARG KUBECTL_VERSION=v1\.37\.\d+$/m);
+  assert.match(stage, /https:\/\/dl\.k8s\.io\/release\/\$\{KUBECTL_VERSION\}\/bin\/linux\/\$\{TARGETARCH\}\/kubectl\b/);
+  assert.match(stage, /kubectl\.sha256/);
+  assert.match(stage, /sha256sum --check/);
+  assert.match(await workspaceStage(), /^COPY --from=kubectl \/out\/kubectl \/usr\/local\/bin\/kubectl$/m);
+});
+
+test('Renovate reads the version of kubectl as a Kubernetes release', async () => {
+  const config = JSON.parse(await readFile(`${root}renovate.json`, 'utf8')) as {
+    customManagers: { managerFilePatterns: string[]; matchStrings: string[]; depNameTemplate?: string; datasourceTemplate?: string }[];
+  };
+  const text = await dockerfile();
+  const found = config.customManagers.flatMap(manager => manager.matchStrings.map(pattern => ({ manager, match: new RegExp(pattern).exec(text) })))
+    .filter(({ match }) => match?.groups?.currentValue?.startsWith('v1.37.'));
+  assert.equal(found.length, 1, 'no custom manager, or more than one, reads the kubectl version');
+  const { manager, match } = found[0]!;
+  assert.deepEqual(manager.managerFilePatterns, ['/^Dockerfile$/']);
+  assert.equal(match![0], `ARG KUBECTL_VERSION=${match!.groups!.currentValue}`);
+  assert.equal(manager.depNameTemplate, 'kubernetes/kubernetes');
+  assert.equal(manager.datasourceTemplate, 'github-releases');
+});
+
+// ssh looks itself up in /etc/passwd as it starts and stops without a line, which the UID a deployment picks may not
+// have (1001 on Kubernetes, ADR 0033). The ssh in PATH is a wrapper that lends ssh alone a line through nss_wrapper.
+test('the ssh in PATH is a wrapper around the real one, and only it is preloaded with nss_wrapper', async () => {
+  assert.match(await workspaceStage(), /^COPY --chmod=755 docker\/ssh\/ssh \/usr\/local\/bin\/ssh$/m);
+  const wrapper = await readFile(`${root}docker/ssh/ssh`, 'utf8');
+  assert.match(wrapper, /\/usr\/bin\/ssh "\$@"/);
+  assert.match(wrapper, /LD_PRELOAD=libnss_wrapper\.so/);
+  assert.doesNotMatch(wrapper, /^export /m, 'the preload is for ssh, set on its command line only');
+});
+
 // What natsumi runs reaches the runner, and the runner gives a command only PATH, HOME, LANG and TZ (ADR 0019): none of
 // the container's environment. So sdctl's defaults are checked where she uses it, through the runner of the built
 // workspace image, against a fake image server on the relay's address. It needs docker, and skips without it.
@@ -342,6 +393,73 @@ test('through the runner, as run_shell runs it as another UID, git reads the his
   assert.equal(diff.exitCode, 0, diff.stderr);
   assert.match(diff.stdout, /always\.md \| 1 \+/);
 });
+
+// ADR 0085: the connection settings are read-only files the deployment puts in (/tools), named on the command line, as
+// the runner passes no KUBECONFIG. Here they stand in /tmp/tools. HOME is made unwritable first: none of these may need
+// to write there, ssh's known_hosts least of all. With no network the commands get as far as connecting, and no further.
+const sshConfig = [
+  'Host node1',
+  '  HostName 192.0.2.10',
+  '  User root',
+  '  IdentityAgent /run/ssh-agent/agent.sock',
+  '  UserKnownHostsFile /tmp/tools/known_hosts',
+  '  StrictHostKeyChecking yes',
+  '',
+].join('\n');
+const kubeconfig = [
+  'apiVersion: v1',
+  'kind: Config',
+  'clusters:',
+  '- name: test',
+  '  cluster: {server: "http://127.0.0.1:18443"}',
+  'users:',
+  '- name: test',
+  '  user: {}',
+  'contexts:',
+  '- name: test',
+  '  context: {cluster: test, user: test}',
+  'current-context: test',
+  '',
+].join('\n');
+
+for (const uid of [1000, 1001]) {
+  test(`through the runner as UID ${uid}, kubectl, ssh and curl run with their settings in files and write nothing to HOME`, {
+    skip: hasDocker ? false : 'docker is not available',
+    timeout: 30 * 60_000,
+  }, async t => {
+    const container = await startWorkspace(t, `cli-${uid}`, uid);
+    const run = async (command: string) => {
+      const result = await throughRunner(container, command);
+      assert.equal(result.exitCode, 0, `${command}: ${result.stdout}${result.stderr}`);
+      return result.stdout;
+    };
+    await run([
+      'chmod 555 /home/natsumi',
+      'mkdir -p /tmp/tools && touch /tmp/tools/known_hosts',
+      `cat > /tmp/tools/ssh_config <<'EOF'\n${sshConfig}EOF`,
+      `cat > /tmp/tools/kubeconfig <<'EOF'\n${kubeconfig}EOF`,
+    ].join('\n'));
+
+    assert.match(await run('kubectl version --client'), /^Client Version: v1\.37\.\d+$/m);
+    assert.match((await throughRunner(container, 'ssh -V')).stderr, /^OpenSSH_/);
+    assert.match(await run('curl --version'), /^curl \d+\.\d+/);
+
+    const resolved = await run('ssh -G -F /tmp/tools/ssh_config node1');
+    for (const line of ['hostname 192.0.2.10', 'user root', 'identityagent /run/ssh-agent/agent.sock', 'userknownhostsfile /tmp/tools/known_hosts']) {
+      assert.match(resolved, new RegExp(`^${line}$`, 'm'), line);
+    }
+    const connected = await throughRunner(container, 'ssh -F /tmp/tools/ssh_config -o BatchMode=yes -o ConnectTimeout=2 node1 true');
+    assert.equal(connected.exitCode, 255);
+    assert.match(connected.stderr, /connect to host 192\.0\.2\.10 port 22/);
+
+    assert.equal(await run('kubectl --kubeconfig /tmp/tools/kubeconfig config view --minify -o jsonpath=\'{.clusters[0].cluster.server}\''), 'http://127.0.0.1:18443');
+    const listed = await throughRunner(container, 'kubectl --kubeconfig /tmp/tools/kubeconfig get pods');
+    assert.notEqual(listed.exitCode, 0);
+    assert.match(listed.stderr, /The connection to the server 127\.0\.0\.1:18443 was refused/);
+
+    assert.equal(await run('ls -A /home/natsumi'), '');
+  });
+}
 
 const serverTag = 'natsumi-server:test';
 let serverImage: Promise<string> | undefined;

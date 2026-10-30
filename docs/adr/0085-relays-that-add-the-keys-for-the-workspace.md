@@ -1,7 +1,7 @@
 # 0085. 作業環境から鍵の要る API とノードへ、鍵を見せずに中継で出る
 
 - Date: 2026-10-30
-- Status: Accepted
+- Status: Accepted（2026-10-30: 作業環境の image に入れるコマンドを全員に入れると決めたことを「実装で決めたこと」の節に加えた）
 
 ## Context
 
@@ -146,6 +146,24 @@ ADR 0044 の画像生成の中継と同じ形を、API ごとに足す。
 
 - kubectl・ssh の client・git・`gh` などを、作業環境の image に全員の分として入れるか、選んだインスタンスにだけ届ける形にするか。
 - 宣言したツールの本体と、`/tools` の mount の形（ADR 0075 で環境の設定の側に残したもの）。
+
+### 実装で決めたこと（2026-10-30）
+
+上の「実装の作業単位で決めること」の 1 つ目を、natsumi の実装の PR で次のように決めた。2 つ目（宣言したツールの本体と `/tools` の mount の形）は環境の設定の側で決める。
+
+- **コマンドは全員の作業環境の image に入れる。** 入れるのは `kubectl`・ssh の client（`openssh-client`）・`curl` である。
+  - 中継を選ばないインスタンスでは、作業環境の外向きが全部閉じているので、入っていてもどこにもつながらない。選んだインスタンスにだけ届ける形（別の image、mount）は、配置の仕組みを増やすだけで守りを強めない。
+  - `git`・`jq` は既に入っている。`gh` は入れない。GitHub の API は中継の loopback の平文の HTTP で呼ぶので、`curl` で足りる。
+- **`kubectl` は版を固定して公式の配布から取る。** Debian のパッケージには無い。版はクラスタの minor（v1.37）に合わせ、dl.k8s.io の `.sha256` で確かめる。
+  版は Dockerfile の `ARG KUBECTL_VERSION` に書き、Renovate が Kubernetes のリリースとして上げる。patch はほかの依存と同じく自動でマージし、minor はクラスタの版と合わせて人が取り込む。
+- **PATH の ssh はラッパーにする。** ssh は起動時に自分の UID の行を `/etc/passwd` から引き、無ければ `No user exists for uid` で止まる。`-F` の設定でも避けられない。
+  image の `/etc/passwd` には既定の UID（1000）の行しか無く、Kubernetes の配置は作業環境を別の UID（1001）で動かす（[ADR 0033](0033-running-on-kubernetes.md)）。
+  - ラッパーは、行がある UID ではそのまま本物の ssh を動かす。行が無い UID では、`/tmp` に 1 行の passwd（ホームは `HOME`）を書き、`libnss-wrapper` を `LD_PRELOAD` で ssh にだけ読ませる。
+    preload はラッパーが ssh を起動するコマンドの行にだけ付けるので、効くのは ssh とその子だけで、`run_shell` のほかのコマンドには効かない。
+  - 配置の UID を公開の image に焼き込む案と、配置の側で `/etc/passwd` を上書きする案は退けた。前者は配置ごとに UID が違えば同じ問題が残り、後者は image の `/etc/passwd` の変更に配置が追従しなければならない。
+  - `kubectl`・`curl`・`git` は passwd の行が無くても動く。ssh の行の要るほかのコマンド（`scp`・`sftp`）はラッパーを持たない。
+- どのコマンドも `HOME` に書かずに動く。ssh は `-F` の設定の `UserKnownHostsFile` で known_hosts を指し、`kubectl` は `--kubeconfig` で設定を読む（キャッシュの場所に書けなくても止まらない）。
+  作業環境の image の試験で、UID 1000 と 1001 の両方について、`HOME` を書けなくした状態で確かめている。
 
 ### 置き換える既存の決定
 
