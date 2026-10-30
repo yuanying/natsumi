@@ -26,6 +26,14 @@
       "matchStrings": ["ARG KUBECTL_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "kubernetes/kubernetes",
       "datasourceTemplate": "github-releases"
+    },
+    {
+      "description": "sops in the workspace image (ADR 0088) is fetched from its GitHub releases at the version on its ARG line, which no manager reads. It is read here as a release of getsops/sops",
+      "customType": "regex",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG SOPS_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "getsops/sops",
+      "datasourceTemplate": "github-releases"
     }
   ],
   "packageRules": [

@@ -1119,8 +1119,12 @@ natsumi は `run_shell` でコマンドを動かします。コマンドは nats
   - natsumi に Docker のソケットは渡しません。
   - ツールは、設定の `loop.workspaceSocket`（設定例では `/run/natsumi-workspace/runner.sock`）があるときだけ使えます。
 - 入っているもの: debian-slim に標準の道具（`coreutils`・`findutils`・`diffutils`・`grep`・`sed`・`gawk`・`tar`・`gzip`・`bash`）と、
-  `ripgrep`・`jq`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、PDF を読む `poppler-utils`（`pdftotext`・`pdftoppm`）と、その日本語などの文字の対応表 `poppler-data`、画像を作る `sdctl`、中継（[ADR 0085](docs/adr/0085-relays-that-add-the-keys-for-the-workspace.md)）を使う `kubectl`・`ssh`・`curl`、それに runner です。
-  中継を選ばないインスタンスでは外向きが全部閉じているので、`kubectl`・`ssh`・`curl` はどこにもつながりません。
+  `ripgrep`・`jq`・`python3`（標準ライブラリのみ）・`git`・`procps`・`tzdata`、PDF を読む `poppler-utils`（`pdftotext`・`pdftoppm`）と、その日本語などの文字の対応表 `poppler-data`、画像を作る `sdctl`、中継（[ADR 0085](docs/adr/0085-relays-that-add-the-keys-for-the-workspace.md)）を使う `kubectl`・`ssh`・`curl`、
+  Ruby 4.0（公式の build。`ruby`・`bundle`）と C の拡張を build する `gcc`・`make`、secret を暗号化する `sops`・`age`、Go のツールチェーン（`go`・`gofmt`）（[ADR 0088](docs/adr/0088-ruby-sops-and-go-in-the-workspace.md)）、それに runner です。
+  中継を選ばないインスタンスでは外向きが全部閉じているので、`kubectl`・`ssh`・`curl` はどこにもつながらず、gem や Go のモジュールも取れません。
+  - `bundle install` は gem を `HOME` の下（Ruby の `Gem.user_dir`）に入れます。PATH の `bundle` は、そこに `GEM_HOME` を向けるラッパーです。
+  - sops は age の鍵を `~/.config/sops/age/keys.txt` から読みます。Go の `GOPATH`・`GOCACHE` も `HOME` の下で、`GOTOOLCHAIN` は `local` が既定です。
+  - gem の mirror（`bundle config set --global mirror.https://rubygems.org …`）と `GOPROXY`（`go env -w`）は、中継を選んだインスタンスの配置に合わせて設定します。
   **使えるコマンドの一覧はもうありません。** 閉じ込めはコンテナの形だけで掛けます。
 - 書ける場所は 4 つです。ルートは読み取り専用のままです。
 

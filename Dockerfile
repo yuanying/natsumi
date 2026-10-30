@@ -45,6 +45,38 @@ RUN mkdir /out && cd /out \
   && echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check \
   && chmod 755 kubectl && rm kubectl.sha256
 
+# sops for the workspace (ADR 0088), a fixed release, checked against the checksums published with it. Debian bookworm
+# has none. Renovate reads the version from the ARG line as a release of getsops/sops.
+FROM debian:bookworm-slim AS sops
+ARG SOPS_VERSION=v3.13.3
+ARG TARGETARCH
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+RUN mkdir /out && cd /out \
+  && curl -fsSLO "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.${TARGETARCH}" \
+  && curl -fsSLO "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.checksums.txt" \
+  && grep " sops-${SOPS_VERSION}.linux.${TARGETARCH}\$" "sops-${SOPS_VERSION}.checksums.txt" | sha256sum --check \
+  && mv "sops-${SOPS_VERSION}.linux.${TARGETARCH}" sops && chmod 755 sops && rm "sops-${SOPS_VERSION}.checksums.txt"
+
+# Go's toolchain for the workspace (ADR 0088): the one the runner and sdctl are built with. GOTOOLCHAIN is local in
+# $GOROOT/go.env, the lowest of Go's defaults, so a go.mod asking for another Go fetches nothing; the environment and
+# `go env -w` still come first. GOPROXY is left as Go ships it, as the relay's port is the deployment's.
+FROM golang:1.27 AS go
+RUN sed -i 's/^GOTOOLCHAIN=.*/GOTOOLCHAIN=local/' /usr/local/go/go.env \
+  && grep -qx 'GOTOOLCHAIN=local' /usr/local/go/go.env
+
+# Ruby for the workspace (ADR 0088): the official build of a fixed 4.0 release, on the same Debian as the workspace. Its
+# interpreter, libraries, headers and default gems are gathered into /out/local to be laid over /usr/local, and the
+# bundle and bundler it ships into /out/bundler, out of PATH, behind the wrapper in the workspace. Its ENV (GEM_HOME and
+# BUNDLE_*) is not taken: the runner passes none of it (ADR 0019). Renovate moves the tag and the digest together.
+FROM ruby:4.0.9-slim-bookworm@sha256:f999b3be00ed747bf7b2e450155ab1482d77300eb71ec7d3ada49ccc921c6ed4 AS ruby
+RUN mkdir -p /out/local/lib /out/local/include /out/bundler \
+  && cp -a /usr/local/bin /usr/local/etc /out/local/ \
+  && cp -a /usr/local/lib/ruby /usr/local/lib/libruby.so* /usr/local/lib/pkgconfig /out/local/lib/ \
+  && cp -a /usr/local/include/ruby-* /out/local/include/ \
+  && mv /out/local/bin/bundle /out/local/bin/bundler /out/bundler/
+
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
 # poppler-utils (pdftotext, pdftoppm) is for reading PDFs: those taken in from Slack (ADR 0072) and those attached to a
@@ -52,12 +84,20 @@ RUN mkdir /out && cd /out \
 # pages render blank.
 # kubectl, ssh's client and curl are for the relays of ADR 0085, which an instance chooses in its deployment; in one that
 # does not, they reach nothing. libnss-wrapper is for the ssh wrapper below.
+# Ruby, from the stage above, is for the Ruby CLIs an instance runs from a clone, installing their gems with bundle (ADR
+# 0088). libyaml-0-2, libffi8, libgmp10, libssl3 and zlib1g are what the official image installs for it to run. gcc,
+# make and libc6-dev build a gem's C extension; build-essential would add g++ and dpkg-dev, which no C extension needs.
+# age makes the keys sops encrypts with; Debian's is enough for that, and apt checks it, where age's releases publish no
+# checksum.
 FROM debian:bookworm-slim AS workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep jq python3 git procps tzdata poppler-utils poppler-data \
        openssh-client libnss-wrapper curl ca-certificates \
+       libyaml-0-2 libffi8 libgmp10 libssl3 zlib1g gcc make libc6-dev age \
   && rm -rf /var/lib/apt/lists/*
+COPY --from=ruby /out/local/ /usr/local/
+COPY --from=ruby /out/bundler/ /usr/libexec/bundler/
 # A name for the default UID, and the mount points of the four writable places.
 RUN groupadd --gid 1000 natsumi \
   && useradd --uid 1000 --gid 1000 --home-dir /home/natsumi --shell /bin/bash natsumi \
@@ -78,6 +118,16 @@ COPY docker/sdctl/config.yaml /etc/sdctl/config.yaml
 # the UID it runs as has none; see the file.
 COPY --from=kubectl /out/kubectl /usr/local/bin/kubectl
 COPY --chmod=755 docker/ssh/ssh /usr/local/bin/ssh
+# The bundle in PATH (ADR 0088) installs gems under HOME, as Gem's own directory is on the read-only root and the
+# runner passes no GEM_HOME or bundler setting; see the file.
+COPY --chmod=755 docker/bundler/bundle /usr/local/bin/bundle
+COPY --chmod=755 docker/bundler/bundle /usr/local/bin/bundler
+# sops reads its age key from ~/.config/sops/age/keys.txt, under HOME, as the runner passes no SOPS_AGE_KEY_FILE.
+COPY --from=sops /out/sops /usr/local/bin/sops
+# Go in /usr/local/go, as it ships, with go and gofmt linked onto the runner's PATH. GOPATH and GOCACHE are Go's
+# defaults under HOME.
+COPY --from=go /usr/local/go /usr/local/go
+RUN ln -s /usr/local/go/bin/go /usr/local/go/bin/gofmt /usr/local/bin/
 # git reads the memory's history in /memory, which the server owns (ADR 0018, 0033); see the file for why it is trusted.
 COPY docker/workspace/gitconfig /etc/gitconfig
 # sources-diff (ADR 0050): what changed under /sources, read from the history the server keeps in /sources.git, which
