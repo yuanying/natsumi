@@ -124,6 +124,26 @@
 - 更新元のマニュアルを 1 枚足す。ファイルの形、行の欄、印 `alert` の意味、`firing.jsonl` で今を見ること、annotation の `runbook_url` などの読み方を書く。
 - system prompt、ツールの定義、出来事の種類は変えない（ADR 0050）。
 
+### 実装で決めたこと
+
+ADR では決めず、実装の PR で決めたものは次のとおりである。
+
+- **行の欄の名前**: Slack の日付のファイルに揃えて snake_case にした。`at`（受け取った時刻）・`status`・`alertname`・`severity`・`labels`・`annotations`・
+  `starts_at`・`ends_at`（`resolved` のときだけ）・`fingerprint`・`generator_url`・`group_key`。時刻はどれも `loop.timeZone` の `YYYY-MM-DD HH:MM:SS` である。
+  ラベルに `alertname`・`severity` が無ければ、その欄を置かない。`firing.jsonl` の行は最後に届いた形で、`at` も最後に届いた時刻である。
+- **送り手の名前**: 英小文字・数字・`-` で 32 文字まで（`a2a.agents` の名前と同じ）。重ねられない。
+- **token**: `tokenFile` だけを受け、起動時に読む（入れ替えは再起動、と Consequences に書いたとおり）。読めなければ設定の名前だけを示して起動を止める。
+  照らすときは、届いた token と覚えた token をそれぞれ SHA-256 にしてから時間に依らない比べ方をする。長さの違いも漏らさない。名前を知らない送り手も、同じ手順で使われない値と照らす。
+- **応答**: 書き終えたら 200（本文は `{"recorded": <足した行の数>}`）。401 は `unauthorized`、本文の上限（1 MiB）を超えれば 413 `too-large`、
+  webhook の形でない JSON も 400 `invalid-request` にする（`alerts` の並び、各アラートの `status`・文字列のラベルと annotation・RFC 3339 の `startsAt`・`resolved` の `endsAt`・`fingerprint`）。
+  書けなければ 503 `not-recorded`。POST 以外は、ほかの知らない道と同じ 404 にする。
+- **書き方**: アラートの状態（`alertmanager_alerts`）と日付のファイルの行（`alertmanager_lines`）を 1 つのトランザクションで SQLite（migration 34）に入れ、印もその中で記録する。
+  そのあとファイルを丸ごと書き直す。ファイルが書けずに 503 を返したときは、状態はもう変わっているので、送り直しは行を足さずに、書けなかったファイルだけを書く。
+  そのまま再起動したときは、起動時に送り手ごとの最新の日付のファイルと `firing.jsonl` を書き直す。
+- **印の欄**: 印の `details` に `alertname` と `severity` を載せる。annotation は載せない（外の文章を出来事に入れないため）。
+- **差分から外す書き方**: 登録の `exclude` に `*/firing.jsonl` を書く。`firing.jsonl` だけが書き換わっても、更新元の変化にならない。
+- **`config.example.json`**: `alertmanager` は載せない。`a2a`・`slack` と同じく秘密のファイルが要る省略可の設定で、写した例が token のファイルの無いところで起動を止めないためである。書き方は README にある。
+
 ### 置き換える既存の決定
 
 - ADR 0069
