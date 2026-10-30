@@ -26,26 +26,29 @@ gem・Go のモジュールの取り込みは、インスタンスの配置が�
 - ADR 0085 の `kubectl` と同じく、全員の作業環境の image に入れる。外向きが閉じたインスタンスでは、gem もモジュールも取れないが、手元のものの build と実行はできる。
 - 選んだインスタンスにだけ届ける形は、配置の仕組みを増やすだけで守りを強めない（ADR 0085 と同じ理由）。
 
-### Ruby は Debian のもの、C のコンパイラは最小にする
+### Ruby は公式の 4.0 を入れ、C のコンパイラは最小にする
 
-- Ruby は Debian bookworm の `ruby`・`ruby-dev`（3.1）を入れる。
+- Ruby は、公式の Ruby の image（同じ Debian bookworm の slim）から、版を固定した 4.0 を入れる。Debian bookworm の Ruby（3.1）は入れない。
+  - 作業環境で動かす Ruby の CLI は、その CLI が試されている Ruby で動かしたい。3.1 は upstream の保守が終わっており、新しい Ruby で試された CLI が 3.1 では動かないことがある（3.1 では読み込まれないライブラリに頼る、など）。
+  - image からは、`/usr/local` の Ruby（インタープリタ・標準のライブラリと default gem・`libruby`・ヘッダ・`gemrc`）だけを同じパスに写す。image の環境変数（`GEM_HOME` など）は写さない。runner が渡さないためである。
+  - 実行に要るライブラリ（libyaml・libffi・libgmp・libssl・zlib）は、公式の image が apt で入れているものと同じ Debian の package を入れる。同じ Debian の上で build されたものなので、そのまま動く。
+  - image は tag と digest で固定し、Renovate が両方を一緒に上げる。
 - C 拡張の build には `gcc`・`make`・`libc6-dev` を入れる。`build-essential` は入れない。足されるのは `g++` と `dpkg-dev` で、C の拡張には要らない。C++ の拡張の gem は build できない。
+  ヘッダの要るライブラリ（libssl など）を使う C 拡張も、その `-dev` を足すまでは build できない。
 
-### bundler は版を固定して入れ、PATH の bundle をラッパーにする
+### bundler は Ruby に同梱のものを使い、PATH の bundle をラッパーにする
 
-- Debian の bundler（2.3）は入れない。gemspec の開発用の依存に、もっと新しい bundler を求めるものがあり、その場合は解決の段階で止まる。
-- bundler は rubygems.org から版を固定して入れる。Ruby 3.1 で動く最後の系列の 2.6 にする（2.7 以降は Ruby 3.2 を求める）。
-  版は Dockerfile の `ARG` に書き、Renovate が gem として上げる。2.7 以上には上げない規則を置き、image の Debian を上げるときに外す。
-- 本物の bundler は PATH の外に置く。PATH の `bundle`・`bundler` は、`GEM_HOME` を Ruby の `Gem.user_dir`（`HOME` の下）に向けて本物を動かすラッパーにする。
-  - 何も設定しなければ、bundler は Ruby の既定の場所（読み取り専用のルートの下）に書こうとして失敗する。
-  - bundler 2.6 には、全員の既定を置ける設定ファイル（`/etc` の下など）が無い。読むのは環境変数・`HOME` の設定・プロジェクトの設定だけで、`HOME` は mount で image の中身が隠れる。
-  - `Gem.user_dir` は Ruby の既定の gem の探し場所に入っている。`bundle install` で入れた gem は、`bundle exec` でなくても素の `ruby` から読める。
+- bundler は Ruby 4.0 に同梱のものを使う。版を別に固定しない。Ruby の image の版と一緒に上がる。
+- 同梱の `bundle`・`bundler` は PATH の外に置く。PATH の `bundle`・`bundler` は、`GEM_HOME` を Ruby の `Gem.user_dir`（`HOME` の下）に向けて本物を動かすラッパーにする。
+  - 何も設定しなければ、bundler は Ruby の既定の場所（読み取り専用のルートの下）に書こうとして失敗する。4.0 の bundler でも同じである。
+  - bundler には、全員の既定を置ける設定ファイル（`/etc` の下など）が無い。読むのは環境変数・`HOME` の設定・プロジェクトの設定だけで、`HOME` は mount で image の中身が隠れる。
+  - `Gem.user_dir` は、`HOME` があれば Ruby の既定の gem の探し場所に入る。`bundle install` で入れた gem は、`bundle exec` でなくても素の `ruby` から読める。
   - 既に `GEM_HOME` があればそれを使う。プロジェクトの bundler の設定（`path`）もラッパーより優先される。
   - `bundle config` の global の設定（mirror など）は、これまでどおり `HOME` の下に書けて残る。
 - 退けた案:
   - **プロジェクトの `vendor/bundle` を既定にする**: 全員に既定を置く手段が、結局ラッパーになる。入れたものが `bundle exec` の外から見えず、clone ごとに入れ直しになる。
-  - **Ruby の既定の場所を書ける場所への symlink にする**: mount が空のときに壊れ、bundler 自身の置き場とも重なる。
-- `gem install` は対象にしない。`--user-install` を付ければ同じ `Gem.user_dir` に入る。
+  - **Ruby の既定の場所を書ける場所への symlink にする**: mount が空のときに壊れ、標準の gem の置き場とも重なる。
+- `gem install` にはラッパーを置かない。RubyGems 4 は、既定の場所に書けなければ自分で `Gem.user_dir` に入れる。
 
 ### sops は公開の配布物から、age は Debian から
 
@@ -77,9 +80,11 @@ gem・Go のモジュールの取り込みは、インスタンスの配置が�
 
 ## Consequences
 
-- 作業環境の image が大きくなる。増えるのは主に Go のツールチェーンと、Ruby・C のコンパイラである。
+- 作業環境の image が大きくなる。増えるのは主に Go のツールチェーンと、C のコンパイラと、Ruby である。
 - gem・Go のモジュール・ビルドのキャッシュは `HOME` の下に溜まり、永続する書き場所の大きさの目安（ADR 0019）に数えられる。片づけはなつみが行う。
-- Ruby 3.1 は upstream の保守が終わっており、Debian bookworm のセキュリティ更新に頼る。bundler も Ruby 3.1 で動く 2.6 に留まる。どちらも image の Debian を上げるときに見直す。
+- Ruby の修正は、Debian ではなく公式の image の版で入る。Renovate の pull request を取り込むまで、作業環境の Ruby は古いままである。
+- Ruby の image は、作業環境と同じ Debian のものに揃える。作業環境の Debian を上げるときは、Ruby の image の tag も同じ Debian のものに替える。
 - C++ の拡張の gem は build できない。要るようになったら `g++` を足す。
+- `/tmp` は `noexec` のままである（ADR 0019）。一時ディレクトリに実行ファイル（テストのスタブなど）を置いて動かすもの（CLI のテストなど）は、コマンドの行で `TMPDIR` を `/work` の下に向けて動かす。
 - 作業環境の中のどのコマンドも C のコンパイラと Go で任意の実行ファイルを作れる。これまでも python3 で任意のコードを動かせたので、閉じ込めの形（コンテナの形）は変わらない。
 - `GOTOOLCHAIN=local` により、新しい Go を求めるモジュールは、image の Go を上げるか設定を変えるまで build できない。
