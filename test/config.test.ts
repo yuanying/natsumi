@@ -925,3 +925,26 @@ test('a parameter named like a file or a secret is a name, not a secret referenc
   assert.deepEqual(parseConfig(withTools({ ...weather(), parameters })).tools![0]!.parameters, parameters);
   rejects(withTools({ ...weather(), command: ['/tools/x', 'sk-abcdef'] }), 'tools[0].command[1]', /secrets/);
 });
+
+test('Alertmanager’s senders are named with their token files, and her mark is on critical unless told (ADR 0086)', () => {
+  assert.equal(parseConfig(base()).alertmanager, undefined, 'without it, there is no way in');
+  const senders = [{ name: 'fraction', tokenFile: '/run/secrets/alertmanager-fraction' }, { name: 'test-2', tokenFile: '/run/secrets/alertmanager-test' }];
+  assert.deepEqual(parseConfig({ ...base(), alertmanager: { senders } }).alertmanager, { senders, attentionSeverities: ['critical'] });
+  assert.deepEqual(parseConfig({ ...base(), alertmanager: { senders, attentionSeverities: ['critical', 'page'] } }).alertmanager?.attentionSeverities,
+    ['critical', 'page']);
+  assert.deepEqual(parseConfig({ ...base(), alertmanager: { senders, attentionSeverities: [] } }).alertmanager?.attentionSeverities, []);
+  const one = (sender: Record<string, unknown>) => ({ ...base(), alertmanager: { senders: [sender] } });
+  rejects({ ...base(), alertmanager: {} }, 'alertmanager.senders', /required/);
+  rejects({ ...base(), alertmanager: { senders: [] } }, 'alertmanager.senders');
+  rejects({ ...base(), alertmanager: { senders: {} } }, 'alertmanager.senders');
+  rejects({ ...base(), alertmanager: { senders, extra: true } }, 'alertmanager.extra');
+  for (const name of ['Fraction', 'a_b', '-a', '', 'a/b', 'x'.repeat(33)]) rejects(one({ name, tokenFile: '/run/t' }), 'alertmanager.senders[0].name');
+  rejects(one({ name: 'fraction' }), 'alertmanager.senders[0].tokenFile', /required/);
+  rejects(one({ name: 'fraction', tokenFile: 'relative/token' }), 'alertmanager.senders[0].tokenFile');
+  rejects(one({ name: 'fraction', tokenFile: '/run/t', url: 'https://x.example.test' }), 'alertmanager.senders[0].url');
+  rejects(one({ name: 'fraction', token: 'written-in-place' }), 'alertmanager.senders[0].token', /secrets must not be written/);
+  rejects({ ...base(), alertmanager: { senders: [senders[0], { ...senders[1], name: 'fraction' }] } }, 'alertmanager.senders[1].name', /twice/);
+  for (const severities of ['critical', [''], [3], ['critical', 'critical']]) {
+    rejects({ ...base(), alertmanager: { senders, attentionSeverities: severities } }, 'alertmanager.attentionSeverities');
+  }
+});

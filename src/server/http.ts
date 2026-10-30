@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
+import { MAX_ALERTMANAGER_BODY_BYTES, parseNotification, type AlertNotification } from './alertmanager.ts';
 import { avatarManifest, type Avatar } from './avatar.ts';
 import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
 import type { ConnectionHub } from './connections.ts';
@@ -22,6 +23,8 @@ const UPLOAD_PATH = /^\/v1\/uploads\/(upload-[0-9a-f-]{36})$/;
 const SLACK_ICON_PATH = /^\/avatar\/([a-z]+)\.png$/;
 /** One file of the avatar's bundle under its version (ADR 0057): `/v1/avatar/<version>/<path>`. */
 const AVATAR_FILE_PATH = /^\/v1\/avatar\/([0-9a-f]{32})\/(.+)$/;
+/** One sender of Alertmanager's notifications (ADR 0086): `POST /v1/alertmanager/<sender>`. */
+const ALERTMANAGER_PATH = /^\/v1\/alertmanager\/([^/]*)$/;
 
 export interface ListenerOptions {
   listen: ListenConfig;
@@ -46,6 +49,11 @@ export interface ListenerOptions {
     readonly limits: { maxFileBytes: number };
     receive(body: AsyncIterable<Buffer>, input: { name: string; githubUserId: number }): Promise<Received>;
     read(uploadId: string): Promise<{ name: string; bytes: number; mimeType?: string; file: string } | undefined>;
+  };
+  /** Alertmanager's notifications (ADR 0086), when the config has senders: who may send, and where it is written. */
+  alertmanager?: {
+    allowed(sender: string, token: string | undefined): boolean;
+    receive(sender: string, notification: AlertNotification): Promise<{ recorded: number }>;
   };
 }
 
@@ -167,6 +175,8 @@ async function route(request: IncomingMessage, response: ServerResponse, options
     stream.pipe(response);
     return;
   }
+  const sender = method === 'POST' && options.alertmanager ? ALERTMANAGER_PATH.exec(url.pathname)?.[1] : undefined;
+  if (sender !== undefined) return receiveAlerts(request, response, sender, options.alertmanager!, options.log);
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
   if (Dashboard.owns(url.pathname)) return options.dashboard.handle(request, response, url);
   if (WebApp.owns(url.pathname)) return options.webApp.handle(request, response, url);
@@ -221,6 +231,29 @@ async function receiveUpload(request: IncomingMessage, response: ServerResponse,
   json(response, 201, { ...received.upload });
 }
 
+/**
+ * A notification of Alertmanager (ADR 0086). The sender's own bearer token only, never the browser's cookie; an unknown
+ * sender is refused as a wrong token is. The body is read up to its limit, and answered with a 2xx only once it is
+ * written: a 5xx has Alertmanager send it again, which the state kept of every alert makes harmless.
+ */
+async function receiveAlerts(request: IncomingMessage, response: ServerResponse, sender: string,
+  alertmanager: NonNullable<ListenerOptions['alertmanager']>, log: (line: string) => void) {
+  const refuse = (status: number, error: string) => { response.setHeader('connection', 'close'); json(response, status, { error }); };
+  if (!alertmanager.allowed(sender, bearerToken(request))) return refuse(401, 'unauthorized');
+  if (Number(request.headers['content-length'] ?? 0) > MAX_ALERTMANAGER_BODY_BYTES) return refuse(413, 'too-large');
+  const body = await readBody(request, MAX_ALERTMANAGER_BODY_BYTES);
+  if (body === undefined) return refuse(413, 'too-large');
+  let notification: AlertNotification | undefined;
+  try { notification = parseNotification(JSON.parse(body.toString('utf8'))); } catch { /* answered below */ }
+  if (!notification) return json(response, 400, { error: 'invalid-request' });
+  try {
+    json(response, 200, await alertmanager.receive(sender, notification));
+  } catch {
+    log(`alertmanager: a notification of ${sender} could not be written; it is refused for Alertmanager to send again`);
+    json(response, 503, { error: 'not-recorded' });
+  }
+}
+
 function answer(response: ServerResponse, outcome: Outcome) {
   if ('location' in outcome) response.writeHead(302, { location: outcome.location }).end();
   else json(response, outcome.status, outcome.body);
@@ -231,12 +264,19 @@ function json(response: ServerResponse, status: number, body: Record<string, unk
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
+  const body = await readBody(request, MAX_BODY_BYTES);
+  if (body === undefined) return undefined;
+  try { return JSON.parse(body.toString('utf8')); } catch { return undefined; }
+}
+
+/** The body, or undefined as soon as it is past the limit. */
+async function readBody(request: IncomingMessage, limit: number): Promise<Buffer | undefined> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) return undefined;
+    if (size > limit) return undefined;
     chunks.push(chunk);
   }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return undefined; }
+  return Buffer.concat(chunks);
 }

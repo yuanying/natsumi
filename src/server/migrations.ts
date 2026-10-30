@@ -1035,4 +1035,32 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX session_rotations_by_creation ON session_rotations (created_at);
     `,
   },
+  {
+    version: 34,
+    name: 'alertmanager-alerts',
+    sql: `
+      -- The last state of each alert a sender of Alertmanager told of, by its fingerprint (ADR 0086): a line is written
+      -- only when it changes. line is the alert as it came last, which firing.jsonl is written from while it fires;
+      -- starts_at (UTC) orders that file. A resolved alert stays, so its firing again is a change.
+      CREATE TABLE alertmanager_alerts (
+        sender TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('firing', 'resolved')),
+        starts_at TEXT NOT NULL,
+        line TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (sender, fingerprint)
+      ) STRICT;
+      -- The lines of the day files, one a change of state, in the order they were recorded. Each file is written whole
+      -- from them, so one that could not be written is written in full by the next look.
+      CREATE TABLE alertmanager_lines (
+        line_id INTEGER PRIMARY KEY,
+        sender TEXT NOT NULL,
+        file_date TEXT NOT NULL,
+        line TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX alertmanager_lines_by_file ON alertmanager_lines (sender, file_date, line_id);
+    `,
+  },
 ];
