@@ -39,7 +39,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
 2. 下記の手順で GitHub OAuth App と TLS 証明書を用意します。
 3. [config.example.json](config.example.json) を `config.local.json` などにコピーし、実環境に合わせます。
    - `pi`: Pi 状態領域のパス。data directory ともホームの `.pi` / `.codex` とも別の場所にします。
-     `model` でモデルを選びます。専用領域で login した Pi のサブスクリプション（例: `openai-codex`）か、
+     `model` でモデルを選びます。専用領域で login した Pi のサブスクリプション（例: `openai`。legacy の `openai-codex` も使えます）か、
      `"provider": "natsumi-compatible"` と `compatible`（自分で動かす OpenAI 互換エンドポイントの `baseUrl` と、
      API key の参照 `apiKeyEnv` か `apiKeyFile`）の組です。両者の間で自動の切り替えはしません。
      `compatible.contextWindow` は、Pi に伝えるそのモデルの context の大きさ（tokens、既定 128000）です。
@@ -278,7 +278,7 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
       "compatible": { "baseUrl": "https://llm.example.net/v1", "apiKeyEnv": "NATSUMI_PI_API_KEY", "contextWindow": 131072 }
     },
     "plus": {
-      "model": { "provider": "openai-codex", "id": "gpt-5.6-sol" },
+      "model": { "provider": "openai", "id": "gpt-6.1-sol" },
       "compactionThreshold": 150000
     }
   },
@@ -291,7 +291,9 @@ natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-se
   互換の経路を 2 つ以上並べるときは、provider を `natsumi-compatible-<何か>` のように経路ごとに変えます。
   1 つ目は `natsumi-compatible` のままにしておくと、これまでの session の記録と同じモデルとして続きます。
 - `compactionThreshold` は省けます。書かなければ `loop.compactionThreshold` を使います。上限と窓の組み合わせは経路ごとに検査します。
-  互換の経路は `compatible.contextWindow` で、サブスクリプションの経路は Pi のモデル定義の窓（`gpt-5.6-sol` は 272000）で検査します。
+  互換の経路は `compatible.contextWindow` で、サブスクリプションの経路は Pi のモデル定義の窓で検査します。
+  同じモデルでも provider で窓が違います（`gpt-6.1-sol` は `openai` で 272000、`openai-codex` で 500000）。
+  `openai` の `gpt-6.1-sol` では、閾値は 218752 以下にします。
 - `pi.model`（と `pi.compatible`）だけの設定は、`default` という名前の経路 1 つとして読みます。
 - ポッポさんの判定が使い回すのは、既定の経路の互換のモデルだけです。切り替えても判定は変わりません。
 
@@ -317,14 +319,35 @@ Kubernetes では `kubectl exec natsumi-0 -c server -- node /app/dist/src/server
   画面での選び方は下の「Mac アプリ」の「使い方」と「iPhone アプリ」にあります。
 - ブラウザの設定の画面（`/settings`）からも選べ、「config に戻す」で選んだ記録（`.natsumi/model-route.json`）を消して既定の経路に戻せます（下の「ブラウザで話す・設定を変える」）。
 
-サブスクリプションの経路（例: ChatGPT Plus の `openai-codex`）は、`pi.authPath` の OAuth のログインを使います。
+サブスクリプションの経路（例: ChatGPT Plus の `openai`）は、`pi.authPath` の OAuth のログインを使います。
 サーバーはこのファイルを作りません。本人が Pi の CLI で、その Pi 領域にログインします。`authPath` は
 `<agentDirectory>/auth.json` にしておきます（Pi の CLI はそこに書きます）。
 
 ```sh
 PI_CODING_AGENT_DIR=<pi.agentDirectory> node node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js
-# Pi の画面で /login を打ち、provider を選んでログインします。
+# Pi の画面で /login を打ち、provider を選んでログインします（`openai` は「Sign in with ChatGPT」）。
 ```
+
+ログインは provider ごとです。legacy の `openai-codex` から `openai` に移すときは、もう一度「Sign in with ChatGPT」でログインし、
+経路の provider を `openai` に変え、閾値を上の窓に収めて起動し直します。`openai-codex` のログインは残るので、provider を戻せば元に戻ります。
+移った最初のターンだけ、前の思考は平文で渡り、prefix cache も一から温まります
+（[ADR 0087](docs/adr/0087-the-subscription-on-the-standard-responses-api-and-through-a-relay.md)）。
+
+`openai` の経路は、ログインを持たずに、サブスクリプションの token を付ける中継越しにも使えます（ADR 0087）。
+経路に `relay` を足します。
+
+```json
+"plus": {
+  "model": { "provider": "openai", "id": "gpt-6.1-sol" },
+  "relay": { "url": "http://127.0.0.1:18080" }
+}
+```
+
+- `relay.url` は loopback の `http` の origin だけです（パスは書きません）。TLS と外への認証は中継の側で行います。
+- natsumi は Pi の宛先（`https://api.openai.com/v1`）を変えず、要求を同じパスのまま中継へ送り直します。
+  鍵は秘密でないダミー（`sk-` で始まらない）で、中継が捨てます。この経路のために `pi.authPath` は読みません。
+- 中継越しの経路は、いつも使える状態として一覧に出ます。中継が止まっていれば、そのターンのモデルの呼び出しが失敗します。
+- `openai` の経路を 2 つ以上並べるときは、全部を直接にするか、全部を同じ中継にします。
 
 image の中では `/app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js` です。
 Pi の CLI が起動時に探す `rg` と `fd`（`fdfind` の名前）は image に入れてあるので、`--offline` で起動しても

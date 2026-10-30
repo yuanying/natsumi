@@ -105,3 +105,45 @@ test('the dove\'s judge borrows the default route\'s compatible model, whichever
   // A default without a compatible model has nothing to lend, even when another route has one.
   assert.equal(judge({ routes: { local: local(), plus: plus() }, defaultRoute: 'plus' }), undefined);
 });
+
+// The subscription through the standard Responses API, directly with its login or through a loopback relay (ADR 0087).
+const openai = (extra: Record<string, unknown> = {}) => ({ model: { provider: 'openai', id: 'gpt-6.1-sol' }, ...extra });
+const relay = (url = 'http://127.0.0.1:16007') => ({ relay: { url } });
+
+test('an openai route is a subscription by its login, or goes through a relay on loopback', () => {
+  const direct = parseConfig(base({ routes: { plus: openai() }, defaultRoute: 'plus' }));
+  assert.deepEqual(direct.pi.routes, [{ name: 'plus', model: { provider: 'openai', id: 'gpt-6.1-sol' }, compactionThreshold: 60000 }]);
+  const relayed = parseConfig(base({ routes: { local: local(), plus: openai(relay()) }, defaultRoute: 'plus' }));
+  assert.deepEqual(relayed.pi.routes[1], { name: 'plus', model: { provider: 'openai', id: 'gpt-6.1-sol' },
+    relay: { url: 'http://127.0.0.1:16007' }, compactionThreshold: 60000 });
+  for (const url of ['http://localhost:16007/', 'http://[::1]:16007']) {
+    assert.equal(parseConfig(base(openai(relay(url)))).pi.routes[0]!.relay?.url, new URL(url).origin);
+  }
+});
+
+test('a relay is only for the openai provider, and only plain http on loopback without a path', () => {
+  const route = (b: Record<string, unknown>) => base({ routes: { plus: b }, defaultRoute: 'plus' });
+  rejects(route(plus(relay())), 'pi.routes.plus.model.provider', /openai/);
+  rejects(route(local(relay())), 'pi.routes.plus.model.provider', /openai/);
+  rejects(route(openai({ relay: 'http://127.0.0.1:16007' })), 'pi.routes.plus.relay');
+  rejects(route(openai({ relay: {} })), 'pi.routes.plus.relay.url', /required/);
+  rejects(route(openai({ relay: { url: 'http://127.0.0.1:16007', apiKeyEnv: 'X' } })), 'pi.routes.plus.relay.apiKeyEnv', /unknown/);
+  rejects(route(openai(relay('https://127.0.0.1:16007'))), 'pi.routes.plus.relay.url', /http/);
+  rejects(route(openai(relay('http://relay.example.test:16007'))), 'pi.routes.plus.relay.url', /loopback/);
+  rejects(route(openai(relay('http://127.0.0.1:16007/v1'))), 'pi.routes.plus.relay.url', /path/);
+  rejects(route(openai(relay('http://user:secret@127.0.0.1:16007'))), 'pi.routes.plus.relay.url');
+  rejects(route(openai(relay('http://127.0.0.1:16007/?a=1'))), 'pi.routes.plus.relay.url');
+  rejects(base(openai({ relay: { url: 'not a url' } })), 'pi.relay.url');
+});
+
+test('every openai route goes the same way: all by the login, or all through one relay', () => {
+  const routes = (a: Record<string, unknown>, b: Record<string, unknown>) => base({ routes: { a, b }, defaultRoute: 'a' });
+  const both = parseConfig(routes(openai(relay()), openai({ model: { provider: 'openai', id: 'gpt-6-luna' }, ...relay() })));
+  assert.deepEqual(both.pi.routes.map(route => route.relay?.url), ['http://127.0.0.1:16007', 'http://127.0.0.1:16007']);
+  rejects(routes(openai(relay()), openai({ model: { provider: 'openai', id: 'gpt-6-luna' } })), 'pi.routes.b.relay', /another route/);
+  rejects(routes(openai(), openai({ model: { provider: 'openai', id: 'gpt-6-luna' }, ...relay() })), 'pi.routes.b.relay', /another route/);
+  rejects(routes(openai(relay()), openai({ model: { provider: 'openai', id: 'gpt-6-luna' }, ...relay('http://127.0.0.1:16008') })),
+    'pi.routes.b.relay', /another route/);
+  // A relayed route still reaches the subscription, so the curator's night counts it as outside (ADR 0068).
+  assert.equal(parseConfig(routes(local(), openai(relay()))).pi.routes[1]!.compatible, undefined);
+});

@@ -51,6 +51,11 @@ export interface ModelRoute {
   model: { provider: string; id: string };
   /** Present only for a `natsumi-compatible` provider. Without it the OAuth login at `authPath` is the only way in. */
   compatible?: CompatibleConfig;
+  /**
+   * Present only for the `openai` provider: the loopback relay that adds the subscription's token outside the server
+   * (ADR 0087). With it the login at `authPath` is never read for this route.
+   */
+  relay?: RelayConfig;
   /** Past this many context tokens the session is compacted between turns: the route's own, or `loop.compactionThreshold`. */
   compactionThreshold: number;
 }
@@ -71,6 +76,12 @@ export interface CompatibleConfig {
 }
 
 export { COMPATIBLE_PROVIDER };
+
+/** The provider a relay may be set for: Pi's standard Responses API, signed in with ChatGPT (ADR 0087). */
+export const RELAY_PROVIDER = 'openai';
+
+/** A relay on this host, as an origin such as `http://127.0.0.1:16007`. Pi's requests keep their path below it. */
+export interface RelayConfig { url: string }
 
 export interface TlsConfig { certFile: string; keyFile: string }
 
@@ -623,8 +634,8 @@ type ParsedPi = Omit<PiConfig, 'routes'> & { routes: ParsedRoute[] };
 
 function parsePi(value: unknown, path: string): ParsedPi {
   const pi = object(value, path);
-  onlyKeys(pi, path, ['agentDirectory', 'sessionDirectory', 'authPath', 'model', 'compatible', 'routes', 'defaultRoute', 'thinking',
-    'voiceEnabled']);
+  onlyKeys(pi, path, ['agentDirectory', 'sessionDirectory', 'authPath', 'model', 'compatible', 'relay', 'routes', 'defaultRoute',
+    'thinking', 'voiceEnabled']);
   const voice = required(pi, 'voiceEnabled', path);
   if (voice !== false) throw new ConfigError(`${path}.voiceEnabled`, 'voice is not supported; set false');
   const thinking = pi.thinking === undefined ? 'on' : pi.thinking;
@@ -632,8 +643,8 @@ function parsePi(value: unknown, path: string): ParsedPi {
   let routes: ParsedRoute[];
   let defaultRoute: string;
   if (pi.routes !== undefined) {
-    if (pi.model !== undefined || pi.compatible !== undefined) {
-      throw new ConfigError(`${path}.routes`, `cannot be combined with ${path}.model or ${path}.compatible`);
+    if (pi.model !== undefined || pi.compatible !== undefined || pi.relay !== undefined) {
+      throw new ConfigError(`${path}.routes`, `cannot be combined with ${path}.model, ${path}.compatible or ${path}.relay`);
     }
     const routesPath = `${path}.routes`;
     const table = object(pi.routes, routesPath);
@@ -641,7 +652,7 @@ function parsePi(value: unknown, path: string): ParsedPi {
       const routePath = `${routesPath}.${name}`;
       if (!ROUTE_NAME.test(name)) throw new ConfigError(routePath, 'a route name is lowercase letters, digits and hyphens, up to 32');
       const fields = object(route, routePath);
-      onlyKeys(fields, routePath, ['model', 'compatible', 'compactionThreshold']);
+      onlyKeys(fields, routePath, ['model', 'compatible', 'relay', 'compactionThreshold']);
       const threshold = fields.compactionThreshold === undefined ? undefined
         : compactionThreshold(fields.compactionThreshold, `${routePath}.compactionThreshold`);
       return { name, ...parseRoute(fields, routePath), ...(threshold === undefined ? {} : { compactionThreshold: threshold }),
@@ -665,6 +676,13 @@ function parsePi(value: unknown, path: string): ParsedPi {
     }
     providers.add(route.model.provider);
   }
+  // Pi has one provider for them, so every openai route reaches it the same way: all by the login, or all by one relay.
+  const relayed = routes.filter(route => route.model.provider === RELAY_PROVIDER);
+  for (const route of relayed.slice(1)) {
+    if (route.relay?.url !== relayed[0]!.relay?.url) {
+      throw new ConfigError(`${route.path}.relay`, `must be the same as on another route of the ${RELAY_PROVIDER} provider`);
+    }
+  }
   return {
     agentDirectory: absolutePath(required(pi, 'agentDirectory', path), `${path}.agentDirectory`),
     sessionDirectory: absolutePath(required(pi, 'sessionDirectory', path), `${path}.sessionDirectory`),
@@ -682,7 +700,7 @@ const isCompatibleProvider = (provider: string) => provider === COMPATIBLE_PROVI
  * `model` and `compatible` of one route, at `path` (which is `pi` itself for a config with only `pi.model`). The turn
  * evaluation reads its model files with it too, so they are written as the config is (ADR 0051).
  */
-export function parseRoute(fields: Record<string, unknown>, path: string): Pick<ModelRoute, 'model' | 'compatible'> {
+export function parseRoute(fields: Record<string, unknown>, path: string): Pick<ModelRoute, 'model' | 'compatible' | 'relay'> {
   const modelPath = `${path}.model`;
   const model = object(required(fields, 'model', path), modelPath);
   onlyKeys(model, modelPath, ['provider', 'id']);
@@ -697,10 +715,31 @@ export function parseRoute(fields: Record<string, unknown>, path: string): Pick<
   } else if (isCompatibleProvider(provider)) {
     throw new ConfigError(`${path}.compatible`, `is required for the ${provider} provider`);
   }
+  let relay: RelayConfig | undefined;
+  if (fields.relay !== undefined) {
+    if (provider !== RELAY_PROVIDER) throw new ConfigError(`${modelPath}.provider`, `must be ${RELAY_PROVIDER} when ${path}.relay is set`);
+    relay = parseRelay(fields.relay, `${path}.relay`);
+  }
   return {
     model: { provider, id: nonEmptyString(required(model, 'id', modelPath), `${modelPath}.id`) },
     ...(compatible ? { compatible } : {}),
+    ...(relay ? { relay } : {}),
   };
+}
+
+/** Plain http to this host only: the relay is the egress's, and what leaves the host is its own business (ADR 0085). */
+function parseRelay(value: unknown, path: string): RelayConfig {
+  const relay = object(value, path);
+  onlyKeys(relay, path, ['url']);
+  const urlPath = `${path}.url`;
+  const url = parseUrl(required(relay, 'url', path), urlPath);
+  if (url.username || url.password || url.search || url.hash) {
+    throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+  }
+  if (url.protocol !== 'http:') throw new ConfigError(urlPath, 'must use http; the relay is on this host');
+  if (!isLoopbackHost(url.hostname)) throw new ConfigError(urlPath, 'must be a loopback host');
+  if (url.pathname !== '/') throw new ConfigError(urlPath, 'must be an origin without a path; requests keep their own');
+  return { url: url.origin };
 }
 
 function parseCompatible(value: unknown, path: string): CompatibleConfig {
