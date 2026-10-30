@@ -28,14 +28,6 @@
       "datasourceTemplate": "github-releases"
     },
     {
-      "description": "bundler in the workspace image (ADR 0088) is installed by gem install at the version on its ARG line, which no manager reads. It is read here as the gem it is",
-      "customType": "regex",
-      "managerFilePatterns": ["/^Dockerfile$/"],
-      "matchStrings": ["ARG BUNDLER_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
-      "depNameTemplate": "bundler",
-      "datasourceTemplate": "rubygems"
-    },
-    {
       "description": "sops in the workspace image (ADR 0088) is fetched from its GitHub releases at the version on its ARG line, which no manager reads. It is read here as a release of getsops/sops",
       "customType": "regex",
       "managerFilePatterns": ["/^Dockerfile$/"],
@@ -45,11 +37,6 @@
     }
   ],
   "packageRules": [
-    {
-      "description": "bundler 2.7 and later need Ruby 3.2, and the workspace image has Debian bookworm's Ruby 3.1. It is kept on 2.6 until the image's Debian moves on, when this rule goes with it",
-      "matchDepNames": ["bundler"],
-      "allowedVersions": "<2.7"
-    },
     {
       "description": "The Node the images run (the Dockerfile's base) and the Node the checks run (setup-node in ci.yml and images.yml) are the same version on purpose: a test passing on one Node says little about another. Grouping them puts all of them on one branch, so they cannot drift apart one pull request at a time",
       "matchDepNames": ["node"],

@@ -66,6 +66,17 @@ FROM golang:1.27 AS go
 RUN sed -i 's/^GOTOOLCHAIN=.*/GOTOOLCHAIN=local/' /usr/local/go/go.env \
   && grep -qx 'GOTOOLCHAIN=local' /usr/local/go/go.env
 
+# Ruby for the workspace (ADR 0088): the official build of a fixed 4.0 release, on the same Debian as the workspace. Its
+# interpreter, libraries, headers and default gems are gathered into /out/local to be laid over /usr/local, and the
+# bundle and bundler it ships into /out/bundler, out of PATH, behind the wrapper in the workspace. Its ENV (GEM_HOME and
+# BUNDLE_*) is not taken: the runner passes none of it (ADR 0019). Renovate moves the tag and the digest together.
+FROM ruby:4.0.9-slim-bookworm@sha256:f999b3be00ed747bf7b2e450155ab1482d77300eb71ec7d3ada49ccc921c6ed4 AS ruby
+RUN mkdir -p /out/local/lib /out/local/include /out/bundler \
+  && cp -a /usr/local/bin /usr/local/etc /out/local/ \
+  && cp -a /usr/local/lib/ruby /usr/local/lib/libruby.so* /usr/local/lib/pkgconfig /out/local/lib/ \
+  && cp -a /usr/local/include/ruby-* /out/local/include/ \
+  && mv /out/local/bin/bundle /out/local/bin/bundler /out/bundler/
+
 # natsumi's workspace (ADR 0019): an ordinary Debian environment with Python, and no network reaching it.
 # There is no list of allowed commands any more; the confinement is the container's shape alone (compose.yaml).
 # poppler-utils (pdftotext, pdftoppm) is for reading PDFs: those taken in from Slack (ADR 0072) and those attached to a
@@ -73,20 +84,20 @@ RUN sed -i 's/^GOTOOLCHAIN=.*/GOTOOLCHAIN=local/' /usr/local/go/go.env \
 # pages render blank.
 # kubectl, ssh's client and curl are for the relays of ADR 0085, which an instance chooses in its deployment; in one that
 # does not, they reach nothing. libnss-wrapper is for the ssh wrapper below.
-# Ruby is for the Ruby CLIs an instance runs from a clone, installing their gems with bundle (ADR 0088). gcc, make and
-# libc6-dev build a gem's C extension; build-essential would add g++ and dpkg-dev, which no C extension needs. age makes
-# the keys sops encrypts with; Debian's is enough for that, and apt checks it, where age's releases publish no checksum.
+# Ruby, from the stage above, is for the Ruby CLIs an instance runs from a clone, installing their gems with bundle (ADR
+# 0088). libyaml-0-2, libffi8, libgmp10, libssl3 and zlib1g are what the official image installs for it to run. gcc,
+# make and libc6-dev build a gem's C extension; build-essential would add g++ and dpkg-dev, which no C extension needs.
+# age makes the keys sops encrypts with; Debian's is enough for that, and apt checks it, where age's releases publish no
+# checksum.
 FROM debian:bookworm-slim AS workspace
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash coreutils findutils diffutils grep sed gawk tar gzip ripgrep jq python3 git procps tzdata poppler-utils poppler-data \
        openssh-client libnss-wrapper curl ca-certificates \
-       ruby ruby-dev gcc make libc6-dev age \
+       libyaml-0-2 libffi8 libgmp10 libssl3 zlib1g gcc make libc6-dev age \
   && rm -rf /var/lib/apt/lists/*
-# bundler of a fixed release, as Debian's (2.3) is older than some gemspecs ask for; 2.6 is the last for Debian's Ruby
-# 3.1. It is put out of PATH, behind the wrapper below. Renovate reads the version from the ARG line as a gem.
-ARG BUNDLER_VERSION=2.6.9
-RUN gem install --no-document --bindir /usr/libexec/bundler bundler -v "${BUNDLER_VERSION}"
+COPY --from=ruby /out/local/ /usr/local/
+COPY --from=ruby /out/bundler/ /usr/libexec/bundler/
 # A name for the default UID, and the mount points of the four writable places.
 RUN groupadd --gid 1000 natsumi \
   && useradd --uid 1000 --gid 1000 --home-dir /home/natsumi --shell /bin/bash natsumi \

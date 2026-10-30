@@ -200,41 +200,48 @@ test('the ssh in PATH is a wrapper around the real one, and only it is preloaded
   assert.doesNotMatch(wrapper, /^export /m, 'the preload is for ssh, set on its command line only');
 });
 
-// ADR 0088: Ruby is in everyone's workspace, with a C compiler for the gems that build an extension. build-essential is
-// left out (g++ and dpkg-dev are not needed for a C extension), and so is Debian's bundler, too old for some gemspecs.
-test('the workspace image installs Ruby and a C compiler, and neither build-essential nor Debian\'s bundler', async () => {
+// ADR 0088: Ruby is in everyone's workspace: the official build of a fixed 4.0 release, taken from its image with what
+// it needs to run, and a C compiler for the gems that build an extension. build-essential is left out (g++ and
+// dpkg-dev are not needed for a C extension), and so is Debian's Ruby, 3.1, which the Ruby CLIs are not tested on.
+const rubyStage = async () => {
+  const text = await dockerfile();
+  const start = text.indexOf(' AS ruby\n');
+  assert.notEqual(start, -1, 'no stage holds Ruby');
+  return text.slice(text.lastIndexOf('\nFROM ', start) + 1, text.indexOf('\nFROM ', start));
+};
+
+test('the workspace image installs what the official Ruby runs with and a C compiler, and no Debian Ruby nor build-essential', async () => {
   const install = /apt-get install (?:[^\n\\]|\\\n)*/.exec(await workspaceStage());
   assert.ok(install, 'the workspace stage installs no packages');
   const packages = install[0].split(/\s+/);
-  for (const name of ['ruby', 'ruby-dev', 'gcc', 'make', 'libc6-dev']) assert.ok(packages.includes(name), `${name}: ${install[0]}`);
-  for (const name of ['build-essential', 'ruby-bundler']) assert.ok(!packages.includes(name), `${name}: ${install[0]}`);
+  for (const name of ['libyaml-0-2', 'libffi8', 'libgmp10', 'libssl3', 'zlib1g', 'gcc', 'make', 'libc6-dev']) {
+    assert.ok(packages.includes(name), `${name}: ${install[0]}`);
+  }
+  for (const name of ['ruby', 'ruby-dev', 'ruby-bundler', 'build-essential']) assert.ok(!packages.includes(name), `${name}: ${install[0]}`);
 });
 
-test('the workspace image has bundler of a fixed 2.6 release, the last for Debian\'s Ruby 3.1, out of PATH', async () => {
-  const stage = await workspaceStage();
-  assert.match(stage, /^ARG BUNDLER_VERSION=2\.6\.\d+$/m);
-  assert.match(stage, /gem install --no-document --bindir \/usr\/libexec\/bundler bundler -v "\$\{BUNDLER_VERSION\}"/);
+test('the workspace image has Ruby 4.0 from the official image of the same Debian, pinned by tag and digest', async () => {
+  const stage = await rubyStage();
+  assert.match(stage, /^FROM ruby:4\.0\.\d+-slim-bookworm@sha256:[0-9a-f]{64} AS ruby$/m);
+  assert.match(await dockerfile(), /^FROM debian:bookworm-slim AS workspace$/m);
+  const workspace = await workspaceStage();
+  assert.match(workspace, /^COPY --from=ruby \/out\/local\/ \/usr\/local\/$/m);
+  assert.match(workspace, /^COPY --from=ruby \/out\/bundler\/ \/usr\/libexec\/bundler\/$/m);
+  assert.match(stage, /mv \/out\/local\/bin\/bundle \/out\/local\/bin\/bundler \/out\/bundler\//);
   for (const name of ['bundle', 'bundler']) {
-    assert.match(stage, new RegExp(`^COPY --chmod=755 docker/bundler/bundle /usr/local/bin/${name}$`, 'm'));
+    assert.match(workspace, new RegExp(`^COPY --chmod=755 docker/bundler/bundle /usr/local/bin/${name}$`, 'm'));
   }
 });
 
-test('Renovate reads the version of bundler as a gem, and keeps it below 2.7, which needs Ruby 3.2', async () => {
+// The bundler is the one Ruby ships, moved with it by the ruby image's tag: no version of its own to pin or hold back.
+test('bundler has no version of its own in the Dockerfile or in Renovate\'s config', async () => {
   const config = JSON.parse(await readFile(`${root}renovate.json`, 'utf8')) as {
-    customManagers: { managerFilePatterns: string[]; matchStrings: string[]; depNameTemplate?: string; datasourceTemplate?: string }[];
-    packageRules: { matchDepNames?: string[]; allowedVersions?: string }[];
+    customManagers: { matchStrings: string[]; depNameTemplate?: string }[];
+    packageRules: { matchDepNames?: string[]; matchPackageNames?: string[] }[];
   };
-  const text = await dockerfile();
-  const found = config.customManagers.flatMap(manager => manager.matchStrings.map(pattern => ({ manager, match: new RegExp(pattern).exec(text) })))
-    .filter(({ match }) => match?.[0].startsWith('ARG BUNDLER_VERSION='));
-  assert.equal(found.length, 1, 'no custom manager, or more than one, reads the bundler version');
-  const { manager, match } = found[0]!;
-  assert.deepEqual(manager.managerFilePatterns, ['/^Dockerfile$/']);
-  assert.match(match!.groups!.currentValue!, /^2\.6\.\d+$/);
-  assert.equal(manager.depNameTemplate, 'bundler');
-  assert.equal(manager.datasourceTemplate, 'rubygems');
-  const kept = config.packageRules.filter(rule => rule.matchDepNames?.includes('bundler'));
-  assert.deepEqual(kept.map(rule => rule.allowedVersions), ['<2.7']);
+  assert.doesNotMatch(await dockerfile(), /BUNDLER_VERSION|gem install/);
+  assert.ok(!config.customManagers.some(manager => manager.depNameTemplate === 'bundler'));
+  assert.ok(!config.packageRules.some(rule => [...rule.matchDepNames ?? [], ...rule.matchPackageNames ?? []].includes('bundler')));
 });
 
 // ADR 0088: sops encrypts the secrets a Ruby CLI renders, when it is asked to, with an age key. Debian
@@ -302,7 +309,7 @@ test('the workspace image has the Go toolchain of the runner\'s golang image, on
 // Gem's own directory is on the read-only root. The bundle in PATH points GEM_HOME at Gem.user_dir, under HOME.
 test('the bundle in PATH is a wrapper that installs under HOME unless GEM_HOME is given', async () => {
   const wrapper = await readFile(`${root}docker/bundler/bundle`, 'utf8');
-  assert.match(wrapper, /GEM_HOME="\$\{GEM_HOME:-\$\(\/usr\/bin\/ruby -e 'print Gem\.user_dir'\)\}"/);
+  assert.match(wrapper, /GEM_HOME="\$\{GEM_HOME:-\$\(\/usr\/local\/bin\/ruby -e 'print Gem\.user_dir'\)\}"/);
   assert.match(wrapper, /exec "\/usr\/libexec\/bundler\/\$\{0##\*\/\}" "\$@"/);
 });
 
@@ -595,9 +602,12 @@ C`,
   `echo 'require "hello/hello"' > /tmp/hello/lib/hello.rb`,
   `printf '#!/usr/bin/env ruby\\nrequire "hello"\\nputs Hello.greet\\n' > /tmp/hello/exe/hello && chmod 755 /tmp/hello/exe/hello`,
   'cd /tmp/hello && gem build --quiet hello.gemspec --output /tmp/gems/gems/hello-0.1.0.gem >/dev/null 2>&1',
-  'gem generate_index --quiet --directory /tmp/gems',
+  // RubyGems 4 has no generate_index of its own, so the compact index rubygems.org serves is written by hand.
+  `cd /tmp/gems && mkdir -p info && ruby -rdigest -e '
+    File.write("info/hello", "---\\n0.1.0 |checksum:#{Digest::SHA256.file("gems/hello-0.1.0.gem").hexdigest}\\n")
+    File.write("versions", "created_at: 2026-01-01T00:00:00Z\\n---\\nhello 0.1.0 #{Digest::MD5.file("info/hello").hexdigest}\\n")'`,
   '(cd /tmp/gems && python3 -m http.server --bind 127.0.0.1 18808 >/tmp/gems.log 2>&1 &)',
-  'for _ in $(seq 100); do curl -fs -o /dev/null http://127.0.0.1:18808/specs.4.8.gz && exit 0; sleep 0.1; done; cat /tmp/gems.log; exit 1',
+  'for _ in $(seq 100); do curl -fs -o /dev/null http://127.0.0.1:18808/versions && exit 0; sleep 0.1; done; cat /tmp/gems.log; exit 1',
 ].join('\n');
 
 for (const uid of [1000, 1001]) {
@@ -611,9 +621,9 @@ for (const uid of [1000, 1001]) {
       assert.equal(result.exitCode, 0, `${command}: ${result.stdout}${result.stderr}`);
       return result.stdout;
     };
-    assert.match(await run('ruby --version'), /^ruby 3\.1\./);
-    assert.match(await run('bundle --version'), /^Bundler version 2\.6\.\d+$/m);
-    assert.match(await run('bundler --version'), /^Bundler version 2\.6\.\d+$/m);
+    assert.match(await run('ruby --version'), /^ruby 4\.0\./);
+    assert.match(await run('bundle --version'), /^4\.0\.\d+$/m);
+    assert.match(await run('bundler --version'), /^4\.0\.\d+$/m);
     await run(helloGem);
     await run(`mkdir -p /work/app && printf 'source "http://127.0.0.1:18808"\\ngem "hello"\\n' > /work/app/Gemfile`);
 
@@ -621,7 +631,7 @@ for (const uid of [1000, 1001]) {
     assert.equal(await run('cd /work/app && bundle exec hello'), 'hello from C\n');
     assert.equal(await run('ruby -e \'require "hello"; puts Hello.greet\''), 'hello from C\n');
     const home = (await run('ruby -e \'print Gem.user_dir\'')).trim();
-    assert.match(home, /^\/home\/natsumi\/\.local\/share\/gem\/ruby\/3\.1\.0$/);
+    assert.match(home, /^\/home\/natsumi\/\.local\/share\/gem\/ruby\/4\.0\.0$/);
     assert.match(await run(`find ${home} -name hello.so`), /hello\.so$/m);
   });
 }
