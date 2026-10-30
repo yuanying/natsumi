@@ -38,6 +38,7 @@ import { connectSlack, type SlackConnector } from './slack-api.ts';
 import { SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
+import { ALERTMANAGER_REGISTRATION, ALERTMANAGER_SOURCE, AlertmanagerInbox, senderGate } from './alertmanager.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
@@ -136,6 +137,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     botToken: await readSecret(workspace.botToken, `slack.workspaces.${name}.botToken`, options.env),
     appToken: await readSecret(workspace.appToken, `slack.workspaces.${name}.appToken`, options.env),
   }))) : [];
+  // Each sender of Alertmanager's notifications has its own token (ADR 0086); a new one is read at the next start.
+  const alertSenders = config.alertmanager ? new Map(await Promise.all(config.alertmanager.senders.map(async ({ name, tokenFile }, index) =>
+    [name, await readSecret({ file: tokenFile }, `alertmanager.senders[${index}].token`, options.env)] as const))) : undefined;
   const judgeKeys: Partial<Record<JudgeMethod, string>> = {};
   for (const method of JUDGE_METHODS) {
     const reference = config.slack?.judge?.[method]?.apiKey;
@@ -239,16 +243,22 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     await archive?.prepare();
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
-    // her the files and no events, and neither an agent nor the dove can be asked; the server still starts.
-    let sources: Sources | undefined = archive || config.a2a ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    // her the files and no events, and neither an agent nor the dove can be asked; the server still starts. Alertmanager's
+    // notifications are written there too (ADR 0086).
+    let sources: Sources | undefined = archive || config.a2a || config.alertmanager ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
     if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
+    if (config.alertmanager) sources?.register(ALERTMANAGER_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
     }
+    const alertInbox = config.alertmanager ? new AlertmanagerInbox({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, ALERTMANAGER_SOURCE),
+      timeZone: config.loop.timeZone, attentionSeverities: config.alertmanager.attentionSeverities, now, log,
+      ...(sources ? { sources } : {}) }) : undefined;
+    await alertInbox?.prepare();
     const connector = options.slack?.connector ?? connectSlack;
     const slackConnections = archive ? slackTokens.map(({ name, botToken, appToken }) => ({ name, ...connector({ botToken, appToken }) })) : [];
 
@@ -424,6 +434,8 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,
           pushKey: vapid.publicKey, icon: avatar.slack('neutral') }),
         uploads,
+        ...(alertInbox && alertSenders ? { alertmanager: { allowed: senderGate(alertSenders),
+          receive: (sender, notification) => alertInbox.receive(sender, notification) } } : {}),
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 

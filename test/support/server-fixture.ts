@@ -108,6 +108,8 @@ export interface FixtureOptions {
   uploads?: Record<string, unknown>;
   /** Writes an avatar under the fixture's root and gives the `avatar` section naming it (ADR 0057). */
   avatar?: (root: string) => Promise<Record<string, unknown>>;
+  /** Writes the senders' token files under the fixture's root and gives the `alertmanager` section naming them (ADR 0086). */
+  alertmanager?: (root: string) => Promise<Record<string, unknown>>;
   /** Fills the data directory before the first start, as one a previous version left behind. */
   prepare?: (data: string) => Promise<void>;
   /** Where the browser's bundle is read from (ADR 0058), under the fixture's root. None by default, so none is found. */
@@ -139,9 +141,10 @@ export async function startFixture(options: FixtureOptions = {}) {
       config.pi = { ...directories, ...options.pi } as typeof config.pi;
     }
     const avatar = options.avatar ? await options.avatar(root) : undefined;
+    const alertmanager = options.alertmanager ? await options.alertmanager(root) : undefined;
     await writeFile(configFile, JSON.stringify({ ...config, ...(slack ? { slack: slack.section } : {}),
       ...(options.loop ? { loop: options.loop } : {}), ...(options.curator ? { curator: options.curator } : {}), ...(avatar ? { avatar } : {}),
-      ...(options.uploads ? { uploads: options.uploads } : {}) }));
+      ...(options.uploads ? { uploads: options.uploads } : {}), ...(alertmanager ? { alertmanager } : {}) }));
     server = await startServer({
       config: configFile, dataDir: data, cwd: '/', home: join(root, 'home'),
       env: options.env ?? { NATSUMI_GITHUB_CLIENT_SECRET: CLIENT_SECRET, ...(apns ? { [APNS_KEY_ENV]: apns.pem } : {}),

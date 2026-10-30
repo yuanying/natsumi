@@ -10,6 +10,7 @@ import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
 import { POSTBOX_DEFAULTS } from './postbox.ts';
+import { ALERTMANAGER_DEFAULTS } from './alertmanager.ts';
 import { UPLOAD_DEFAULTS, type UploadLimits } from './uploads.ts';
 import { isValidTimeZone, TIME_OF_DAY } from './nightly.ts';
 import { DEFAULT_AWAKE_HOURS, DEFAULT_EXPRESSION_RESET_MINUTES, DEFAULT_PING_INTERVAL_MINUTES,
@@ -431,6 +432,18 @@ export interface PostboxConfig { enabled: boolean; minIntervalMinutes: number }
 /** A floor past a day would refuse a daily letter, the one most letters are. */
 const MAX_POSTBOX_MIN_INTERVAL_MINUTES = 24 * 60;
 
+/**
+ * Alertmanager's notifications (ADR 0086): who may send them to `POST /v1/alertmanager/<name>`, each with a token of its
+ * own read from its file at start, and the `severity` labels that are an attention when such an alert begins to fire.
+ * Without it there is no such way in.
+ */
+export interface AlertmanagerConfig {
+  senders: { name: string; tokenFile: string }[];
+  attentionSeverities: string[];
+}
+/** A sender's name, its directory and the last part of its path: as an agent's. */
+const SENDER_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -446,6 +459,7 @@ export interface ServerConfig {
   curator: CuratorConfig;
   skills: SkillsConfig;
   postbox: PostboxConfig;
+  alertmanager?: AlertmanagerConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
   avatar?: AvatarConfig;
   /** The tools this instance has of its own (ADR 0075). Absent when none is declared, so the tools stay as they were. */
@@ -525,6 +539,7 @@ const SECTIONS = {
   curator: parseCurator,
   skills: parseSkills,
   postbox: parsePostbox,
+  alertmanager: parseAlertmanager,
   avatar: parseAvatar,
   tools: (value: unknown, path: string) => parseTools(value, path),
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
@@ -571,6 +586,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     curator: SECTIONS.curator(root.curator ?? {}, 'curator'),
     skills: SECTIONS.skills(root.skills ?? {}, 'skills'),
     postbox: SECTIONS.postbox(root.postbox ?? {}, 'postbox'),
+    ...(root.alertmanager === undefined ? {} : { alertmanager: SECTIONS.alertmanager(root.alertmanager, 'alertmanager') }),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
   const tools = root.tools === undefined ? [] : SECTIONS.tools(root.tools, 'tools');
@@ -1208,6 +1224,34 @@ function parsePostbox(value: unknown, path: string): PostboxConfig {
     throw new ConfigError(`${path}.minIntervalMinutes`, `must be an integer from 1 to ${MAX_POSTBOX_MIN_INTERVAL_MINUTES}`);
   }
   return { enabled, minIntervalMinutes: floor as number };
+}
+
+function parseAlertmanager(value: unknown, path: string): AlertmanagerConfig {
+  const alertmanager = object(value, path);
+  onlyKeys(alertmanager, path, ['senders', 'attentionSeverities']);
+  const sendersPath = `${path}.senders`;
+  const listed = required(alertmanager, 'senders', path);
+  if (!Array.isArray(listed) || listed.length === 0) throw new ConfigError(sendersPath, 'must be a list of one sender or more');
+  const senders = listed.map((entry: unknown, index) => {
+    const entryPath = `${sendersPath}[${index}]`;
+    const sender = object(entry, entryPath);
+    onlyKeys(sender, entryPath, ['name', 'tokenFile']);
+    const name = required(sender, 'name', entryPath);
+    if (typeof name !== 'string' || !SENDER_NAME.test(name)) {
+      throw new ConfigError(`${entryPath}.name`, 'the name must be lower-case letters, digits and hyphens, at most 32');
+    }
+    return { name, tokenFile: absolutePath(required(sender, 'tokenFile', entryPath), `${entryPath}.tokenFile`) };
+  });
+  senders.forEach((sender, index) => {
+    if (senders.findIndex(other => other.name === sender.name) !== index) throw new ConfigError(`${sendersPath}[${index}].name`, 'is named twice');
+  });
+  const severitiesPath = `${path}.attentionSeverities`;
+  const severities = alertmanager.attentionSeverities ?? ALERTMANAGER_DEFAULTS.attentionSeverities;
+  if (!Array.isArray(severities) || severities.some(item => typeof item !== 'string' || item === '')
+    || new Set(severities).size !== severities.length) {
+    throw new ConfigError(severitiesPath, 'must be a list of distinct severities, such as ["critical"]');
+  }
+  return { senders, attentionSeverities: [...severities as string[]] };
 }
 
 function parseUploads(value: unknown, path: string): UploadsConfig {
