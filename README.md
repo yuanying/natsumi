@@ -91,7 +91,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      最初の工程に渡すその日の会話の本文の長さの上限 `conversationMaxChars`（既定 30000 文字。超えたら古い方から省きます。0 なら渡さず、日記だけで書き起こします）。係は作業環境（`loop.workspaceSocket`）があるときだけ動きます。
      係の Pi の Codemode `codemode`（既定 off。`loop.codemode` とは別に入り切りします。下記「Codemode で作業環境の出力を絞る」）。
    - `avatar`（省略可）: 姿と名前（プロンプト・通知・Slack のアイコン・アプリ・画像のページ）を決めるアバターです。次のどちらか一方を書きます。
-     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`aki`（アキ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
+     組み込みのアバターの ID `id`（`natsumi`（なつみ。既定）、`iori`（伊織）、`myao`（ミャオ）、`aki`（アキ）、`penelope`（ペネロペ）、`nanashi`（名無し）。[assets/avatars/](assets/avatars/)）か、足すアバターのディレクトリ `directory`（絶対パス）です。
      省略すると、組み込みのなつみ（`id` が `natsumi`）です。
      `appearance`（省略可、絶対パス）に `appearance.yaml` を書くと、そのアバターの姿（自分を描くときのプロンプト）を丸ごと置き換えます。
      `sdctlParams`（省略可、絶対パス）に `sdctl-params.yaml` を書くと、そのアバターの画像生成の設定（sdctl の params）を丸ごと置き換えます。
