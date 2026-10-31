@@ -226,8 +226,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       if (window !== undefined) checkRouteWindow(config.pi, route, window);
     }
 
-    // One client for the loop and the list: the token file is read afresh on every call either makes (ADR 0033).
-    const a2aClient = config.a2a ? new SdkA2AClient({ tokenFile: config.a2a.tokenFile }) : undefined;
+    // One client for the loop and the list: the token file is read afresh on every call either makes (ADR 0033). An agent
+    // with a token file of its own is sent that one, the others the shared one (ADR 0089).
+    const a2aClient = config.a2a ? new SdkA2AClient({ ...(config.a2a.tokenFile ? { tokenFile: config.a2a.tokenFile } : {}),
+      tokenFiles: new Map(Object.values(config.a2a.agents).flatMap(agent => agent.tokenFile ? [[agent.url, agent.tokenFile] as const] : [])) })
+      : undefined;
     // What she reads of Slack, written under sources/slack (ADR 0039, ADR 0050).
     const slackConfig = config.slack;
     for (const key of slackConfig?.ignored ?? []) log(`config: ${key} is no longer read (ADR 0050); it can be deleted`);

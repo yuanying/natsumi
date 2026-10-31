@@ -239,14 +239,20 @@ export interface ApnsConfig {
 
 /** The outside agents natsumi may ask over A2A (ADR 0025, ADR 0035, ADR 0036). Without it `ask_agent` refuses. */
 export interface A2AConfig {
-  /** The caller's token: a projected ServiceAccount token on Kubernetes, a file put in place by hand elsewhere. Read afresh for every call. */
-  tokenFile: string;
+  /**
+   * The caller's token: a projected ServiceAccount token on Kubernetes, a file put in place by hand elsewhere. Read afresh
+   * for every call. It goes to every agent without a token file of its own, and may be left out when none is without.
+   */
+  tokenFile?: string;
   /** How often a task still waiting for an answer is fetched again. */
   pollIntervalSeconds: number;
   /** How long a task may go unanswered before natsumi is told the server gave up on it. */
   giveUpAfterHours: number;
-  /** Name → where the agent answers. natsumi only ever sees the names. */
-  agents: Record<string, { url: string }>;
+  /**
+   * Name → where the agent answers, and the token file it alone is sent, such as another natsumi's that a bearer token
+   * guards (ADR 0089). natsumi only ever sees the names.
+   */
+  agents: Record<string, { url: string; tokenFile?: string }>;
 }
 
 export const DEFAULT_A2A_POLL_INTERVAL_SECONDS = 15;
@@ -945,7 +951,7 @@ function parseA2A(value: unknown, path: string): A2AConfig {
     if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
     if (name === DOVE_NAME) throw new ConfigError(entryPath, 'the name is the Slack dove\'s own, served by the server itself (ADR 0040)');
     const agent = object(entry, entryPath);
-    onlyKeys(agent, entryPath, ['url']);
+    onlyKeys(agent, entryPath, ['url', 'tokenFile']);
     // The token rides on every call, so it goes nowhere it could be read on the way.
     const urlPath = `${entryPath}.url`;
     const url = parseUrl(required(agent, 'url', entryPath), urlPath);
@@ -955,10 +961,14 @@ function parseA2A(value: unknown, path: string): A2AConfig {
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
       throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
     }
-    agents[name] = { url: url.href };
+    agents[name] = { url: url.href,
+      ...(agent.tokenFile === undefined ? {} : { tokenFile: absolutePath(agent.tokenFile, `${entryPath}.tokenFile`) }) };
   }
+  // The shared token is for the agents without one of their own: needed only while there is such an agent.
+  const shared = a2a.tokenFile === undefined && Object.values(agents).every(agent => agent.tokenFile !== undefined) && Object.keys(agents).length > 0
+    ? undefined : absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`);
   return {
-    tokenFile: absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`),
+    ...(shared === undefined ? {} : { tokenFile: shared }),
     pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents,
   };
 }

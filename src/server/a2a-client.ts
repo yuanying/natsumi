@@ -97,8 +97,13 @@ export interface A2AClient {
 }
 
 export interface SdkA2AClientOptions {
-  /** Read afresh on every call: a projected token is replaced while the server runs (ADR 0033). */
-  tokenFile: string;
+  /**
+   * Read afresh on every call: a projected token is replaced while the server runs (ADR 0033). Sent to every agent
+   * without a token file of its own; without it, such an agent is sent nothing.
+   */
+  tokenFile?: string;
+  /** An agent's own token file, by its configured URL (ADR 0089), read afresh on every call as the shared one is. */
+  tokenFiles?: ReadonlyMap<string, string>;
   timeoutMs?: number;
   /** Replaces the global fetch. Tests use it to hold a call open. */
   fetch?: typeof fetch;
@@ -110,7 +115,8 @@ export interface SdkA2AClientOptions {
  * said it may.
  */
 export class SdkA2AClient implements A2AClient {
-  private readonly tokenFile: string;
+  private readonly tokenFile: string | undefined;
+  private readonly tokenFiles: ReadonlyMap<string, string>;
   private readonly timeoutMs: number;
   private readonly fetch: typeof fetch;
   /** Whether each agent's card names the reply extension, by URL, from the card last read. */
@@ -120,6 +126,7 @@ export class SdkA2AClient implements A2AClient {
 
   constructor(options: SdkA2AClientOptions) {
     this.tokenFile = options.tokenFile;
+    this.tokenFiles = options.tokenFiles ?? new Map();
     this.timeoutMs = options.timeoutMs ?? DEFAULT_A2A_CALL_TIMEOUT_MS;
     this.fetch = options.fetch ?? globalThis.fetch;
   }
@@ -181,7 +188,7 @@ export class SdkA2AClient implements A2AClient {
     // The token goes only where the owner said it may: the origin of the configured URL, which serves the card too.
     if (target.origin !== new URL(url).origin) throw new AgentFileError('elsewhere', 'the file is not at the agent\'s origin');
     let token: string;
-    try { token = await this.token(); } catch (error) { throw new AgentFileError('no-token', (error as Error).message); }
+    try { token = await this.token(url); } catch (error) { throw new AgentFileError('no-token', (error as Error).message); }
     const controller = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     const limit = new Promise<never>((_, reject) => {
@@ -220,7 +227,7 @@ export class SdkA2AClient implements A2AClient {
   }
 
   private async call<T>(url: string, run: (client: Client, signal: AbortSignal) => Promise<T>): Promise<T> {
-    const token = await this.token();
+    const token = await this.token(url);
     const authorized: typeof fetch = (input, init) => {
       const headers = new Headers(init?.headers);
       headers.set('authorization', `Bearer ${token}`);
@@ -248,9 +255,12 @@ export class SdkA2AClient implements A2AClient {
     } finally { clearTimeout(timer); }
   }
 
-  private async token(): Promise<string> {
+  /** The token of the agent at `url`: its own when it has one, the shared one otherwise (ADR 0089). */
+  private async token(url: string): Promise<string> {
+    const file = this.tokenFiles.get(url) ?? this.tokenFile;
+    if (file === undefined) throw new A2ACallError('no-token', 'the agent has no token file of its own, and there is no shared one');
     let text: string;
-    try { text = await readFile(this.tokenFile, 'utf8'); } catch { throw new A2ACallError('no-token', 'the token file cannot be read'); }
+    try { text = await readFile(file, 'utf8'); } catch { throw new A2ACallError('no-token', 'the token file cannot be read'); }
     const token = text.trim();
     if (token === '') throw new A2ACallError('no-token', 'the token file is empty');
     return token;

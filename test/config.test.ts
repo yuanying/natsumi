@@ -529,7 +529,6 @@ test('each agent is a short lower-case name with an https URL of its own', () =>
   }
   assert.equal(parseConfig(agents({ wiki: { url: 'http://127.0.0.1:8080/' } })).a2a?.agents.wiki?.url, 'http://127.0.0.1:8080/');
   rejects(agents({ wiki: {} }), 'a2a.agents.wiki.url', /required/);
-  rejects(agents({ wiki: { url: 'https://agents.example.test/', tokenFile: '/run/other' } }), 'a2a.agents.wiki.tokenFile', /unknown/);
   rejects(agents([]), 'a2a.agents', /object/);
   rejects({ ...base(), a2a: { tokenFile: '/run/token' } }, 'a2a.agents', /required/);
 });
@@ -947,4 +946,19 @@ test('Alertmanager’s senders are named with their token files, and her mark is
   for (const severities of ['critical', [''], [3], ['critical', 'critical']]) {
     rejects({ ...base(), alertmanager: { senders, attentionSeverities: severities } }, 'alertmanager.attentionSeverities');
   }
+});
+
+test('an agent may have a token file of its own, and a2a.tokenFile is needed only by the agents without one (ADR 0089)', () => {
+  const agents = { wiki: { url: 'https://agents.example.test/wiki-keeper/' },
+    penelope: { url: 'https://penelope.example.test/a2a/', tokenFile: '/run/secrets/penelope-token' } };
+  assert.deepEqual(parseConfig({ ...base(), a2a: { ...a2a(), agents } }).a2a?.agents, agents);
+  const own = { penelope: agents.penelope };
+  const { tokenFile: _, ...noToken } = a2a();
+  assert.deepEqual(parseConfig({ ...base(), a2a: { ...noToken, agents: own } }).a2a, {
+    pollIntervalSeconds: 15, giveUpAfterHours: 24, agents: own,
+  }, 'every agent has its own, so the shared one may be left out');
+  rejects({ ...base(), a2a: { ...noToken, agents } }, 'a2a.tokenFile', /required/);
+  rejects({ ...base(), a2a: { ...a2a(), agents: { penelope: { ...agents.penelope, tokenFile: 'relative' } } } }, 'a2a.agents.penelope.tokenFile');
+  rejects({ ...base(), a2a: { ...a2a(), agents: { penelope: { ...agents.penelope, token: 'written-in-place' } } } }, 'a2a.agents.penelope.token',
+    /secrets must not be written/);
 });
