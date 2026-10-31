@@ -2,6 +2,7 @@ import { createReadStream } from 'node:fs';
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
+import { InboxEndpoint } from './a2a-server.ts';
 import { MAX_ALERTMANAGER_BODY_BYTES, parseNotification, type AlertNotification } from './alertmanager.ts';
 import { avatarManifest, type Avatar } from './avatar.ts';
 import { ConfigError, GITHUB_CALLBACK_PATH, type ListenConfig } from './config.ts';
@@ -55,6 +56,8 @@ export interface ListenerOptions {
     allowed(sender: string, token: string | undefined): boolean;
     receive(sender: string, notification: AlertNotification): Promise<{ recorded: number }>;
   };
+  /** The way in over A2A under /a2a/ (ADR 0089), when the config has senders; without it, /a2a/ is not found. */
+  a2a?: Pick<InboxEndpoint, 'handle'>;
 }
 
 export interface Listener {
@@ -177,6 +180,8 @@ async function route(request: IncomingMessage, response: ServerResponse, options
   }
   const sender = method === 'POST' && options.alertmanager ? ALERTMANAGER_PATH.exec(url.pathname)?.[1] : undefined;
   if (sender !== undefined) return receiveAlerts(request, response, sender, options.alertmanager!, options.log);
+  // The senders' own token or gated's assertion, never the browser's cookie (ADR 0089).
+  if (options.a2a && InboxEndpoint.owns(url.pathname)) return options.a2a.handle(request, response, url);
   if (method === 'GET' && url.pathname === '/auth/github/start') return answer(response, options.login.start(url.searchParams));
   if (Dashboard.owns(url.pathname)) return options.dashboard.handle(request, response, url);
   if (WebApp.owns(url.pathname)) return options.webApp.handle(request, response, url);

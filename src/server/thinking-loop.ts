@@ -250,6 +250,11 @@ export interface LoopOptions {
   /** The outside agents natsumi may ask (ADR 0035). Without it `ask_agent` is still there, and refuses. */
   a2a?: A2AConfig;
   /**
+   * What the agents ask her over A2A, and where `reply_to_agent` goes (ADR 0089). Without it the tool is still there,
+   * and refuses.
+   */
+  inbox?: { reply(to: string, text: string | undefined, state: 'completed' | 'input-required'): Promise<ToolOutcome> };
+  /**
    * The postbox (ADR 0076): the letters in memory's `postbox/`, checked at the end of her turns and sent on their cron by
    * `tickPostbox`. On, with the floor of 15 minutes, when left out; with no agent configured every letter fails its check.
    */
@@ -1788,6 +1793,8 @@ export class ThinkingLoop {
         ? files.length > 0 ? { ok: false, text: '頼んでいません。ポッポさんには files でファイルを渡せません。投稿に付ける画像は message の JSON の images に並べます（/manual/slack.md）。' }
           : this.askDove(message)
         : this.agents.ask(agent, message, goOn, files),
+      replyToAgent: (to, text, state) => this.options.inbox?.reply(to, text, state)
+        ?? { ok: false, text: '返していません。ほかのエージェントからの依頼を受ける設定（受け口）がありません。' },
       ...(this.shell ? { runShell: (command: string) => this.runShell(command),
         capture: (command: string) => this.shell!.capture(command), skills: this.options.skills === true } : {}),
     };

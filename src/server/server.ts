@@ -39,6 +39,9 @@ import { SlackWorkspace } from './slack.ts';
 import { SOURCES_DIRECTORY, SOURCES_GIT_DIRECTORY, WORK_DIRECTORY } from './paths.ts';
 import { Sources } from './sources.ts';
 import { ALERTMANAGER_REGISTRATION, ALERTMANAGER_SOURCE, AlertmanagerInbox, senderGate } from './alertmanager.ts';
+import { InboxEndpoint, inboxSenders } from './a2a-server.ts';
+import { AssertionVerifier, audienceOf } from './gated-assertion.ts';
+import { INBOX_REGISTRATION, INBOX_SOURCE, Inbox } from './inbox.ts';
 import { loadVapidKey, parseSubscription, VAPID_KEY_FILE, WebPushNotifier, WebPushSubscriptions, type WebPushRequest } from './web-push.ts';
 import { RuntimeSettings, type RouteControl } from './settings/service.ts';
 import { migrate, openStateDatabase } from './state-db.ts';
@@ -50,6 +53,8 @@ import { Uploads } from './uploads.ts';
 const SESSION_SWEEP_MS = 30_000;
 /** How often approvals past their time are closed. A minute late is nothing against a week (ADR 0040). */
 const APPROVAL_SWEEP_MS = 60_000;
+/** How often the open tasks of the way in over A2A are looked at for their reminders and deadlines (ADR 0089). */
+const INBOX_TICK_MS = 60_000;
 /** How often the files of the chat left unsent are looked for. An hour late is nothing against the day they wait (ADR 0071). */
 const UPLOAD_SWEEP_MS = 60 * 60_000;
 /** Where a file of the chat is written while it comes, in the server's own state (ADR 0071). */
@@ -140,6 +145,9 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
   // Each sender of Alertmanager's notifications has its own token (ADR 0086); a new one is read at the next start.
   const alertSenders = config.alertmanager ? new Map(await Promise.all(config.alertmanager.senders.map(async ({ name, tokenFile }, index) =>
     [name, await readSecret({ file: tokenFile }, `alertmanager.senders[${index}].token`, options.env)] as const))) : undefined;
+  // Each sender of the way in over A2A checked by a token has its own (ADR 0089), read at start as Alertmanager's are.
+  const inboxTokens = config.inbox ? new Map(await Promise.all(config.inbox.senders.flatMap((sender, index) => 'tokenFile' in sender
+    ? [(async () => [sender.name, await readSecret({ file: sender.tokenFile }, `inbox.senders[${index}].token`, options.env)] as const)()] : []))) : undefined;
   const judgeKeys: Partial<Record<JudgeMethod, string>> = {};
   for (const method of JUDGE_METHODS) {
     const reference = config.slack?.judge?.[method]?.apiKey;
@@ -247,13 +255,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
     // The core that tells her what changed in them (ADR 0050), when there is anything to read: Slack, and the replies of
     // the outside agents (ADR 0069) and the dove's results (ADR 0074) under agents. A history that cannot be kept leaves
     // her the files and no events, and neither an agent nor the dove can be asked; the server still starts. Alertmanager's
-    // notifications are written there too (ADR 0086).
-    let sources: Sources | undefined = archive || config.a2a || config.alertmanager ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
+    // notifications are written there too (ADR 0086), and what the agents ask her (ADR 0089).
+    let sources: Sources | undefined = archive || config.a2a || config.alertmanager || config.inbox ? new Sources({ db, directory: join(dataDirectory, SOURCES_DIRECTORY),
       gitDirectory: join(dataDirectory, SOURCES_GIT_DIRECTORY), timeZone: config.loop.timeZone, awakeHours: () => settings.awakeHours(),
       activity: config.sources.activity, historyDays: config.sources.historyDays, now, log }) : undefined;
     if (archive) sources?.register(SLACK_REGISTRATION);
     if (config.a2a || archive) sources?.register(AGENTS_REGISTRATION);
     if (config.alertmanager) sources?.register(ALERTMANAGER_REGISTRATION);
+    if (config.inbox) sources?.register(INBOX_REGISTRATION);
     try { await sources?.prepare(); } catch {
       log('sources: the history could not be prepared; no sources_updated event will be raised');
       sources = undefined;
@@ -262,6 +271,11 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       timeZone: config.loop.timeZone, attentionSeverities: config.alertmanager.attentionSeverities, now, log,
       ...(sources ? { sources } : {}) }) : undefined;
     await alertInbox?.prepare();
+    // What the agents ask her over A2A (ADR 0089): the tasks are kept in the database, so the open ones stay across a start.
+    const inbox = config.inbox ? new Inbox({ db, directory: join(dataDirectory, SOURCES_DIRECTORY, INBOX_SOURCE), timeZone: config.loop.timeZone,
+      awakeHours: () => settings.awakeHours(), now, log, ...(sources ? { sources } : {}),
+      limits: { reminderIntervalHours: config.inbox.reminderIntervalHours, deadlineHours: config.inbox.deadlineHours,
+        maxOpenTasks: config.inbox.maxOpenTasksPerSender } }) : undefined;
     const connector = options.slack?.connector ?? connectSlack;
     const slackConnections = archive ? slackTokens.map(({ name, botToken, appToken }) => ({ name, ...connector({ botToken, appToken }) })) : [];
 
@@ -308,7 +322,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       ...(manualIndex ? { manualIndex } : {}), skills: config.skills.enabled, ...(config.tools ? { tools: config.tools } : {}),
       ...(config.a2a ? { a2a: config.a2a, a2aClient } : {}), postbox: config.postbox,
       ...(config.a2a && agentPlace ? { agentReplies: agentPlace } : {}),
-      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads,
+      ...(sources ? { sources } : {}), ...(theDove ? { dove: theDove } : {}), images, uploads, ...(inbox ? { inbox } : {}),
     });
     sources?.connect(() => { thinkingLoop.raiseSourcesUpdated(); });
     if (theDove) {
@@ -335,6 +349,14 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
           () => { log(`slack (${name}): could not start; check the tokens and the App's settings`); },
         );
       }
+    }
+
+    // The open tasks of the way in are reminded and given up on their own clock, whether or not the loop runs: a sender
+    // is told its task failed at its deadline either way (ADR 0089). The first look catches up on a stop.
+    if (inbox) {
+      const look = () => { void inbox.tick().catch(() => { log('inbox: a look at the open tasks failed'); }); };
+      look();
+      timers.push(setInterval(look, INBOX_TICK_MS));
     }
 
     // Who she can ask, for the workspace to show her as /manual/agents (ADR 0036). The cards are fetched in the
@@ -432,6 +454,16 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
       memoryDirectory: config.loop.memoryRepository ?? join(dataDirectory, 'memory'),
       db, sessionDirectory: config.pi.sessionDirectory, timeZone: config.loop.timeZone, nightlyRotationAt: config.loop.nightlyRotationAt,
       pillStopStartingAfterMinutes: config.curator.pillStopStartingAfterMinutes, isConnected: deviceId => connections.isConnected(deviceId), now });
+    // The way in over A2A (ADR 0089): each sender by its token, or by gated's assertion of its subject, checked against
+    // the keys gated publishes and the host of the public URL.
+    const inboxConfig = config.inbox;
+    const inboxEndpoint = inbox && inboxConfig ? new InboxEndpoint({ publicUrl: inboxConfig.publicUrl, card: inboxConfig.card, inbox, log,
+      senders: inboxSenders({ tokens: inboxTokens ?? new Map(),
+        subjects: new Map(inboxConfig.senders.flatMap(sender => 'gatedSubject' in sender ? [[sender.gatedSubject, sender.name] as const] : [])),
+        ...(inboxConfig.gated ? { verifier: new AssertionVerifier({ issuer: inboxConfig.gated.issuer, jwksUrl: inboxConfig.gated.jwksUrl,
+          audience: audienceOf(inboxConfig.publicUrl), log,
+          allowedSubjects: inboxConfig.senders.flatMap(sender => 'gatedSubject' in sender ? [sender.gatedSubject] : []) }) } : {}) }) })
+      : undefined;
     const open = (files: { cert: Buffer; key: Buffer } | undefined) =>
       openListener({ listen: config.listen, tlsFiles: files, login, sessions, hub: connections, allowedUserId, log, dashboard, avatar, browser,
         webApp: new WebApp({ publicOrigin: config.publicOrigin, browser, login, name: avatar.name, bundleDirectory: options.web?.bundleDirectory,
@@ -439,6 +471,7 @@ export async function startServer(options: StartOptions): Promise<RunningServer>
         uploads,
         ...(alertInbox && alertSenders ? { alertmanager: { allowed: senderGate(alertSenders),
           receive: (sender, notification) => alertInbox.receive(sender, notification) } } : {}),
+        ...(inboxEndpoint ? { a2a: inboxEndpoint } : {}),
         // Only what an approval or a line of the conversation shows (ADR 0044, ADR 0045).
         images: { read: async imageId => theDove?.showsImage(imageId) || thinkingLoop.showsImage(imageId) ? images.read(imageId) : undefined } });
 

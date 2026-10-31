@@ -875,7 +875,7 @@ test('a declared tool needs the workspace runner, a list and known keys', () => 
 });
 
 test('a declared tool may not take a name already given, nor one a model would not accept', () => {
-  for (const name of ['run_shell', 'read', 'search_memory', 'reply_to_mac', 'notify_owner', 'ask_agent', 'codemode', 'bash', 'write', 'edit']) {
+  for (const name of ['run_shell', 'read', 'search_memory', 'reply_to_mac', 'notify_owner', 'ask_agent', 'reply_to_agent', 'codemode', 'bash', 'write', 'edit']) {
     rejects(withTools({ ...weather(), name }), 'tools[0].name', /already/);
   }
   rejects(withTools(weather(), weather()), 'tools[1].name', /already/);
@@ -961,4 +961,60 @@ test('an agent may have a token file of its own, and a2a.tokenFile is needed onl
   rejects({ ...base(), a2a: { ...a2a(), agents: { penelope: { ...agents.penelope, tokenFile: 'relative' } } } }, 'a2a.agents.penelope.tokenFile');
   rejects({ ...base(), a2a: { ...a2a(), agents: { penelope: { ...agents.penelope, token: 'written-in-place' } } } }, 'a2a.agents.penelope.token',
     /secrets must not be written/);
+});
+
+const inbox = () => ({
+  publicUrl: 'https://natsumi.example.test/a2a/',
+  card: { name: 'なつみ', description: 'マスターの秘書。返事は遅くなることがあります。' },
+  gated: { issuer: 'https://auth.example.test', jwksUrl: 'https://auth.example.test/.well-known/jwks.json' },
+  senders: [{ name: 'claude', gatedSubject: 'system:serviceaccount:agents:claude' }, { name: 'penelope', tokenFile: '/run/secrets/inbox-penelope' }],
+});
+
+test('the way in over A2A is off without its section, and reminds every 3 hours, fails at 24 and takes 3 open tasks by default (ADR 0089)', () => {
+  assert.equal(parseConfig(base()).inbox, undefined, 'without it, /a2a/ is not found');
+  assert.deepEqual(parseConfig({ ...base(), inbox: inbox() }).inbox, { ...inbox(), reminderIntervalHours: 3, deadlineHours: 24, maxOpenTasksPerSender: 3 });
+  const tuned = parseConfig({ ...base(), inbox: { ...inbox(), reminderIntervalHours: 6, deadlineHours: 48, maxOpenTasksPerSender: 5 } }).inbox;
+  assert.deepEqual([tuned?.reminderIntervalHours, tuned?.deadlineHours, tuned?.maxOpenTasksPerSender], [6, 48, 5]);
+  const { gated: _, ...tokensOnly } = inbox();
+  assert.deepEqual(parseConfig({ ...base(), inbox: { ...tokensOnly, senders: [inbox().senders[1]] } }).inbox?.gated, undefined,
+    'gated is needed only by a sender checked by its subject');
+  assert.equal(parseConfig({ ...base(), inbox: { ...inbox(), publicUrl: 'https://natsumi.example.test/a2a' } }).inbox?.publicUrl,
+    'https://natsumi.example.test/a2a/', 'the trailing slash is put on');
+  assert.equal(parseConfig({ ...base(), inbox: { ...inbox(), publicUrl: 'http://127.0.0.1:8443/a2a/' } }).inbox?.publicUrl, 'http://127.0.0.1:8443/a2a/');
+});
+
+test('each sender of the way in is a name with either gated’s subject or a token file, never both, and named once', () => {
+  const withSenders = (senders: unknown) => ({ ...base(), inbox: { ...inbox(), senders } });
+  const one = (sender: Record<string, unknown>) => withSenders([sender]);
+  rejects({ ...base(), inbox: { ...inbox(), senders: undefined } }, 'inbox.senders', /required/);
+  rejects(withSenders([]), 'inbox.senders');
+  for (const name of ['Claude', 'a_b', '-a', '', 'a/b', 'x'.repeat(33), 'me']) rejects(one({ name, tokenFile: '/run/t' }), 'inbox.senders[0].name');
+  rejects(one({ name: 'claude' }), 'inbox.senders[0]', /gatedSubject or tokenFile/);
+  rejects(one({ name: 'claude', tokenFile: '/run/t', gatedSubject: 'system:serviceaccount:a:b' }), 'inbox.senders[0]', /only one/);
+  rejects(one({ name: 'claude', tokenFile: 'relative' }), 'inbox.senders[0].tokenFile');
+  rejects(one({ name: 'claude', gatedSubject: '' }), 'inbox.senders[0].gatedSubject');
+  rejects(one({ name: 'claude', token: 'written-in-place' }), 'inbox.senders[0].token', /secrets must not be written/);
+  rejects(withSenders([{ name: 'claude', tokenFile: '/run/a' }, { name: 'claude', tokenFile: '/run/b' }]), 'inbox.senders[1].name', /twice/);
+  rejects(withSenders([{ name: 'claude', gatedSubject: 'system:serviceaccount:a:b' }, { name: 'pi', gatedSubject: 'system:serviceaccount:a:b' }]),
+    'inbox.senders[1].gatedSubject', /twice/);
+  const { gated: _, ...noGated } = inbox();
+  rejects({ ...base(), inbox: noGated }, 'inbox.gated', /required/);
+});
+
+test('the way in is at the public URL’s /a2a/, named by its card, and checks gated’s assertion against what the config says', () => {
+  const at = (publicUrl: string) => ({ ...base(), inbox: { ...inbox(), publicUrl } });
+  for (const url of ['http://natsumi.example.test/a2a/', 'https://natsumi.example.test/', 'https://natsumi.example.test/agent/',
+    'https://user:pass@natsumi.example.test/a2a/', 'https://natsumi.example.test/a2a/?a=1', 'natsumi.example.test/a2a/']) {
+    rejects(at(url), 'inbox.publicUrl');
+  }
+  rejects({ ...base(), inbox: { ...inbox(), card: { name: 'なつみ' } } }, 'inbox.card.description', /required/);
+  rejects({ ...base(), inbox: { ...inbox(), card: { name: '', description: 'x' } } }, 'inbox.card.name');
+  rejects({ ...base(), inbox: { ...inbox(), card: { ...inbox().card, skills: [] } } }, 'inbox.card.skills', /unknown/);
+  rejects({ ...base(), inbox: { ...inbox(), gated: { issuer: 'https://auth.example.test' } } }, 'inbox.gated.jwksUrl', /required/);
+  rejects({ ...base(), inbox: { ...inbox(), gated: { ...inbox().gated, issuer: 'auth' } } }, 'inbox.gated.issuer');
+  rejects({ ...base(), inbox: { ...inbox(), gated: { ...inbox().gated, jwksUrl: 'http://auth.example.test/jwks' } } }, 'inbox.gated.jwksUrl');
+  for (const [key, value] of [['reminderIntervalHours', 0], ['deadlineHours', 1.5], ['maxOpenTasksPerSender', 0], ['deadlineHours', '24']] as const) {
+    rejects({ ...base(), inbox: { ...inbox(), [key]: value } }, `inbox.${key}`);
+  }
+  rejects({ ...base(), inbox: { ...inbox(), extra: true } }, 'inbox.extra', /unknown/);
 });

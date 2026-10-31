@@ -77,6 +77,12 @@ ${table(html`<th>相手</th><th>状態</th><th>送った時刻</th><th>最後の
 <td>${task.agent}</td><td>${agentState(task.state)}</td><td>${at(task.sentAt)}</td><td>${at(task.updatedAt)}</td>
 <td><code>${task.taskId}</code></td></tr>`), '外のエージェントへの依頼はありません。')}
 
+<h3>外のエージェントからの依頼</h3>
+<p><small>受け付けなかったもの（rejected）も並べます。中身は /sources/inbox にあります。</small></p>
+${table(html`<th>送り手</th><th>状態</th><th>届いた時刻</th><th>最後に動いた時刻</th><th>催促</th>`, waits.inboxTasks.map(task => html`<tr>
+<td>${task.sender}</td><td>${inboxState(task.state)}</td><td>${at(task.receivedAt)}</td><td>${at(task.updatedAt)}</td><td>${String(task.reminders)}</td></tr>`),
+  '外のエージェントからの依頼はありません。')}
+
 <h3>夜の切り替えと睡眠薬</h3>
 ${table(html`<th>時刻</th><th>種類</th><th>結果</th><th>理由</th><th>記録</th>`, waits.rotations.map(rotation => html`<tr>
 <td>${at(rotation.createdAt)}</td><td><code>${rotation.kind}</code></td><td>${rotation.state === 'switched' || rotation.state === 'curated'
@@ -162,6 +168,12 @@ ${table(html`<th>名前</th><th>相手</th><th>cron</th><th>最後に送った�
 <td>${next(letter)}</td></tr>`), '定期便はありません。')}
 </section>`;
   return page('定期便', main, { signedIn: true, current: '定期便', avatarId });
+}
+
+function inboxState(state: string): Html {
+  if (state === 'completed') return html`<span class="ok">${state}</span>`;
+  if (state === 'failed' || state === 'rejected') return html`<span class="bad">${state}</span>`;
+  return html`<span class="note">${state}</span>`;
 }
 
 function agentState(state: string): Html {

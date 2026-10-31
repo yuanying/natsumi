@@ -1063,4 +1063,45 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX alertmanager_lines_by_file ON alertmanager_lines (sender, file_date, line_id);
     `,
   },
+  {
+    version: 35,
+    name: 'inbox-tasks',
+    sql: `
+      -- What the agents ask natsumi over A2A (ADR 0089), one row a task. sender is the name the check of the call gave,
+      -- never one the message claims. dir is the task's directory under sources/inbox/<sender>/, and NULL for one
+      -- rejected past the sender's open tasks, which is kept here for the dashboard and nowhere else. reason is what a
+      -- failed or rejected task tells its sender. received_at is when the sender's last message came, which the
+      -- deadline is counted from; waiting_since is when it last began to wait for her, which the reminders are; the
+      -- times are UTC.
+      CREATE TABLE inbox_tasks (
+        task_id TEXT PRIMARY KEY,
+        sender TEXT NOT NULL,
+        context_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('working', 'input-required', 'completed', 'failed', 'rejected')),
+        dir TEXT,
+        previous_dir TEXT,
+        reason TEXT,
+        reminders INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        waiting_since TEXT NOT NULL,
+        reminded_at TEXT,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX inbox_tasks_by_sender ON inbox_tasks (sender, state);
+      CREATE INDEX inbox_tasks_by_context ON inbox_tasks (sender, context_id, created_at);
+      -- The messages of a task in the order they came and went, numbered as their files are. author is the sender's
+      -- or hers ('me'); state is what her reply made of the task.
+      CREATE TABLE inbox_messages (
+        task_id TEXT NOT NULL REFERENCES inbox_tasks (task_id),
+        seq INTEGER NOT NULL,
+        author TEXT NOT NULL CHECK (author IN ('sender', 'me')),
+        message_id TEXT NOT NULL,
+        text TEXT NOT NULL,
+        state TEXT CHECK (state IS NULL OR state IN ('completed', 'input-required')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, seq)
+      ) STRICT;
+    `,
+  },
 ];

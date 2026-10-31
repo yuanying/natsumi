@@ -908,3 +908,15 @@ test('files are refused for an agent whose card takes text only, and its request
   assert.equal(f.agent.received[0]!.files, undefined);
   assert.equal((await readdir(join(f.replies, 'wiki'))).length, 1, 'only the request that went has a directory');
 });
+
+// ADR 0089: reply_to_agent is always there; without the way in it answers, as ask_agent does without agents, that it did nothing.
+test('reply_to_agent without the way in is refused, and says nothing was sent', async t => {
+  const f = await setup(t);
+  const { loop } = await f.open();
+  f.script({ calls: [{ name: 'reply_to_agent', arguments: { to: 'claude', text: 'はい', state: 'completed' } }] });
+  await turn(f, loop);
+  const [result] = toolResults(f.model);
+  assert.equal(result!.isError, true);
+  assert.match(result!.text, /返していません/);
+  assert.match(result!.text, /受け口/);
+});
