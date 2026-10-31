@@ -81,6 +81,7 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
    - `postbox`（省略可）: 記憶に置いた定期便をサーバーが cron で送る郵便ポストの設定です。下記「定期便を送る（郵便ポスト）」を見てください。
    - `slack`（省略可）: Slack を受け取るための設定です。下記「Slack を受け取る」を見てください。
    - `alertmanager`（省略可）: クラスタの Alertmanager からアラートを受け取るための設定です。下記「Alertmanager のアラートを受け取る」を見てください。
+   - `inbox`（省略可）: ほかのエージェント（ほかのなつみ、Claude・Pi など）から A2A で依頼を受けるための設定です。下記「ほかのエージェントから依頼を受ける（A2A の受け口）」を見てください。
    - `curator`（省略可）: 夜に記憶を組み直す記憶の整理係の設定です（[ADR 0055](docs/adr/0055-a-memory-curator-at-night.md)、[ADR 0068](docs/adr/0068-a-curator-that-remembers-like-a-person.md)）。
      `enabled`（既定 `true`。`false` で動かさない）、係の経路 `route`（`pi.routes` の名前。省略すると、そのときなつみが使っている経路）、
      係のターンの上限 `modelCalls`（既定 100 回）と `timeoutMinutes`（既定 60 分）。経路と上限は、動いている最中に `/settings` で上書きできます（下の「ブラウザで話す・設定を変える」）。一晩は工程に分かれ、上限は工程ごとにまるごと使えます
@@ -746,7 +747,8 @@ natsumi は、Wiki の管理人のような外の特化エージェントに `as
    - gated 経由で呼ぶ（`https://<係>.fraction.jp` など）: gated の audience `https://auth.fraction.jp`。gated が確かめて token を落とし、相手には署名付きの assertion が届きます。
    - 相手の Service を直接呼ぶ: audience `a2a`。相手が自分で確かめます。
 
-   token のファイルは 1 つなので、`a2a.agents` の相手はどちらか一方の呼び方にそろえます。
+   `a2a.tokenFile` は、自分の token を持たない相手すべてに送ります。相手ごとに違う token が要るとき（bearer token で守ったほかのなつみなど）は、
+   その相手に `tokenFile` を書きます（[ADR 0089](docs/adr/0089-hearing-from-agents-over-a2a.md)）。
    Kubernetes では Pod に差し込まれる projected token のパスを、Docker では手で置いたファイルを使います。
    Docker では `secrets/a2a-token` などに置き、コンテナのユーザーだけが読めるようにします。`secrets/` は Git の追跡対象外です。
 2. 設定に `a2a` を足します。値は架空の例です。
@@ -763,7 +765,8 @@ natsumi は、Wiki の管理人のような外の特化エージェントに `as
    | 項目 | 必須 | 既定 | 中身 |
    | --- | --- | --- | --- |
    | `a2a.agents.<名前>.url` | 必須 | | 相手の A2A の受け口。https に限ります（loopback だけ http）。名前は英小文字・数字・ハイフンで 32 文字まで。natsumi は名前だけを扱います |
-   | `a2a.tokenFile` | 必須 | | token のファイル（絶対パス）。呼び出しのたびに読み直すので、更新された token は再起動なしで使われます |
+   | `a2a.agents.<名前>.tokenFile` | | | その相手にだけ送る token のファイル（絶対パス）。書かなければ `a2a.tokenFile` を送ります。どちらの token も、その相手の URL と同じ origin にだけ送ります |
+   | `a2a.tokenFile` | 自分の token を持たない相手がいれば必須 | | token のファイル（絶対パス）。呼び出しのたびに読み直すので、更新された token は再起動なしで使われます。すべての相手が `tokenFile` を持てば省けます |
    | `a2a.pollIntervalSeconds` | | 15 | 返事を待っている依頼を取りに行く間隔（秒、5 以上） |
    | `a2a.giveUpAfterHours` | | 24 | 返事を待ち続ける上限（時間）。最後に送ってからこの時間が過ぎると、待つのをやめて natsumi に知らせます |
 
@@ -972,9 +975,71 @@ natsumi 専用の Slack App（bot）を Socket Mode でつなぎ、bot を招待
   ほかの行は、ふつうの変化として下の「読みものの更新」の待ちの後に知らせます。
 - token を入れ替えるときは、natsumi と Alertmanager の両方を直して、natsumi を再起動します。ログには送り手の名前と失敗の種類だけを出し、アラートの中身と token は出しません。
 
+### ほかのエージェントから依頼を受ける（A2A の受け口）
+
+ほかのエージェント（ほかのなつみ、本人の Claude・Pi など）が、A2A で natsumi に頼めるようにします
+（[ADR 0089](docs/adr/0089-hearing-from-agents-over-a2a.md)）。届いた依頼は `/sources/inbox` の下のファイルにして `sources_updated` で知らせ、
+natsumi はツール `reply_to_agent` で返します。返事は送り手が GetTask で取りに来ます。設定に `inbox` がなければ、`/a2a/` の下は Agent Card も含めて 404 です
+（`reply_to_agent` は常にあり、返さずに断ります）。
+
+1. 送り手ごとに、確かめ方を 1 つ決めます。
+   - gated の後ろで受けるなら `gatedSubject`: gated の assertion の `sub`（`system:serviceaccount:<名前空間>:<名前>` など）。
+     送り手は gated の audience の ServiceAccount の token で呼び、gated が token を落として assertion に置き換えます（[ADR 0084](docs/adr/0084-calling-agents-behind-gated-with-its-audience.md)）。
+   - gated の無い環境なら `tokenFile`: 送り手ごとの token（例: `openssl rand -base64 32`）。natsumi と送り手の両方に置きます。
+2. 設定に `inbox` を足します。値は架空の例です。
+
+   ```json
+   "inbox": {
+     "publicUrl": "https://natsumi.example.net/a2a/",
+     "card": { "name": "なつみ", "description": "マスターの秘書です。返事は遅くなることがあります。" },
+     "gated": { "issuer": "https://auth.example.net", "jwksUrl": "https://auth.example.net/.well-known/jwks.json" },
+     "senders": [
+       { "name": "claude", "gatedSubject": "system:serviceaccount:agents:claude" },
+       { "name": "penelope", "tokenFile": "/run/secrets/natsumi_inbox_penelope_token" }
+     ]
+   }
+   ```
+
+   | 項目 | 必須 | 既定 | 中身 |
+   | --- | --- | --- | --- |
+   | `inbox.publicUrl` | 必須 | | 送り手から見た受け口の URL。パスは `/a2a/` に限ります（末尾の `/` は足します）。https に限ります（loopback だけ http）。Agent Card の URL に書き、ホスト名は gated の assertion の宛先と照らします |
+   | `inbox.card.name`・`inbox.card.description` | 必須 | | Agent Card の名前と説明 |
+   | `inbox.senders` | 必須 | | 送り手の並び（1 つ以上）。`name` は英小文字・数字・ハイフンで 32 文字まで（`me` は使えません）、重ねられません。`/sources/inbox/<name>/` と、返事の宛先に使います。`gatedSubject` か `tokenFile` のどちらか 1 つを持ちます。`gatedSubject` も重ねられません。`tokenFile` は起動時に読み、読めなければ起動を止めます |
+   | `inbox.gated.issuer`・`inbox.gated.jwksUrl` | `gatedSubject` の送り手がいれば必須 | | gated の assertion の発行元（`iss` と同じ書き方）と、鍵の置き場所（https。loopback だけ http）。assertion からは取りません |
+   | `inbox.reminderIntervalHours` | | 3 | 開いている依頼を催促する間隔（時間） |
+   | `inbox.deadlineHours` | | 24 | 依頼の期限（時間）。送り手のメッセージが最後に届いた時刻から数え、過ぎたら `failed` にします |
+   | `inbox.maxOpenTasksPerSender` | | 3 | 送り手ごとに開いておける依頼（`working` と `input-required`）の数。超えた依頼はすぐ `rejected` にします |
+
+3. 公開の入口を用意します。受け口はブラウザと同じ待ち受けの `/a2a/` の下にあります。
+   gated で守るなら、同じホストに `/a2a` の道だけの Ingress を別に立て、それを NetworkRole で守ります。gated は長い前方一致を優先するので、`/` の Ingress より先に当たります。
+   Agent Card（`GET /a2a/.well-known/agent-card.json`）は token なしで取られるので、その道の GET を `system:unauthenticated` に開けます。
+   `/` の Ingress は今までどおり認証を掛けません。gated の鍵（`inbox.gated.jwksUrl`）を取りに行く出口も許します。
+
+- 受け口は A2A 1.0 の JSON-RPC で、`ask_agent` と同じ SDK（`@a2a-js/sdk`）を使います。持つのは Agent Card、`SendMessage`、`GetTask` だけです。
+  `CancelTask`・ストリーミング・push 通知は持たず、Agent Card にも出しません。
+- 認証は、gated の assertion（`Gated-Assertion` ヘッダ。署名・発行元・宛先のホスト・時刻を確かめ、`sub` を送り手と照らします）か、`Authorization: Bearer <token>` です。
+  token は SHA-256 にしてから時間に依らない比べ方で照らします。知らない送り手、合わない token、確かめられない assertion は、どれも同じ 401 です。ブラウザのログインの cookie では通しません。
+  送り手の名前は確かめた結果だけで決め、メッセージの名乗りは使いません。
+- 受けるのは文章（TextPart）だけです。ファイルやデータを含むメッセージは断ります。本文は 1 MiB まで、呼び出しの body は 2 MiB まで（超えれば 413）です。
+- 新しい依頼は `sources/inbox/<name>/<UTC の日時>-<短い印>/` に、`README.md`・`01-<name>.md`・`status.md` を書いてから Task（`working`）を返します。書けなければ失敗を返します。
+  `attention`（`kind` が `agent_request`、届いたメッセージのファイル、`from`・`task`・`text`）として、待たずに、夜でも知らせます。
+- 同じ context で新しく頼むと新しいディレクトリになり、`README.md` に前の依頼のディレクトリを書きます。context は natsumi が採番し、知らない context は断ります。
+- natsumi の `reply_to_agent(to, text?, state)` は、`completed` なら Task を閉じ（本文は省けます。返す本文は artifact `response` の文章になります）、
+  `input-required` なら聞き返します（本文は必須で、Task の `status.message` になります）。返事も `NN-me.md` として同じディレクトリに書きます。
+  `to` は送り手の名前で、その送り手に開いた Task が 2 つ以上あるときは `<name>/<ディレクトリ>` まで書きます。名前だけで複数なら、返さずに断ります。
+- 聞き返しへの答えは、送り手が同じ Task（`taskId`）に送ります。Task は `working` に戻り、`attention`（`agent_answer`）で知らせます。
+  聞き返しの間でない開いた Task に続けて送ったものと、閉じた Task に送ったものは断ります。
+- 開いている依頼（`working`）は、`reminderIntervalHours` ごとに `status.md` を書き換えて催促します。印は付けず、ふつうの変化として知らせます。
+  本人の起きている時間（`loop.awakeHours`）の外は催促せず、朝の 1 回にまとめます。聞き返しの間は催促しません。
+  期限を過ぎた依頼は、夜でも `failed` にし、理由を送り手に返します。
+- 送り手ごとの上限を超えた依頼は、`/sources` に置かず、natsumi を起こさずに `rejected` で返します。ダッシュボードの「失敗と待ち」の「外のエージェントからの依頼」には残します。
+- Task とメッセージは `.natsumi/state.sqlite`（migration 35）に持つので、再起動しても開いた Task は残ります。最初の版では、Task もディレクトリも消しません。
+- なつみは送り手を名前付きの第三者として扱います（マニュアル `manual/inbox.md`）。外に作用する行為は、今までどおりサーバーの承認記録で止まります。
+- token を入れ替えるときは、natsumi と送り手の両方を直して、natsumi を再起動します。ログには送り手の名前と失敗の種類だけを出し、依頼の中身と token は出しません。
+
 ### 読みものの更新（sources_updated）
 
-`/sources` の下の読みもの（Slack と、外のエージェントの返事と、Alertmanager のアラート）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
+`/sources` の下の読みもの（Slack と、外のエージェントの返事と、Alertmanager のアラートと、ほかのエージェントから届いた依頼）が変わったことを、出来事 `sources_updated` で natsumi に知らせます
 （[ADR 0050](docs/adr/0050-telling-of-source-updates-with-one-event.md)、[ADR 0053](docs/adr/0053-waiting-at-random-for-source-updates.md)）。
 
 - サーバーは data directory の `sources/` を作業ツリーとする git の履歴を `sources.git/` に持ちます。commit するのは出来事を作るときだけです。

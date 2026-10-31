@@ -204,6 +204,38 @@
 - gated で、同じホストの `/a2a` の Ingress が、`/` の Ingress より優先されるか。
 - `completed` で本文の無い返事を、`ask_agent` の取り込み（ADR 0069）と `fraction-agents` のクライアントがどう見せるか。
 
+### 実装で決めたこと
+
+ADR では決めず、実装の PR で決めたものは次のとおりである。
+
+- **config**: 最上位の `inbox` にした。`publicUrl`（パスは `/a2a/` に限る）、`card.name`・`card.description`、`senders`（各送り手は `name` と、`gatedSubject` か `tokenFile` のどちらか 1 つ）、
+  `gated.issuer`・`gated.jwksUrl`（`gatedSubject` の送り手が居るときに必須）、`reminderIntervalHours`（既定 3）、`deadlineHours`（既定 24）、`maxOpenTasksPerSender`（既定 3）。
+  欄の形は `alertmanager.senders` に揃えた。`tokenFile` は起動時に読み、読めなければ設定の名前だけを示して起動を止める。`config.example.json` には載せない（ADR 0086 と同じ理由）。
+- **なつみの書き手の名前**: `NN-me.md` の `me` にした。送り手の名前に `me` は使えない。ほかのなつみが送り手になると、送り手の名前がなつみ自身の名前と重なり得るためである。
+- **ディレクトリの中身**: `README.md`（送り手、届いた時刻、状態、期限、前の依頼、返すときの宛先、メッセージの一覧）、`NN-<送り手>.md`・`NN-me.md`（番号は 2 桁から）、`status.md`（状態、最後に届いた時刻、開いてからの時間、催促の回数と最後の時刻、失敗の理由）。
+  新しい依頼のディレクトリは、隣の `.tmp` で書いてから移す（ADR 0069 と同じ）。
+- **印の欄**: `kind` は新しい依頼が `agent_request`、聞き返しへの答えが `agent_answer`。`file` は届いたメッセージのファイル、`details` は `from`（送り手）・`task`（`<送り手>/<ディレクトリ>`）・`text`（先頭の行、80 字まで）。
+- **context**: なつみが採番する。送り手が自分に渡されていない context を送れば断る。`a2a-cli` と fraction-agents の係と同じ扱いである。
+- **Task の形**: `completed` の返事の本文は、名前 `response` の artifact の文章にした（fraction-agents の係と同じ）。本文の無い `completed` には artifact が無い。
+  聞き返しは `status.message`、`failed` と `rejected` の理由も `status.message` に置く。`history` は届いたメッセージとなつみの返事のすべてで、`historyLength` を渡されればその分だけにする。
+- **断り方**: 知らない Task は `TaskNotFound`、聞き返しの間でない開いた Task と閉じた Task への送り直しは `UnsupportedOperation`、
+  知らない context・空の本文・1 MiB を超える本文は `InvalidRequest`、TextPart 以外を含むメッセージは `ContentTypeNotSupported`、ストリーミング・CancelTask・push 通知の呼び出しは `UnsupportedOperation` か `PushNotificationNotSupported` にした。
+  呼び出しの body は 2 MiB まで読み、超えれば 413 にする（本文の 1 MiB は、JSON の書き方に依らず入るように）。401 の本文は、どの外れ方でも `{"error": "unauthorized"}` である。
+- **確かめ方の順**: gated が設定されていて、呼び出しに `Gated-Assertion` があれば、assertion だけで決める（gated は token を落として assertion に置き換えるため）。無ければ bearer token で決める。
+  assertion の検証は fraction-agents の `gated-assertion.ts` を移した（鍵は最長 5 分持ち、知らない鍵の ID は 1 分に 1 度まで取り直す）。`sub` が宣言に無いものも 401 にする。
+- **催促と期限の数え方**: 1 分ごとに見る。催促は、待ち始めた時刻（届いた時刻か、聞き返しに答えが届いた時刻）か最後の催促から間隔が過ぎた `working` の Task だけ。期限は awake hours に関わらず見る。
+- **書く順**: ファイルを書いてから、Task とメッセージ（migration 35 の `inbox_tasks`・`inbox_messages`）と印を 1 つのトランザクションで記録する。記録できなければ、書いたファイルを消す。
+- **ツールの並び**: `reply_to_agent` は、すべてのツールの最後（`read`・`search_memory` の後）に置いた。前の定義はプレフィックスの上で動かない。ターンを畳むときも、外へ出した言葉として残す（ADR 0047 の `KEPT_TOOLS`）。
+- **ダッシュボード**: 「失敗と待ち」のページに「外のエージェントからの依頼」の表を足した。開いている Task を先に、最後に動いた順で 20 件まで並べる。
+
+### 実装で確かめた結果
+
+- gated の、同じホストの `/a2a` と `/` の Ingress: gated はホストごとに Ingress をまたいで規則を 1 つの表にまとめ、`Exact` の次に長い前方一致から照らす（gated の `internal/routing/table.go`）。`/a2a` の Ingress が `/` より優先される。
+- gated で守った Ingress の下で Agent Card の道だけを未ログインに開けること: NetworkRole はパスとメソッドで許し、判定は許可の和である（gated ADR 0002、`internal/authz`）。
+  `GET /a2a/.well-known/agent-card.json` だけの NetworkRole を `system:unauthenticated` に束ね、`/a2a*` のすべてのメソッドの NetworkRole を送り手の ServiceAccount に束ねればよい。
+- 本文の無い `completed`: `ask_agent` の取り込みでは、`README.md` の要約が「返事に文章はありませんでした。」になり、節は無く、`agent_reply` の印で届く。
+  a2a-cli（v0.2.0）では `Status: completed` だけが出て、`Artifacts:` は出ない。
+
 ### 置き換える既存の決定
 
 - ADR 0025
