@@ -24,6 +24,8 @@ const github = () => ({
 const SCHEDULE_DEFAULTS = {
   memoryFileMaxChars: 32000,
   alwaysMemoryMaxChars: 2000,
+  goalFileMaxChars: 6000,
+  todayPlanMaxChars: 3000,
   shellWaitSeconds: 75,
   workspaceSizeWarnBytes: 1073741824,
   awakeHours: { start: '08:00', end: '23:00' },
@@ -239,6 +241,22 @@ test('the always-memory has its own smaller limit, with a default and a floor', 
   assert.equal(parseConfig(base()).loop.alwaysMemoryMaxChars, 2000);
   assert.equal(parseConfig({ ...base(), loop: { alwaysMemoryMaxChars: 800 } }).loop.alwaysMemoryMaxChars, 800);
   for (const chars of [0, 199, 1.5, '2000', true]) rejects({ ...base(), loop: { alwaysMemoryMaxChars: chars } }, 'loop.alwaysMemoryMaxChars');
+});
+
+// The goals' files have limits of their own, below one memory file's (ADR 0090).
+test('a lasting goal\'s file and today\'s plan have their own smaller limits, with defaults, a floor and memory\'s file limit above them', () => {
+  assert.equal(parseConfig(base()).loop.goalFileMaxChars, 6000);
+  assert.equal(parseConfig(base()).loop.todayPlanMaxChars, 3000);
+  const set = parseConfig({ ...base(), loop: { goalFileMaxChars: 4000, todayPlanMaxChars: 1500 } }).loop;
+  assert.deepEqual([set.goalFileMaxChars, set.todayPlanMaxChars], [4000, 1500]);
+  for (const key of ['goalFileMaxChars', 'todayPlanMaxChars']) {
+    for (const chars of [0, 199, 1.5, '3000', true]) rejects({ ...base(), loop: { [key]: chars } }, `loop.${key}`);
+    // Past one memory file's limit it could never be reached, so it is refused rather than read as that limit.
+    rejects({ ...base(), loop: { memoryFileMaxChars: 5000, [key]: 5001 } }, `loop.${key}`, /memoryFileMaxChars/);
+  }
+  // Left out under a small file limit, each default gives way to it.
+  const small = parseConfig({ ...base(), loop: { memoryFileMaxChars: 2500 } }).loop;
+  assert.deepEqual([small.goalFileMaxChars, small.todayPlanMaxChars], [2500, 2500]);
 });
 
 test('an OpenAI-compatible endpoint is chosen explicitly, with its key referenced by env or file', () => {
