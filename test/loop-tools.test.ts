@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createLoopTools, EXPRESSIONS, LOOP_TOOL_NAMES, READ_TOOL_NAME, RUN_SHELL_TOOL_NAME, SEARCH_MEMORY_TOOL_NAME,
   type LoopToolHost } from '../src/server/loop-tools.ts';
-import { ASK_AGENT_DESCRIPTION, BASE_INSTRUCTION, LIST_SELF_CHECKS_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION,
+import { ASK_AGENT_DESCRIPTION, BASE_INSTRUCTION, REPLY_TO_AGENT_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION, NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION,
   SCHEDULE_SELF_CHECK_DESCRIPTION } from '../src/server/prompts.ts';
 import { MAX_COMMAND_CHARS } from '../src/server/workspace-shell.ts';
 
@@ -19,6 +19,7 @@ function host(overrides: Partial<LoopToolHost> = {}): LoopToolHost {
     listSelfChecks: () => ok('listed'),
     cancelSelfCheck: () => ok('cancelled'),
     askAgent: () => ok('asked'),
+    replyToAgent: () => ok('replied to the agent'),
     ...overrides,
   };
 }
@@ -37,26 +38,27 @@ test('run_shell is registered with a runner, and the old memory tools are regist
   }
   // Everything else is as ADR 0008 left it, with the night's change note added by ADR 0020.
   assert.deepEqual([...LOOP_TOOL_NAMES].sort(), ['ask_agent', 'cancel_self_check', 'list_self_checks', 'notify_owner',
-    'reply_to_mac', 'schedule_self_check', 'set_mac_avatar_expression', 'write_change_note', 'write_handoff_note']);
+    'reply_to_agent', 'reply_to_mac', 'schedule_self_check', 'set_mac_avatar_expression', 'write_change_note', 'write_handoff_note']);
 });
 
-// ADR 0047: Pi's read comes with the runner, pointed at the workspace, and last, so every definition before it stays put.
-test('read is registered with a runner, after every other tool, and never without one', () => {
+// ADR 0047: Pi's read comes with the runner, pointed at the workspace, and after every tool before it, so every definition
+// before it stays put. Only reply_to_agent, added later, comes after it (ADR 0089).
+test('read is registered with a runner, after every other tool but those added later, and never without one', () => {
   const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
   const withShell = names(host({ runShell: () => ok('ran'), capture }));
   assert.equal(READ_TOOL_NAME, 'read');
-  assert.equal(withShell.at(-2), READ_TOOL_NAME);
-  assert.deepEqual(withShell.slice(0, -2), names(host({ runShell: () => ok('ran') })));
+  assert.equal(withShell.at(-3), READ_TOOL_NAME);
+  assert.deepEqual(withShell.slice(0, -3), names(host({ runShell: () => ok('ran') })).slice(0, -1));
   assert.equal(names(host()).includes(READ_TOOL_NAME), false);
   for (const builtIn of ['bash', 'edit', 'write', 'grep', 'find', 'ls']) assert.equal(withShell.includes(builtIn), false, builtIn);
 });
 
 // ADR 0055: search_memory comes with the runner too, after read, so that adding it moved no definition before it.
-test('search_memory is registered with a runner, last of all, and never without one', () => {
+test('search_memory is registered with a runner, right after read, and never without one', () => {
   const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
   const withShell = names(host({ runShell: () => ok('ran'), capture }));
   assert.equal(SEARCH_MEMORY_TOOL_NAME, 'search_memory');
-  assert.equal(withShell.at(-1), SEARCH_MEMORY_TOOL_NAME);
+  assert.equal(withShell.at(-2), SEARCH_MEMORY_TOOL_NAME);
   assert.equal(names(host()).includes(SEARCH_MEMORY_TOOL_NAME), false);
 });
 
@@ -174,11 +176,12 @@ test('the reply_to_mac and notify_owner descriptions are fixed strings that tell
 });
 
 // ADR 0035 and ADR 0036: one tool for every agent, there with or without any configured, and its words never move.
-test('ask_agent is always registered last, with a fixed description, a required continue and files that may be left out', () => {
+// Last when it was added; reply_to_agent came after it later (ADR 0089), and moved nothing before it.
+test('ask_agent is always registered after every tool before it, with a fixed description, a required continue and files that may be left out', () => {
   const tools = createLoopTools(host());
-  assert.equal(tools.at(-1)!.name, 'ask_agent');
-  assert.deepEqual(names(host({ runShell: () => ok('ran') })).at(-1), 'ask_agent');
-  const ask = tools.at(-1)!;
+  assert.equal(tools.at(-2)!.name, 'ask_agent');
+  assert.deepEqual(names(host({ runShell: () => ok('ran') })).at(-2), 'ask_agent');
+  const ask = tools.at(-2)!;
   assert.equal(ask.description, ASK_AGENT_DESCRIPTION);
   const schema = JSON.parse(JSON.stringify(ask.parameters)) as { properties: Record<string, { type: string }>; required: string[] };
   assert.deepEqual(Object.fromEntries(Object.entries(schema.properties).map(([name, value]) => [name, value.type])),
@@ -212,4 +215,29 @@ test('the self-check descriptions tell of cron, at and in_minutes, and promise n
   assert.doesNotMatch(SCHEDULE_SELF_CHECK_DESCRIPTION, /上限|まとま/);
   assert.deepEqual(Object.keys((schedule.parameters as { properties: object }).properties).sort(), ['at', 'cron', 'in_minutes', 'reason']);
   assert.match(LIST_SELF_CHECKS_DESCRIPTION, /cron/);
+});
+
+// ADR 0089: reply_to_agent is always there, whether or not anyone may send her anything, with one fixed description and
+// last of all, so that adding it moved no definition before it.
+test('reply_to_agent is always registered, last of all, with a fixed description that names no sender', async () => {
+  const capture = async () => ({ ok: true as const, exitCode: 0, stdout: '', stdoutTruncated: false });
+  assert.equal(names(host()).at(-1), 'reply_to_agent');
+  assert.equal(names(host({ runShell: () => ok('ran'), capture })).at(-1), 'reply_to_agent');
+  const calls: unknown[][] = [];
+  const tool = createLoopTools(host({ replyToAgent: (...args) => { calls.push(args); return ok('閉じました'); } }))
+    .find(item => item.name === 'reply_to_agent')!;
+  assert.equal(tool.description, REPLY_TO_AGENT_DESCRIPTION);
+  for (const phrase of ['to', 'completed', 'input-required', '/sources/inbox', '/manual/inbox.md']) {
+    assert.ok(REPLY_TO_AGENT_DESCRIPTION.includes(phrase), phrase);
+  }
+  const parameters = tool.parameters as unknown as { properties: Record<string, { anyOf?: { const: string }[] }>; required: string[] };
+  assert.deepEqual(Object.keys(parameters.properties), ['to', 'text', 'state']);
+  assert.deepEqual(parameters.required, ['to', 'state'], 'text is optional');
+  assert.deepEqual(parameters.properties.state!.anyOf!.map(item => item.const), ['completed', 'input-required']);
+  const result = await tool.execute('call-1', { to: 'claude', state: 'completed' } as never, undefined, undefined, undefined as never);
+  assert.deepEqual(calls, [['claude', undefined, 'completed']]);
+  assert.equal((result.content[0] as { text: string }).text, '閉じました');
+  const refused = createLoopTools(host({ replyToAgent: () => ({ ok: false, text: '返していません。' }) })).find(item => item.name === 'reply_to_agent')!;
+  await assert.rejects(refused.execute('call-2', { to: 'claude', text: 'x', state: 'completed' } as never, undefined, undefined, undefined as never),
+    /返していません。/);
 });

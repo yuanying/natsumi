@@ -239,14 +239,20 @@ export interface ApnsConfig {
 
 /** The outside agents natsumi may ask over A2A (ADR 0025, ADR 0035, ADR 0036). Without it `ask_agent` refuses. */
 export interface A2AConfig {
-  /** The caller's token: a projected ServiceAccount token on Kubernetes, a file put in place by hand elsewhere. Read afresh for every call. */
-  tokenFile: string;
+  /**
+   * The caller's token: a projected ServiceAccount token on Kubernetes, a file put in place by hand elsewhere. Read afresh
+   * for every call. It goes to every agent without a token file of its own, and may be left out when none is without.
+   */
+  tokenFile?: string;
   /** How often a task still waiting for an answer is fetched again. */
   pollIntervalSeconds: number;
   /** How long a task may go unanswered before natsumi is told the server gave up on it. */
   giveUpAfterHours: number;
-  /** Name → where the agent answers. natsumi only ever sees the names. */
-  agents: Record<string, { url: string }>;
+  /**
+   * Name → where the agent answers, and the token file it alone is sent, such as another natsumi's that a bearer token
+   * guards (ADR 0089). natsumi only ever sees the names.
+   */
+  agents: Record<string, { url: string; tokenFile?: string }>;
 }
 
 export const DEFAULT_A2A_POLL_INTERVAL_SECONDS = 15;
@@ -455,6 +461,29 @@ export interface AlertmanagerConfig {
 /** A sender's name, its directory and the last part of its path: as an agent's. */
 const SENDER_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
+/**
+ * The way in over A2A (ADR 0089): its public URL under `/a2a/`, which the Agent Card names and gated's assertions are
+ * addressed to by its host; the card's name and description; who may send, each by gated's subject or a token file of
+ * its own; where gated's keys are, when anyone is checked by subject; and how the open tasks are reminded, given up and
+ * bounded. Without it `/a2a/` is not found.
+ */
+export interface InboxConfig {
+  publicUrl: string;
+  card: { name: string; description: string };
+  senders: InboxSenderConfig[];
+  /** The issuer of gated's assertions, written as its `iss` is, and where its keys are. Never taken from an assertion. */
+  gated?: { issuer: string; jwksUrl: string };
+  reminderIntervalHours: number;
+  deadlineHours: number;
+  maxOpenTasksPerSender: number;
+}
+export type InboxSenderConfig = { name: string; gatedSubject: string } | { name: string; tokenFile: string };
+export const INBOX_CONFIG_DEFAULTS = { reminderIntervalHours: 3, deadlineHours: 24, maxOpenTasksPerSender: 3 };
+/** The path the way in is served under, on the same listener as the browser's. */
+export const INBOX_URL_PATH = '/a2a/';
+/** The writer of her own messages in a task's directory (`NN-me.md`), which no sender may be named. */
+export const INBOX_OWN_WRITER = 'me';
+
 export interface ServerConfig {
   pi: PiConfig;
   /** The origin clients use, such as `https://natsumi.example.net`. WebSocket Origin headers must match it. */
@@ -471,6 +500,7 @@ export interface ServerConfig {
   skills: SkillsConfig;
   postbox: PostboxConfig;
   alertmanager?: AlertmanagerConfig;
+  inbox?: InboxConfig;
   /** The avatar (ADR 0057). Without it, natsumi, built into the image. */
   avatar?: AvatarConfig;
   /** The tools this instance has of its own (ADR 0075). Absent when none is declared, so the tools stay as they were. */
@@ -511,7 +541,7 @@ export const TOOLS_DIRECTORY = '/tools';
  */
 export const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(['run_shell', 'read', 'search_memory', 'reply_to_mac',
   'notify_owner', 'set_mac_avatar_expression', 'write_handoff_note', 'write_change_note', 'schedule_self_check',
-  'list_self_checks', 'cancel_self_check', 'ask_agent', 'codemode', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls']);
+  'list_self_checks', 'cancel_self_check', 'ask_agent', 'reply_to_agent', 'codemode', 'bash', 'powershell', 'edit', 'write', 'grep', 'find', 'ls']);
 /** What model providers take as a function name. */
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const PROPERTY_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
@@ -551,6 +581,7 @@ const SECTIONS = {
   skills: parseSkills,
   postbox: parsePostbox,
   alertmanager: parseAlertmanager,
+  inbox: parseInbox,
   avatar: parseAvatar,
   tools: (value: unknown, path: string) => parseTools(value, path),
 } satisfies { [K in keyof ServerConfig]: Section<unknown> };
@@ -598,6 +629,7 @@ export function parseConfig(raw: unknown): ServerConfig {
     skills: SECTIONS.skills(root.skills ?? {}, 'skills'),
     postbox: SECTIONS.postbox(root.postbox ?? {}, 'postbox'),
     ...(root.alertmanager === undefined ? {} : { alertmanager: SECTIONS.alertmanager(root.alertmanager, 'alertmanager') }),
+    ...(root.inbox === undefined ? {} : { inbox: SECTIONS.inbox(root.inbox, 'inbox') }),
     ...(root.avatar === undefined ? {} : { avatar: SECTIONS.avatar(root.avatar, 'avatar') }),
   };
   const tools = root.tools === undefined ? [] : SECTIONS.tools(root.tools, 'tools');
@@ -945,7 +977,7 @@ function parseA2A(value: unknown, path: string): A2AConfig {
     if (!AGENT_NAME.test(name)) throw new ConfigError(entryPath, 'the name must be lower-case letters, digits and hyphens, at most 32');
     if (name === DOVE_NAME) throw new ConfigError(entryPath, 'the name is the Slack dove\'s own, served by the server itself (ADR 0040)');
     const agent = object(entry, entryPath);
-    onlyKeys(agent, entryPath, ['url']);
+    onlyKeys(agent, entryPath, ['url', 'tokenFile']);
     // The token rides on every call, so it goes nowhere it could be read on the way.
     const urlPath = `${entryPath}.url`;
     const url = parseUrl(required(agent, 'url', entryPath), urlPath);
@@ -955,10 +987,14 @@ function parseA2A(value: unknown, path: string): A2AConfig {
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
       throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
     }
-    agents[name] = { url: url.href };
+    agents[name] = { url: url.href,
+      ...(agent.tokenFile === undefined ? {} : { tokenFile: absolutePath(agent.tokenFile, `${entryPath}.tokenFile`) }) };
   }
+  // The shared token is for the agents without one of their own: needed only while there is such an agent.
+  const shared = a2a.tokenFile === undefined && Object.values(agents).every(agent => agent.tokenFile !== undefined) && Object.keys(agents).length > 0
+    ? undefined : absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`);
   return {
-    tokenFile: absolutePath(required(a2a, 'tokenFile', path), `${path}.tokenFile`),
+    ...(shared === undefined ? {} : { tokenFile: shared }),
     pollIntervalSeconds: interval as number, giveUpAfterHours: giveUp as number, agents,
   };
 }
@@ -1291,6 +1327,73 @@ function parseAlertmanager(value: unknown, path: string): AlertmanagerConfig {
     throw new ConfigError(severitiesPath, 'must be a list of distinct severities, such as ["critical"]');
   }
   return { senders, attentionSeverities: [...severities as string[]] };
+}
+
+function parseInbox(value: unknown, path: string): InboxConfig {
+  const inbox = object(value, path);
+  onlyKeys(inbox, path, ['publicUrl', 'card', 'senders', 'gated', 'reminderIntervalHours', 'deadlineHours', 'maxOpenTasksPerSender']);
+  const urlPath = `${path}.publicUrl`;
+  const url = parseUrl(required(inbox, 'publicUrl', path), urlPath);
+  if (url.username || url.password || url.search || url.hash) throw new ConfigError(urlPath, 'must not carry credentials, a query or a fragment');
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new ConfigError(urlPath, 'must use https (http is accepted only for a loopback host)');
+  }
+  // Served under /a2a/ of the listener, and a proxy that moved it would leave the card naming a path that is not there.
+  if (url.pathname !== INBOX_URL_PATH && url.pathname !== INBOX_URL_PATH.slice(0, -1)) throw new ConfigError(urlPath, `must end in ${INBOX_URL_PATH}`);
+  const cardPath = `${path}.card`;
+  const card = object(required(inbox, 'card', path), cardPath);
+  onlyKeys(card, cardPath, ['name', 'description']);
+  const name = nonEmptyString(required(card, 'name', cardPath), `${cardPath}.name`);
+  const description = nonEmptyString(required(card, 'description', cardPath), `${cardPath}.description`);
+
+  const sendersPath = `${path}.senders`;
+  const listed = required(inbox, 'senders', path);
+  if (!Array.isArray(listed) || listed.length === 0) throw new ConfigError(sendersPath, 'must be a list of one sender or more');
+  const senders = listed.map((entry: unknown, index): InboxSenderConfig => {
+    const entryPath = `${sendersPath}[${index}]`;
+    const sender = object(entry, entryPath);
+    onlyKeys(sender, entryPath, ['name', 'gatedSubject', 'tokenFile']);
+    const senderName = required(sender, 'name', entryPath);
+    if (typeof senderName !== 'string' || !SENDER_NAME.test(senderName) || senderName === INBOX_OWN_WRITER) {
+      throw new ConfigError(`${entryPath}.name`, `the name must be lower-case letters, digits and hyphens, at most 32, and not ${INBOX_OWN_WRITER}`);
+    }
+    if (sender.gatedSubject !== undefined && sender.tokenFile !== undefined) throw new ConfigError(entryPath, 'give only one of gatedSubject and tokenFile');
+    if (sender.gatedSubject !== undefined) return { name: senderName, gatedSubject: nonEmptyString(sender.gatedSubject, `${entryPath}.gatedSubject`) };
+    if (sender.tokenFile !== undefined) return { name: senderName, tokenFile: absolutePath(sender.tokenFile, `${entryPath}.tokenFile`) };
+    throw new ConfigError(entryPath, 'needs gatedSubject or tokenFile');
+  });
+  senders.forEach((sender, index) => {
+    if (senders.findIndex(other => other.name === sender.name) !== index) throw new ConfigError(`${sendersPath}[${index}].name`, 'is named twice');
+    if ('gatedSubject' in sender && senders.findIndex(other => 'gatedSubject' in other && other.gatedSubject === sender.gatedSubject) !== index) {
+      throw new ConfigError(`${sendersPath}[${index}].gatedSubject`, 'is named twice');
+    }
+  });
+
+  const gatedPath = `${path}.gated`;
+  let gated: InboxConfig['gated'];
+  if (inbox.gated !== undefined) {
+    const section = object(inbox.gated, gatedPath);
+    onlyKeys(section, gatedPath, ['issuer', 'jwksUrl']);
+    // Compared with `iss` as it is written, so it is kept as written.
+    const issuer = nonEmptyString(required(section, 'issuer', gatedPath), `${gatedPath}.issuer`);
+    parseUrl(issuer, `${gatedPath}.issuer`);
+    const jwks = parseUrl(required(section, 'jwksUrl', gatedPath), `${gatedPath}.jwksUrl`);
+    if (jwks.protocol !== 'https:' && !(jwks.protocol === 'http:' && isLoopbackHost(jwks.hostname))) {
+      throw new ConfigError(`${gatedPath}.jwksUrl`, 'must use https (http is accepted only for a loopback host)');
+    }
+    gated = { issuer, jwksUrl: jwks.href };
+  } else if (senders.some(sender => 'gatedSubject' in sender)) {
+    throw new ConfigError(gatedPath, 'is required when a sender is checked by its gatedSubject');
+  }
+  const whole = (key: keyof typeof INBOX_CONFIG_DEFAULTS) => {
+    const number = inbox[key] ?? INBOX_CONFIG_DEFAULTS[key];
+    if (!positiveInteger(number, 1)) throw new ConfigError(`${path}.${key}`, 'must be a positive integer');
+    return number as number;
+  };
+  return {
+    publicUrl: url.href.endsWith('/') ? url.href : `${url.href}/`, card: { name, description }, senders, ...(gated ? { gated } : {}),
+    reminderIntervalHours: whole('reminderIntervalHours'), deadlineHours: whole('deadlineHours'), maxOpenTasksPerSender: whole('maxOpenTasksPerSender'),
+  };
 }
 
 function parseUploads(value: unknown, path: string): UploadsConfig {

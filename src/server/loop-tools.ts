@@ -4,7 +4,7 @@ import { defineTool } from '@earendil-works/pi-coding-agent';
 import { workspaceReadTool, type RunnerCapture } from './read-tool.ts';
 import { searchMemoryTool } from './search-memory.ts';
 import { ASK_AGENT_DESCRIPTION, CANCEL_SELF_CHECK_DESCRIPTION, LIST_SELF_CHECKS_DESCRIPTION,
-  NOTIFY_OWNER_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION,
+  NOTIFY_OWNER_DESCRIPTION, REPLY_TO_AGENT_DESCRIPTION, REPLY_TO_MAC_DESCRIPTION, RUN_SHELL_DESCRIPTION, SCHEDULE_SELF_CHECK_DESCRIPTION,
   SET_MAC_AVATAR_EXPRESSION_DESCRIPTION, WRITE_CHANGE_NOTE_DESCRIPTION,
   WRITE_HANDOFF_NOTE_DESCRIPTION } from './prompts.ts';
 
@@ -42,6 +42,11 @@ export interface LoopToolHost {
    * `files` are paths under /work or /sources, as the workspace names them, sent with the message (ADR 0080).
    */
   askAgent(agent: string, message: string, goOn: boolean, files?: string[]): Outcome;
+  /**
+   * A reply to what an agent asked her (ADR 0089): `to` a sender or one of its tasks' directories, closing it or asking.
+   * Always present, whether or not anyone may send her anything, as `askAgent` is.
+   */
+  replyToAgent(to: string, text: string | undefined, state: 'completed' | 'input-required'): Outcome;
   /** Present only when the workspace container's runner is configured (ADR 0019). */
   runShell?(command: string): Outcome;
   /** The runner's raw answer, for `read` (ADR 0047). Present exactly when `runShell` is. */
@@ -57,7 +62,7 @@ export interface LoopToolHost {
  * end a turn with: a turn ends when natsumi stops without calling one (ADR 0024).
  */
 export const LOOP_TOOL_NAMES = ['reply_to_mac', 'notify_owner', 'set_mac_avatar_expression',
-  'write_handoff_note', 'write_change_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent'];
+  'write_handoff_note', 'write_change_note', 'schedule_self_check', 'list_self_checks', 'cancel_self_check', 'ask_agent', 'reply_to_agent'];
 /** Added to the allowlist with a runner: the whole of natsumi's workspace, memory included (ADR 0019). */
 export const RUN_SHELL_TOOL_NAME = 'run_shell';
 /** Pi's own read, added with a runner and pointed at /manual and /memory in the workspace (ADR 0047). */
@@ -152,5 +157,13 @@ export function createLoopTools(host: LoopToolHost) {
     // After ask_agent for the same reason: every definition before it stays where it was on the prefix (ADR 0047).
     // search_memory after read, likewise (ADR 0055).
     ...(host.capture ? [workspaceReadTool(host.capture, { skills: host.skills === true }), searchMemoryTool(host.capture)] : []),
+    // Last of all, after read and search_memory, so that adding it moved no definition before it (ADR 0089).
+    defineTool({
+      name: 'reply_to_agent', label: 'Reply to an agent',
+      description: REPLY_TO_AGENT_DESCRIPTION,
+      parameters: Type.Object({ to: Type.String(), text: Type.Optional(Type.String()),
+        state: Type.Union([Type.Literal('completed'), Type.Literal('input-required')]) }),
+      execute: async (_id, params) => result(host.replyToAgent(params.to, params.text, params.state as 'completed' | 'input-required')),
+    }),
   ];
 }

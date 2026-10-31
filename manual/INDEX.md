@@ -8,12 +8,14 @@
 | 外のエージェント（Wiki の管理人など）に頼む、調べてもらう、聞く | `/manual/ask-agent.md` |
 | 頼める相手の名前と、それぞれができること | `/manual/agents/INDEX.md` |
 | 決まった時刻に外のエージェントへ自動で頼む（定期便）、定期便の返事を読む、止める | `/manual/postbox.md` |
+| ほかのエージェント（ほかのなつみ、Claude・Pi など）から届いた依頼を読む、返事をする（`reply_to_agent`） | `/manual/inbox.md` |
 | Slack のメンションや DM に応える、チャンネルの記録を読む、差分を見る（`sources-diff`）、画像を見る（`view`）、PDF を読む | `/manual/slack.md` |
 | Slack に投稿する、リアクションを付ける、画像を投稿する（ポッポさんに頼む） | `/manual/slack.md` |
 | 絵・画像を作る（sdctl）、自分の絵を描く（自撮り・気分の絵も） | `/manual/avatar/images.md` |
 | クラスタのアラート（Alertmanager）を読む、いま鳴っているものを見る | `/manual/alertmanager.md` |
 | 出来事 sources_updated の attention を読む（Slack） | `/manual/slack.md` |
 | 出来事 sources_updated の attention を読む（アラート、`kind` が `alert`） | `/manual/alertmanager.md` |
+| 出来事 sources_updated の attention を読む（届いた依頼、`kind` が `agent_request`・`agent_answer`） | `/manual/inbox.md` |
 | マスターがチャットに添えた PDF を読む | `/manual/slack.md` の「PDF を読む」 |
 
 `/manual/agents/INDEX.md` と `/manual/avatar/images.md` は、サーバーが起動するたびに書き直します。ほかのファイルは、natsumi のコードと一緒に更新されます。

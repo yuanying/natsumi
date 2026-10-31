@@ -92,6 +92,9 @@ test('the schema keeps the conversation shown to the owner and only references t
       // The dove's words on what became of a request, which its results.jsonl under /sources is written again from on
       // every result (ADR 0074). They are the server's, as Slack's record is Slack's; natsumi reads them from the file.
       if (table === 'dove_results' && column === 'text') continue;
+      // The messages of a task an agent sent her and her replies to it (ADR 0089): the task the sender fetches over A2A,
+      // its question, answer and history, as Slack's record is Slack's. She reads them from the files under /sources.
+      if (table === 'inbox_messages' && column === 'text') continue;
       assert.doesNotMatch(column, /^(text|body|content|message|prompt|reply|response|thinking|tool_calls?)$/i, `${table}.${column}`);
     }
   }
