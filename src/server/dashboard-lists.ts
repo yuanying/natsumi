@@ -1,6 +1,7 @@
 import { filesUrl } from './dashboard-files.ts';
 import { APPROVAL_STATES, type ApprovalRow, type ApprovalState, type BookedCheck, type DevicesView, type DoveJudges, type DovePostRow, type DoveScore, type SessionState, type Waits } from './dashboard-records.ts';
 import { APPROVALS_PATH, checkPath, CHECKS_PATH, DOVE_PATH, localTime, MEMOS_PATH, page, turnPath, WAITS_LIVE_PATH } from './dashboard-view.ts';
+import type { GoalChange } from './goals.ts';
 import type { LetterRecord } from './postbox.ts';
 import { html, type Html } from './html.ts';
 import type { Placement } from './judge.ts';
@@ -168,6 +169,33 @@ ${table(html`<th>名前</th><th>相手</th><th>cron</th><th>最後に送った�
 <td>${next(letter)}</td></tr>`), '定期便はありません。')}
 </section>`;
   return page('定期便', main, { signedIn: true, current: '定期便', avatarId });
+}
+
+const GOAL_KINDS: Record<GoalChange['kind'], string> = { created: '作った', deleted: '消した', changed: '変えた' };
+
+/**
+ * What changed in the parts of the lasting goals that need the owner's consent (ADR 0090): a goal made or removed, and
+ * its なぜ or 日課 changed, newest first, each with its time, who wrote it and the lines. Read from git, and only shown.
+ */
+export function goalsPage(changes: readonly GoalChange[], timeZone: string, avatarId?: string): Html {
+  const what = (change: GoalChange) => change.kind === 'changed'
+    ? change.sections.map(section => `「${section.heading}」を${GOAL_KINDS.changed}`).join('・')
+    : `目標のファイルを${GOAL_KINDS[change.kind]}`;
+  const file = (change: GoalChange) => {
+    const href = change.kind === 'deleted' ? undefined : filesUrl(`/memory/${change.path}`);
+    return href ? html`<a href="${href}"><code>${change.path}</code></a>` : html`<code>${change.path}</code>`;
+  };
+  const main = html`<section id="goals">
+<h2>目標の変更</h2>
+<p><small>記憶の goals/ のうち、マスターの同意が要るところの変更です。長く続く目標のファイルを作った・消したものと、「なぜ」「日課」の節を変えたものを、
+記憶の git の履歴から新しい順に出します（goals/ に触れた直近のコミットから、多くて 30 件）。時刻は ${timeZone} です。サーバーは変更を止めません。</small></p>
+${changes.length === 0 ? html`<p><small>まだ変更はありません。</small></p>` : html`<div class="cards">${changes.map(change => html`<article class="card goal-change">
+<p>${localTime(change.at, timeZone)} <strong>${change.author}</strong> ${file(change)} ${change.kind === 'deleted' ? html`<span class="bad">${what(change)}</span>` : what(change)}
+<small><code>${change.commit.slice(0, 12)}</code></small></p>
+${change.sections.map(section => html`<p><small>${section.heading}</small></p><pre>${section.lines.map(line => `${line.sign} ${line.text}`).join('\n')}</pre>`)}
+</article>`)}</div>`}
+</section>`;
+  return page('目標の変更', main, { signedIn: true, current: '目標の変更', avatarId });
 }
 
 function inboxState(state: string): Html {

@@ -6,6 +6,7 @@ import { isLoopbackHost } from '../pi/loopback.ts';
 // The only thing this file takes from the server modules above it is their `DEFAULT_*` constants, for LOOP_DEFAULTS below.
 // Applying a default is this parser's job alone: nothing downstream falls back again (see LoopOptions.loop).
 import { DEFAULT_ALWAYS_MAX_CHARS, DEFAULT_FILE_MAX_CHARS } from './memory-repository.ts';
+import { DEFAULT_GOAL_FILE_MAX_CHARS, DEFAULT_TODAY_PLAN_MAX_CHARS } from './goals.ts';
 import { DEFAULT_SHELL_WAIT_SECONDS } from './workspace-shell.ts';
 import { DEFAULT_SIZE_WARN_BYTES } from './workspace-size.ts';
 import { SOURCES_DEFAULTS } from './sources.ts';
@@ -141,6 +142,10 @@ export interface LoopConfig {
   memoryFileMaxChars: number;
   /** The longest the always-memory may be. It rides in every prompt, so its limit is far below one file's (ADR 0020). */
   alwaysMemoryMaxChars: number;
+  /** The longest one lasting goal's file in memory's `goals/` may be (ADR 0090). No more than `memoryFileMaxChars`. */
+  goalFileMaxChars: number;
+  /** The longest `goals/today.md` may be. It rides on a few pings, so it is held smaller still (ADR 0090). */
+  todayPlanMaxChars: number;
   /** Local hours natsumi is up. Pings and self-checks come only inside them (ADR 0014). */
   awakeHours: AwakeHours;
   /** Quiet minutes before a ping, or false for no pings. */
@@ -205,6 +210,7 @@ export const DEFAULT_SHUTDOWN_DRAIN_SECONDS = DEFAULT_EVENT_TIMEOUT_MINUTES * 60
 export const LOOP_DEFAULTS: LoopConfig = {
   timeZone: 'UTC', nightlyRotationAt: '04:00', compactionThreshold: 60000, compactionKeepRecent: 20000,
   memoryFileMaxChars: DEFAULT_FILE_MAX_CHARS, alwaysMemoryMaxChars: DEFAULT_ALWAYS_MAX_CHARS,
+  goalFileMaxChars: DEFAULT_GOAL_FILE_MAX_CHARS, todayPlanMaxChars: DEFAULT_TODAY_PLAN_MAX_CHARS,
   shellWaitSeconds: DEFAULT_SHELL_WAIT_SECONDS,
   workspaceSizeWarnBytes: DEFAULT_SIZE_WARN_BYTES,
   awakeHours: DEFAULT_AWAKE_HOURS, pingIntervalMinutes: DEFAULT_PING_INTERVAL_MINUTES,
@@ -220,6 +226,8 @@ export const LOOP_DEFAULTS: LoopConfig = {
 const MIN_MEMORY_FILE_MAX_CHARS = 1000;
 /** Under this the always-memory could not hold a line about the owner, and every night's rewrite would go back. */
 const MIN_ALWAYS_MEMORY_MAX_CHARS = 200;
+/** The floor of a limit on a file of `goals/` (ADR 0090). */
+const MIN_GOAL_MAX_CHARS = 200;
 /** Under the runner's own response limit (60 seconds, ADR 0019) the answer would never reach the server. */
 const MIN_SHELL_WAIT_SECONDS = 10;
 /** A warning under a kibibyte would fire on an empty workspace. */
@@ -1533,13 +1541,24 @@ function judgeEndpoint(method: 'logprobs' | 'jev', judge: Record<string, unknown
   return { enabled, baseUrl, ...(apiKey ? { apiKey } : {}), model, timeoutSeconds: timeout as number, thresholds: { owner, return: returnAt } };
 }
 
+/**
+ * A limit on a file of `goals/` (ADR 0090): an integer of at least the floor, and no more than one memory file's limit,
+ * which every file is held to anyway. Left out, the default, or one memory file's limit when that is smaller.
+ */
+function goalLimit(value: unknown, fallback: number, fileMax: number, path: string): number {
+  if (value === undefined) return Math.min(fallback, fileMax);
+  if (!positiveInteger(value, MIN_GOAL_MAX_CHARS)) throw new ConfigError(path, `must be an integer of at least ${MIN_GOAL_MAX_CHARS}`);
+  if ((value as number) > fileMax) throw new ConfigError(path, 'must be no more than memoryFileMaxChars');
+  return value as number;
+}
+
 function parseLoop(value: unknown, path: string): LoopConfig {
   const loop = object(value, path);
   for (const [old, now] of Object.entries(RENAMED_LOOP_KEYS)) {
     if (old in loop) throw new ConfigError(`${path}.${old}`, `renamed to ${now} (ADR 0019)`);
   }
   onlyKeys(loop, path, ['timeZone', 'nightlyRotationAt', 'compactionThreshold', 'compactionKeepRecent', 'workspaceSocket',
-    'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'awakeHours',
+    'shellWaitSeconds', 'workspaceSizeWarnBytes', 'memoryRepository', 'memoryFileMaxChars', 'alwaysMemoryMaxChars', 'goalFileMaxChars', 'todayPlanMaxChars', 'awakeHours',
     'pingIntervalMinutes', 'selfCheck', 'expressionResetMinutes', 'reviewModelCalls', 'reviewTimeoutMinutes',
     'eventModelCalls', 'eventTimeoutMinutes', 'shutdownDrainSeconds', 'turnFold', 'codemode']);
   const timeZone = loop.timeZone ?? LOOP_DEFAULTS.timeZone;
@@ -1572,6 +1591,8 @@ function parseLoop(value: unknown, path: string): LoopConfig {
   if (!positiveInteger(alwaysMax, MIN_ALWAYS_MEMORY_MAX_CHARS)) {
     throw new ConfigError(`${path}.alwaysMemoryMaxChars`, `must be an integer of at least ${MIN_ALWAYS_MEMORY_MAX_CHARS}`);
   }
+  const goalMax = goalLimit(loop.goalFileMaxChars, LOOP_DEFAULTS.goalFileMaxChars, fileMax as number, `${path}.goalFileMaxChars`);
+  const todayMax = goalLimit(loop.todayPlanMaxChars, LOOP_DEFAULTS.todayPlanMaxChars, fileMax as number, `${path}.todayPlanMaxChars`);
   const ping = loop.pingIntervalMinutes ?? LOOP_DEFAULTS.pingIntervalMinutes;
   if (!isPingInterval(ping)) {
     throw new ConfigError(`${path}.pingIntervalMinutes`, `must be an integer of at least ${MIN_PING_INTERVAL_MINUTES}, or false`);
@@ -1594,7 +1615,7 @@ function parseLoop(value: unknown, path: string): LoopConfig {
     timeZone, nightlyRotationAt: at, compactionThreshold: threshold, compactionKeepRecent: keep,
     ...(socket ? { workspaceSocket: socket } : {}), shellWaitSeconds: wait as number, workspaceSizeWarnBytes: warnBytes as number,
     ...(repository ? { memoryRepository: repository } : {}), memoryFileMaxChars: fileMax as number,
-    alwaysMemoryMaxChars: alwaysMax as number,
+    alwaysMemoryMaxChars: alwaysMax as number, goalFileMaxChars: goalMax, todayPlanMaxChars: todayMax,
     awakeHours: parseAwakeHours(loop.awakeHours ?? LOOP_DEFAULTS.awakeHours, `${path}.awakeHours`),
     pingIntervalMinutes: ping,
     expressionResetMinutes: reset as number,

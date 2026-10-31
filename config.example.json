@@ -47,6 +47,8 @@
     "workspaceSocket": "/run/natsumi-workspace/runner.sock",
     "memoryFileMaxChars": 32000,
     "alwaysMemoryMaxChars": 2000,
+    "goalFileMaxChars": 6000,
+    "todayPlanMaxChars": 3000,
     "turnFold": "off",
     "codemode": { "enabled": false, "workspaceTools": "direct", "nestedCalls": 40 }
   },

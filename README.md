@@ -71,7 +71,10 @@ build 結果は `dist/` に生成されます。実際のモデルへ接続す�
      下の停止の説明を見てください。
      記憶のリポジトリの場所 `memoryRepository`（絶対パス。既定は data directory の `memory/`）と、
      記憶 1 ファイルの上限 `memoryFileMaxChars`（既定 32000 文字）、常時記憶の上限 `alwaysMemoryMaxChars`
-     （既定 2000 文字。毎回のプロンプトに入るので、1 ファイルの上限より小さくします）。
+     （既定 2000 文字。毎回のプロンプトに入るので、1 ファイルの上限より小さくします）、
+     長く続く目標のファイル 1 つの上限 `goalFileMaxChars`（既定 6000 文字）と今日の計画 `goals/today.md` の上限 `todayPlanMaxChars`
+     （既定 3000 文字。ping に載るので小さくします）。どちらも 200 以上で、`memoryFileMaxChars` を超える値は起動を拒みます。
+     省いたときに `memoryFileMaxChars` のほうが小さければ、そちらに揃えます（下記「目標と今日の計画」）。
      作業環境の runner のソケット `workspaceSocket`（絶対パス。これがあるときだけ `run_shell` が使えます）、
      runner の応答を待つ秒数 `shellWaitSeconds`（既定 75 秒。runner 側の応答の上限 60 秒より長くします）、
      永続する書き場所の合計の目安 `workspaceSizeWarnBytes`（既定 1 GiB。超えると次のターンで natsumi に知らせます）。
@@ -158,7 +161,8 @@ natsumi はこのファイルを `run_shell` で読み書きし（[ADR 0019](doc
 上限や時間切れで終わったときも同じように検査してコミットします。検査は `.md` 以外・symlink・空・
 `loop.memoryFileMaxChars`（既定 32000 文字）超過・テンプレートの制御文字列・制御文字・日本語以外の文字と、
 日中のターンでの `always.md`・`personality.md` の変更と、natsumi のターンでの `INDEX.md` と `archive/` の変更です。`always.md` にはこれに加えて
-`loop.alwaysMemoryMaxChars`（既定 2000 文字）の上限が掛かります。戻した理由は次のターンで natsumi に伝わります。
+`loop.alwaysMemoryMaxChars`（既定 2000 文字）の上限が掛かります。`goals/` の長く続く目標のファイルには `loop.goalFileMaxChars`（既定 6000 文字）、
+`goals/today.md` には `loop.todayPlanMaxChars`（既定 3000 文字）の上限が掛かり、`goals/` の下のディレクトリの中のファイルも戻します。戻した理由は次のターンで natsumi に伝わります。
 
 上限を掛けるのは書くときだけです（[ADR 0020](docs/adr/0020-limits-at-write-time-and-a-nightly-menu.md)）。
 プロンプトを組む側は長さを見ないので、オーナーが自分で git に直接コミットした長い `always.md` は、そのまま
@@ -233,7 +237,8 @@ author と committer はサーバーが固定し、リポジトリに置かれ�
 イベントの合間に古い部分を要約します。記憶のリポジトリ、`.natsumi/state.sqlite`、Pi の session 領域は一組でバックアップしてください。
 
 natsumi は自分から動くこともあります（[ADR 0014](docs/adr/0014-self-checks-and-pings.md)）。
-`loop.awakeHours` の間、会話や処理のない時間が `loop.pingIntervalMinutes` 続くと、サーバーが「何かしたいことは？」の合図を送ります。
+`loop.awakeHours` の間、会話や処理のない時間が `loop.pingIntervalMinutes` 続くと、サーバーが合図（ping）を送ります。
+ping は、記憶の `goals/` の今日の計画を進める合図です（[ADR 0090](docs/adr/0090-goals-and-a-plan-for-the-day.md)、下記「目標と今日の計画」）。
 また natsumi は「30 分後」「15:00」のような一回きりの予約と、「毎日 16:00」（cron 式 `0 16 * * *`）のような繰り返しの予約で、
 後で自分から確かめられます（[ADR 0063](docs/adr/0063-repeating-self-checks-without-limits.md)）。予約は `.natsumi/state.sqlite` に残ります。
 一回きりの予約でサーバーの停止や夜で時刻を過ぎたものは、起動後（夜なら朝）にまとめて 1 回で届きます。
@@ -543,7 +548,7 @@ Pi の Codemode を入れると、モデルは `codemode` ツールに JavaScrip
 ### ブラウザでダッシュボードを見る
 
 ブラウザで `<publicOrigin>/dashboard`（例: `https://natsumi.example.net/dashboard`）を開くと、
-GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、予約、睡眠薬、定期便、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
+GitHub でログインしてから、なつみのいまの状態と、ターンごとの中身、失敗と待ち、予約、睡眠薬、定期便、目標の変更、一行メモ、ポッポさんの依頼、承認の履歴、端末、統計のグラフ、なつみのファイルを見られます（[ADR 0049](docs/adr/0049-a-read-only-dashboard-in-the-browser.md)、[ADR 0054](docs/adr/0054-her-files-on-the-dashboard.md)）。
 
 - ログインはアプリと同じ GitHub OAuth App と `github.allowedUserId` で行います。GitHub OAuth App の設定を足す必要はありません。
 - ログインの状態は cookie `natsumi_session`（`Path=/`）に載り、`/`（話す）と `/settings`（設定）と共通です。最後に使ってから 30 日で切れ、開くたびに延びます。
@@ -577,6 +582,10 @@ GitHub でログインしてから、なつみのいまの状態と、ターン�
   名前、相手、cron、最後に送った時刻、その結果（返事を待っている・受け取り・中身なし・失敗・待つのをやめた・聞き返し・飛ばした）と飛ばした理由、
   続けて失敗した回数、前回の受け取り、次に送る時刻です。検査に通らない定期便は、送らない理由を出します。表示だけで、止める操作はありません。
   最後に `/sources` に置いた返事があれば、その「最後の返事」のディレクトリへ「ファイル」でリンクします。
+- 「目標の変更」（`/dashboard/goals`）は、記憶の `goals/` のうち本人の同意が要るところの変更を、新しい順に出します（[ADR 0090](docs/adr/0090-goals-and-a-plan-for-the-day.md)）。
+  長く続く目標のファイルを作った・消したものと、`## なぜ`・`## 日課` の節を変えたものです。コミットの時刻、書き手（なつみか、ssh でコミットした本人の名前）、ファイル、
+  その節の行の差分を並べます。`goals/` に触れた直近の 100 コミットから、多くて 30 件です。記憶の git の履歴から開くたびに作り、SQLite には持ちません。
+  「今の様子」「短い目標」と `today.md` の変更は出しません。表示だけで、サーバーは変更を止めません。
 - 「一行メモ」（`/dashboard/memos`）は、ターンの終わりに書いた一行メモを新しい順に 20 件ずつ、全文で出します。
   一覧は SQLite から作り、メモは session のファイルのうち、そのターンの位置の終わりの付近（最大 1MB）だけを読みます。
   位置を持つ前の「推定」のターンは、ファイルを先頭から探すことになるので一覧では読みません。そのターンの詳細で見られます。
@@ -819,6 +828,22 @@ docker compose -f compose.yaml -f compose.a2a.example.yaml up -d
   `agents/INDEX.md` に書き出し、作業環境からは `/manual/agents/INDEX.md` として読み取り専用で見えます。
   取れなかった相手は「今は取れない」と書きます。URL と token は書きません。相手の説明が変わったら、再起動で反映します。
 - token は natsumi のコンテナにだけマウントし、作業環境には見せません。ログには相手の名前と失敗の種類だけを出し、頼んだ文面や返事は出しません。
+
+### 目標と今日の計画（goals）
+
+記憶の直下の `goals/` に、長く続く目標を 1 つ 1 ファイルで、今日の計画を `goals/today.md` に置きます
+（[ADR 0090](docs/adr/0090-goals-and-a-plan-for-the-day.md)）。書くのは natsumi で、書き方は `manual/goals.md` にあります。
+ping は、この計画を進める合図です（system prompt の ping の説明は固定の文で、設定や記憶から組み立てません）。
+
+- 長く続く目標のファイルは、`goals/` の直下の `.md` のうち `today.md` 以外のすべてです。ファイル名が目標の ID で、
+  節は `## なぜ`・`## 日課`・`## 今の様子`・`## 短い目標` です。`today.md` の 1 行目は `# YYYY-MM-DD`（`loop.timeZone` の日付）です。
+- サーバーは、HEAD にコミットされた `goals/today.md` の中身を、ping の出来事の `today_plan` に載せます。載せるのは、session の最初の ping
+  （起動の後、夜の切り替えと昼寝の後を含む）と、compaction の後の最初の ping だけです。載せたかどうかはサーバーのメモリだけで覚えるので、
+  再起動の後は同じ session でももう一度載せます。`today.md` がコミットされていない（空、symlink を含む）ときは何も載せず、載せたことにもしません。
+- ターンの終わりの検査で、長さの上限（`loop.goalFileMaxChars`・`loop.todayPlanMaxChars`）と `goals/` の下のディレクトリを戻します。
+- 本人の同意が要るところ（目標のファイルの作成・削除、`## なぜ`・`## 日課` の節）の変更も、サーバーは止めません。ダッシュボードの「目標の変更」で見られます。
+- 夜の記憶の整理係は `goals/` を変えることも動かすこともしません。
+- 何も SQLite に持ちません。
 
 ### 定期便を送る（郵便ポスト）
 

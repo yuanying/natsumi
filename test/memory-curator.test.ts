@@ -170,6 +170,19 @@ test('every stage sees the postbox as one line, and leaves its letters alone', (
   }
 });
 
+// ADR 0090: her goals' file names are their IDs, and parts of them need the owner's consent; the curator sees one line.
+test('every stage sees goals/ as one line, and leaves its files alone', () => {
+  const goals = [{ path: 'goals/cluster-health.md', chars: 300, sections: sections(['# クラスタを健康に保つ', 0], ['## なぜ', 1]) },
+    { path: 'goals/today.md', chars: 90, sections: sections(['# 2026-10-31', 2]) }];
+  for (const name of ['knowledge', 'archive', 'structure', 'index']) {
+    const { text, handled } = stage(name).brief(input({ files: [...input().files, ...goals], rewriteAllMaxChars: 1_000_000,
+      date: '2026-10-31' }));
+    assert.match(text, /- goals\/: 2 ファイル（目標と今日の計画、変えない）/, name);
+    assert.doesNotMatch(text, /- goals\/cluster-health/, name);
+    assert.ok(!handled.some(path => path.startsWith('goals/')), name);
+  }
+});
+
 test('map_old_path takes no path in her skills', () => {
   const merged = new Map<string, string>();
   assert.equal(acceptOldPath(merged, 'skills/weekly-report/SKILL.md', '週報.md').ok, false);

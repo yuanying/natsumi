@@ -394,6 +394,11 @@ export class ThinkingLoop {
   private draining = false;
   /** The work in progress is the night's: the nightly switch or a sleeping pill, which a stop does not wait for. */
   private nightWork = false;
+  /**
+   * Whether the session in use has been shown today's plan on a ping since it began or was last compacted (ADR 0090).
+   * Kept here alone, never in SQLite: a restart forgets it, and the next ping shows the plan again.
+   */
+  private planShown = false;
   /** After a failed compaction, the context size it waits to exceed before trying again. */
   private compactionRetryAbove: number | undefined;
   private avatar: { expression: Expression; by: 'server' | 'model'; changedAt: number };
@@ -459,7 +464,8 @@ export class ThinkingLoop {
       timeZone: loop.timeZone });
     this.memoryRepository = new MemoryRepository({
       directory: memoryDirectory, dataDirectory: options.dataDirectory, fileMaxChars: loop.memoryFileMaxChars,
-      alwaysMaxChars: loop.alwaysMemoryMaxChars, identity: gitIdentity(this.self),
+      alwaysMaxChars: loop.alwaysMemoryMaxChars, goalFileMaxChars: loop.goalFileMaxChars, todayPlanMaxChars: loop.todayPlanMaxChars,
+      identity: gitIdentity(this.self),
       ...(options.personality !== undefined ? { personality: options.personality } : {}),
       checkLetter: (path, text) => {
         const checked = checkLetter(path, text, { ...letterRules(), now: this.now() });
@@ -1006,6 +1012,8 @@ export class ThinkingLoop {
 
   private attach(session: AgentSession) {
     this.session = session;
+    // A session opened or made anew has not been shown the plan: after a start, a nightly switch or a nap (ADR 0090).
+    this.planShown = false;
     this.options.configureSession?.(session);
     this.unwatch?.();
     // The thinking in progress is read off the session, never out of the record it writes.
@@ -1178,7 +1186,9 @@ export class ThinkingLoop {
     const before = session.messages.length;
     const timer = setTimeout(() => { turn.timedOut = true; void session.abort(); }, timeoutMs);
     const notices = [this.takeMemoryNotice(), this.takeWorkspaceNotice(), this.postbox.takeNotice()].filter(Boolean).join('\n\n');
-    const prompt = formatEvents(eventIds.map(id => this.eventLine(id))) + (notices ? `\n\n${notices}` : '');
+    const plan = await this.planForPing(eventIds);
+    const prompt = formatEvents(eventIds.map(id => this.eventLine(id, id === plan?.eventId ? plan.text : undefined)))
+      + (notices ? `\n\n${notices}` : '');
     const images = await this.eventImages(eventIds);
     try {
       await session.prompt(prompt, { expandPromptTemplates: false, ...(images.length > 0 ? { images } : {}) });
@@ -1710,6 +1720,8 @@ export class ThinkingLoop {
     try {
       await session.compact(compactionInstructions(this.self));
       this.compactionRetryAbove = undefined;
+      // The summary took the plan a ping carried with it, so the next ping carries it again (ADR 0090).
+      this.planShown = false;
       this.log('thinking loop: the session was compacted');
       return true;
     } catch (error) {
@@ -1742,10 +1754,26 @@ export class ThinkingLoop {
   }
 
   /**
+   * Today's plan, for the first ping among a turn's events when the session has not been shown it (ADR 0090): the
+   * committed `goals/today.md`, never the working tree. With none committed nothing rides, and nothing is counted.
+   */
+  private async planForPing(eventIds: readonly string[]): Promise<{ eventId: string; text: string } | undefined> {
+    if (this.planShown) return undefined;
+    const eventId = eventIds.find(id => this.store.eventKind(id) === 'ping');
+    if (!eventId) return undefined;
+    let text: string | undefined;
+    try { text = await this.memoryRepository.committedTodayPlan(); } catch { text = undefined; }
+    if (text === undefined) return undefined;
+    this.planShown = true;
+    return { eventId, text };
+  }
+
+  /**
    * The line one event becomes inside `<events>`. New event kinds add their own shape here. No line carries its
    * event ID: no tool asks for one, and a column of IDs alike in shape was what she once copied wrong (ADR 0024).
+   * A ping may carry today's plan (`planForPing`).
    */
-  private eventLine(eventId: string): Record<string, unknown> {
+  private eventLine(eventId: string, todayPlan?: string): Record<string, unknown> {
     const row = this.store.eventRow(eventId);
     // A pill's deep sleep is the night itself to her, and its nap an event of its own (ADR 0077).
     if (row.kind === 'nightly-review' || (row.kind === 'sleeping-pill' && this.sleeping?.kind !== 'nap')) {
@@ -1767,7 +1795,8 @@ export class ThinkingLoop {
     const unacknowledged = this.readState.unacknowledgedNotificationIds().length;
     const notices = unacknowledged > 0 ? { unacknowledged_notices: unacknowledged } : {};
     if (row.kind === 'ping') {
-      return { type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices };
+      return { type: 'ping', received_at: row.created_at, local_time: localDateTime(raisedAt, timeZone), ...notices,
+        ...(todayPlan !== undefined ? { today_plan: todayPlan } : {}) };
     }
     // The files it carries, by their places (ADR 0071); the images among them are shown beside the line.
     const messageId = this.options.uploads ? this.store.eventMessageId(eventId) : undefined;
