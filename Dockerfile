@@ -63,7 +63,7 @@ RUN mkdir /out && cd /out \
 # sops. Its archives name the version without the tag's v. Renovate reads the version from the ARG line as a release of
 # cli/cli. Only the binary is taken, and the image holds no token.
 FROM debian:trixie-slim AS gh
-ARG GH_VERSION=v2.103.3
+ARG GH_VERSION=v2.104.0
 ARG TARGETARCH
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates \
